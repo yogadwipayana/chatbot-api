@@ -1,0 +1,9 @@
+# Pertanyaan yang SEHARUSNYA ditolak sistem (FR-3).
+# Dipakai eval/calibrate_threshold.py untuk mencari ambang yang memisahkan
+# pertanyaan terjawab dari yang tidak. Ambil dari tabel `unanswered` setelah
+# uji terbatas, jangan dikarang sendiri.
+resep rendang padang yang enak
+siapa presiden pertama Indonesia
+berapa harga tiket kereta ke Surabaya
+kenapa nilai saya belum keluar
+tolong kerjakan tugas kalkulus saya

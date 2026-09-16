@@ -1,0 +1,1803 @@
+openapi: 3.1.0
+
+# =============================================================================
+# Kontrak API Chatbot Administrasi Mahasiswa
+#
+# Berkas ini adalah kontrak yang disepakati backend dan frontend, mencakup
+# SELURUH permukaan API pada PRD v2.0 -- termasuk endpoint yang belum
+# diimplementasikan, supaya pekerjaan frontend (client/ dan admin/) tidak perlu
+# menunggu backend selesai.
+#
+# Setiap operasi diberi penanda `x-status`:
+#   implemented : sudah ada di app/routers/, diuji di tests/api/
+#   planned     : kontrak sudah disepakati, kode belum ditulis
+#
+# Setiap operasi admin juga diberi `x-min-role` (staf | admin | superadmin):
+# level akun minimum. `tests/api/test_admin_roles.py` membangkitkan satu kasus
+# untuk setiap level di bawah minimum dan memastikan server menjawab 403.
+#
+# `tests/api/test_openapi_contract.py` membandingkan berkas ini dengan spesifikasi
+# yang dihasilkan FastAPI. Operasi `implemented` yang menyimpang akan menggagalkan
+# test -- jadi kontrak ini tidak bisa diam-diam basi.
+#
+# Kalau ada perbedaan antara berkas ini dan kode untuk endpoint `implemented`,
+# KODE yang benar. Perbarui berkas ini, jangan sebaliknya.
+# =============================================================================
+
+info:
+  title: Chatbot Administrasi Mahasiswa
+  version: 0.1.0
+  description: |
+    API chatbot RAG untuk pertanyaan administrasi akademik mahasiswa.
+
+    ## Empat jenis balasan
+
+    Endpoint chat selalu mengembalikan 200 dengan `kind` yang menentukan cara
+    frontend menampilkannya. `answer`, `refusal`, dan `support` WAJIB terlihat
+    berbeda satu sama lain:
+
+    | `kind` | Arti | Tampilan |
+    |---|---|---|
+    | `answer` | Jawaban bersumber dokumen resmi | Bubble normal + kartu sitasi (FE-2) |
+    | `refusal` | Retrieval terlalu lemah, LLM tidak dipanggil (FR-3) | Visual berbeda + kontak (FE-4) |
+    | `support` | Pertanyaan bernuansa tekanan mental (FR-7) | Nada empatik + kontak konseling |
+    | `smalltalk` | Sapaan atau basa-basi; retrieval dan LLM dilewati | Bubble biasa, tanpa sitasi dan tanpa tombol umpan balik |
+
+    Hanya `answer` yang membawa sitasi. Menampilkan kartu sitasi di layar
+    penolakan memberi kesan keliru bahwa jawabannya bersumber; menampilkannya
+    pada sapaan sama saja mengklaim "halo" ada di panduan akademik.
+
+    `smalltalk` ada supaya mahasiswa yang mengetik "hai" tidak dibalas
+    penolakan berisi alamat loket biro, dan supaya sapaan tidak masuk daftar
+    pertanyaan tak terjawab (AD-4).
+
+    ## Sitasi dan verifikasi (FE-2)
+
+    PRD §8 menyebut FE-2 sebagai komponen paling kritis: verifikasi harus
+    semudah satu klik, kalau tidak mahasiswa akan percaya buta. Setiap objek
+    `Citation` membawa `document_id` dan `halaman` yang cukup untuk membuka PDF
+    tepat di halaman tersebut lewat `GET /api/documents/{document_id}/file`.
+
+    ## Privasi
+
+    Tidak ada login mahasiswa dan tidak ada identitas yang disimpan (PRD §11).
+    `session_id` dibangkitkan di sisi klien dan disimpan di localStorage; ia
+    hanya untuk merangkai percakapan dan membatasi laju, bukan untuk mengenali
+    orang. Jangan pernah mengisinya dengan NIM atau email.
+
+    ## Level akses dashboard admin
+
+    Tiga level bertingkat; setiap level mencakup hak level di bawahnya.
+    Level minimum tiap operasi tercatat sebagai `x-min-role`.
+
+    | Level | Hak |
+    |---|---|
+    | `staf` (Staf/Dosen) | Kelola dokumen **unitnya sendiri**, uji coba jawaban, lihat pertanyaan tak terjawab |
+    | `admin` | + kelola dokumen semua unit, tandai pertanyaan selesai, statistik |
+    | `superadmin` | + kill switch layanan chat, kelola akun dashboard |
+
+    Level dan unit dibaca dari database pada setiap permintaan, bukan dari isi
+    token: perubahan level, pemindahan unit, dan penonaktifan akun berlaku saat
+    itu juga. Token yang terbit sebelum kata sandi terakhir diganti ditolak.
+  contact:
+    name: Biro Administrasi Akademik
+    email: akademik@kampus.ac.id
+  license:
+    name: Internal kampus
+
+servers:
+  - url: http://localhost:8000
+    description: Pengembangan lokal
+  - url: https://chatbot.kampus.ac.id
+    description: Produksi (di balik Caddy)
+
+tags:
+  - name: chat
+    description: Endpoint mahasiswa. Tanpa login, dibatasi laju, tunduk pada kill switch.
+  - name: dokumen
+    description: Akses berkas PDF sumber, untuk verifikasi sitasi (FE-2).
+  - name: sistem
+    description: Health check dan status layanan.
+  - name: admin-auth
+    description: Autentikasi dashboard admin (AD-1).
+  - name: admin-dokumen
+    description: Kelola dokumen sumber (AD-2, AD-3).
+  - name: admin-kualitas
+    description: Pertanyaan tak terjawab dan uji coba retrieval (AD-4, AD-6).
+  - name: admin-operasional
+    description: Statistik dan kill switch (AD-5, FR-9).
+  - name: admin-pengguna
+    description: Kelola akun dashboard dan level aksesnya (khusus superadmin).
+
+paths:
+  # ===========================================================================
+  # MAHASISWA
+  # ===========================================================================
+  /api/chat:
+    post:
+      tags: [chat]
+      summary: Ajukan pertanyaan, terima jawaban lengkap
+      operationId: chat
+      x-status: implemented
+      description: |
+        Balasan sekali kirim. Dipakai kotak uji coba admin (AD-6) dan test.
+        Untuk antarmuka mahasiswa gunakan `/api/chat/stream` agar token muncul
+        bertahap (FE-1).
+
+        Alurnya (PRD §7): sanitasi input -> pemeriksaan sensitif (FR-7) ->
+        penulisan ulang query (FR-4) -> retrieval hibrida (FR-2) -> ambang
+        penolakan (FR-3) -> deteksi topik berisiko (FR-6) -> generasi (FR-5).
+
+        LLM tidak dipanggil sama sekali bila `kind` bernilai `refusal` atau
+        `support`.
+      parameters:
+        - $ref: '#/components/parameters/SessionIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+            examples:
+              pertanyaan_pertama:
+                summary: Pesan pertama, tanpa riwayat
+                value:
+                  question: Kapan pengisian KRS semester ganjil dibuka?
+                  session_id: 5f2c9a1b-7e04-4d3a-9c88-1a2b3c4d5e6f
+              pertanyaan_lanjutan:
+                summary: Pertanyaan lanjutan, memicu penulisan ulang query (FR-4)
+                value:
+                  question: Kalau telat gimana?
+                  session_id: 5f2c9a1b-7e04-4d3a-9c88-1a2b3c4d5e6f
+                  history:
+                    - role: user
+                      konten: Kapan pengisian KRS dibuka?
+                    - role: assistant
+                      konten: Pengisian KRS dibuka 1-7 Agustus 2025.
+      responses:
+        '200':
+          description: |
+            Selalu 200 selama pertanyaannya sah, termasuk saat sistem menolak
+            menjawab. Penolakan adalah hasil yang sah, bukan kegagalan.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+              examples:
+                jawaban:
+                  $ref: '#/components/examples/JawabanNormal'
+                penolakan:
+                  $ref: '#/components/examples/Penolakan'
+                eskalasi:
+                  $ref: '#/components/examples/JawabanEskalasi'
+                dukungan:
+                  $ref: '#/components/examples/Dukungan'
+                sapaan:
+                  $ref: '#/components/examples/Sapaan'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/KillSwitchAktif'
+
+  /api/chat/stream:
+    post:
+      tags: [chat]
+      summary: Ajukan pertanyaan, terima jawaban sebagai Server-Sent Events
+      operationId: chat_stream
+      x-status: implemented
+      description: |
+        Sama dengan `/api/chat`, tetapi jawabannya dialirkan sebagai SSE (FE-1).
+
+        Urutan event:
+
+        | Event | Kapan | Data |
+        |---|---|---|
+        | `status` | Segera, sebelum retrieval | `{"stage": "mencari dokumen"}` |
+        | `message` | Setelah pipeline selesai | Objek `ChatResponse` utuh |
+        | `done` | Terakhir | `{}` |
+
+        Event `status` yang mengisi indikator "mencari dokumen..." di FE-1.
+        Klien harus menangani putusnya koneksi di tengah jalan: bila `done`
+        tidak pernah tiba, perlakukan jawaban sebagai tidak lengkap dan jangan
+        tampilkan sitasinya.
+      parameters:
+        - $ref: '#/components/parameters/SessionIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: Aliran SSE
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-cache }
+            X-Accel-Buffering:
+              description: Mencegah reverse proxy menahan aliran sampai selesai.
+              schema: { type: string, const: 'no' }
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: |
+                event: status
+                data: {"stage": "mencari dokumen"}
+
+                event: message
+                data: {"kind": "answer", "text": "Pengisian KRS dibuka 1-7 Agustus 2025 [Panduan Akademik 2025, hal. 12].", "citations": [{"judul": "Panduan Akademik 2025", "halaman": 12, "document_id": "3f1a...", "file_path": "storage/documents/3f1a....pdf"}], "contacts": [], "escalated": false, "top_score": 0.82}
+
+                event: done
+                data: {}
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/KillSwitchAktif'
+
+  /api/feedback:
+    post:
+      tags: [chat]
+      summary: Kirim umpan balik atas satu jawaban
+      operationId: submit_feedback
+      x-status: implemented
+      description: |
+        FE-5: satu klik, tanpa modal. `catatan` opsional dan hanya muncul bila
+        mahasiswa memilih mengisinya.
+
+        Mengirim ulang untuk `message_id` yang sama MENGGANTI umpan balik
+        sebelumnya, supaya mahasiswa yang berubah pikiran dari 👍 ke 👎 tidak
+        terhitung dua kali.
+
+        Rasio umpan balik positif adalah metrik PRD §3 (target >= 75%).
+        Perhatikan anti-metriknya: volume percakapan tinggi bisa berarti sistem
+        berguna, bisa juga berarti jawabannya buruk sehingga mahasiswa bertanya
+        berulang kali.
+      parameters:
+        - $ref: '#/components/parameters/SessionIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FeedbackRequest'
+      responses:
+        '204':
+          description: Tercatat. Tidak ada isi balasan -- FE-5 tidak menampilkan konfirmasi.
+        '404':
+          $ref: '#/components/responses/TidakDitemukan'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/suggestions:
+    get:
+      tags: [chat]
+      summary: Saran pertanyaan untuk layar awal
+      operationId: list_suggestions
+      x-status: planned
+      description: |
+        FE-6: 4-5 contoh pertanyaan, ditampilkan sebelum mahasiswa mengetik.
+
+        Isinya WAJIB berasal dari hasil survei (PRD §15 butir 1), bukan karangan
+        pengembang. Menampilkan pertanyaan yang tidak pernah benar-benar
+        ditanyakan orang akan mengarahkan mahasiswa ke jalur yang salah sejak
+        layar pertama.
+      responses:
+        '200':
+          description: Daftar saran
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 5
+                items:
+                  $ref: '#/components/schemas/Suggestion'
+              example:
+                - teks: Kapan pengisian KRS dibuka?
+                - teks: Bagaimana cara mengajukan cuti kuliah?
+                - teks: Apa saja syarat wisuda?
+                - teks: Bagaimana cara minta surat keterangan aktif kuliah?
+
+  /api/documents/{document_id}/file:
+    get:
+      tags: [dokumen]
+      summary: Unduh atau tampilkan PDF sumber
+      operationId: get_document_file
+      x-status: implemented
+      description: |
+        Tujuan klik pada kartu sitasi (FE-2). Nomor halaman TIDAK dikirim ke
+        server -- klien membukanya lewat fragment PDF viewer
+        (`.../file#page=12`) atau meneruskannya ke react-pdf.
+
+        Hanya dokumen `is_active = true` yang dilayani. Dokumen yang sudah
+        dinonaktifkan mengembalikan 404, supaya tautan lama pada percakapan
+        lampau tidak diam-diam menyajikan informasi kedaluwarsa.
+
+        **Balasannya bergantung pada `STORAGE_BACKEND`, jadi klien harus siap
+        menerima keduanya:**
+
+        | Backend | Balasan |
+        |---|---|
+        | `s3` (S3 / R2) | `307` ke presigned URL atau URL publik bucket |
+        | `local` | `200` dengan isi PDF langsung |
+
+        Pengalihan dipilih untuk S3 supaya PDF mengalir dari object storage ke
+        peramban tanpa melewati proses API. Panduan akademik bisa puluhan
+        megabita; menyalurkannya lewat API hanya menghabiskan memori dan
+        koneksi tanpa manfaat apa pun.
+
+        Setel `fetch(..., { redirect: 'follow' })` atau cukup pasang URL ini
+        sebagai `src` — peramban mengikuti pengalihan dengan sendirinya. Jangan
+        cache URL hasil pengalihan: presigned URL kedaluwarsa (default 15
+        menit) dan harus diminta ulang lewat endpoint ini.
+      parameters:
+        - name: document_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Berkas PDF (hanya saat `STORAGE_BACKEND=local`)
+          headers:
+            Content-Disposition:
+              description: '`inline` agar terbuka di viewer, bukan terunduh.'
+              schema: { type: string }
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '307':
+          description: |
+            Pengalihan ke object storage (saat `STORAGE_BACKEND=s3`).
+          headers:
+            Location:
+              description: Presigned URL berumur pendek, atau URL publik bucket.
+              schema: { type: string, format: uri }
+        '404':
+          $ref: '#/components/responses/TidakDitemukan'
+
+  # ===========================================================================
+  # SISTEM
+  # ===========================================================================
+  /health:
+    get:
+      tags: [sistem]
+      summary: Health check
+      operationId: health
+      x-status: implemented
+      description: |
+        Dipakai Uptime Kuma (PRD §10).
+
+        Tetap 200 saat kill switch aktif. Kill switch adalah keputusan operator,
+        bukan kegagalan sistem; melaporkannya sebagai unhealthy akan membuat
+        monitoring membanjiri alert justru ketika insiden sedang ditangani.
+        Pantau `chat_enabled` bila ingin tahu layanan chat hidup atau tidak.
+      responses:
+        '200':
+          description: Proses hidup
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  # ===========================================================================
+  # ADMIN
+  # ===========================================================================
+  /api/admin/login:
+    post:
+      tags: [admin-auth]
+      summary: Login admin
+      operationId: admin_login
+      x-status: implemented
+      description: |
+        AD-1. Mengembalikan JWT berumur `ADMIN_TOKEN_TTL_MINUTES` (default 8 jam).
+
+        Balasan gagal sengaja tidak membedakan "email tidak terdaftar" dari
+        "kata sandi salah", supaya tidak bisa dipakai memetakan siapa saja yang
+        punya akun admin.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Berhasil
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '403':
+          description: |
+            Kata sandi benar, tetapi akun sudah dinonaktifkan superadmin. Hanya
+            diberitahukan setelah kata sandi terbukti benar, jadi status akun tidak
+            bocor ke orang yang sekadar menebak email.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Email atau kata sandi salah
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { detail: Email atau kata sandi salah }
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/admin/documents:
+    get:
+      tags: [admin-dokumen]
+      summary: Daftar dokumen
+      operationId: list_documents
+      x-status: implemented
+      x-min-role: staf
+      security: [{ bearerAuth: [] }]
+      description: |
+        AD-2. Setiap baris membawa `stale` untuk badge peringatan: dokumen yang
+        lebih dari 6 bulan tidak diperbarui, atau sudah lewat `valid_until`.
+
+        PRD §12 menyebut "dokumen tidak diupdate" sebagai risiko dengan dampak
+        sistem menyebarkan info kedaluwarsa secara aktif. Badge ini mitigasinya,
+        jadi jangan sembunyikan di balik filter.
+
+        Staf/dosen hanya melihat dokumen unitnya; `total` dan `jumlah_stale` pun
+        dihitung atas unit itu. Membuka, mengubah, menghapus, atau mengunggah
+        dokumen unit lain dijawab 403. Nama unit dibandingkan tanpa peduli huruf
+        besar dan spasi berlebih.
+      parameters:
+        - name: include_inactive
+          in: query
+          schema: { type: boolean, default: false }
+        - name: only_stale
+          in: query
+          description: Saring hanya dokumen yang perlu ditinjau.
+          schema: { type: boolean, default: false }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Daftar dokumen
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentPage'
+        '401':
+          $ref: '#/components/responses/TidakBerwenang'
+        '403':
+          $ref: '#/components/responses/Terlarang'
+
+    post:
+      tags: [admin-dokumen]
+      summary: Unggah dokumen baru
+      operationId: upload_document
+      x-status: implemented
+      x-min-role: staf
+      security: [{ bearerAuth: [] }]
+      description: |
+        AD-3. Drag & drop + form metadata. Pemrosesan berjalan sinkron: unggah,
+        ekstraksi, chunking, embedding, simpan -- semuanya dalam satu transaksi.
+        Dokumen yang gagal di tengah jalan tidak meninggalkan chunk yatim.
+
+        PDF hasil scan tanpa lapisan teks ditolak dengan 422 (FR-1). Ini bukan
+        kerewelan: chunk kosong tetap masuk indeks dan tidak pernah terambil,
+        sehingga dokumen tampak terpasang padahal tidak berfungsi.
+
+        Bahasa pesan galat ke admin harus non-teknis (PRD §9).
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/DocumentUpload'
+            encoding:
+              file:
+                contentType: application/pdf
+      responses:
+        '201':
+          description: Dokumen terpasang dan terindeks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestionResult'
+        '401':
+          $ref: '#/components/responses/TidakBerwenang'
+        '403':
+          $ref: '#/components/responses/Terlarang'
+        '502':
+          description: |
+            Layanan luar gagal: penyimpanan dokumen atau API AI. `detail` berisi
+            kalimat siap tampil yang menyarankan mencoba lagi; rinciannya hanya
+            ada di log server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413':
+          description: Berkas melebihi `MAX_UPLOAD_MB`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: |
+            Berkas ditolak. `detail` sudah berupa kalimat siap tampil untuk admin.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                pdf_scan:
+                  summary: PDF hasil scan (FR-1)
+                  value:
+                    detail: >-
+                      'Panduan Akademik 2025.pdf' tampaknya hasil scan tanpa lapisan
+                      teks (85% halaman kosong). Jalankan OCR terlebih dahulu, atau
+                      unggah versi digital aslinya.
+                kosong:
+                  summary: Tidak menghasilkan satu chunk pun
+                  value:
+                    detail: "'Lampiran.pdf' tidak menghasilkan satu chunk pun"
+
+  /api/admin/documents/{document_id}:
+    parameters:
+      - name: document_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [admin-dokumen]
+      summary: Detail satu dokumen
+      operationId: get_document
+      x-status: implemented
+      x-min-role: staf
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Detail dokumen
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Document' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+
+    patch:
+      tags: [admin-dokumen]
+      summary: Perbarui metadata atau status aktif
+      operationId: update_document
+      x-status: implemented
+      x-min-role: staf
+      security: [{ bearerAuth: [] }]
+      description: |
+        Mengubah `valid_until` atau `is_active` langsung mempengaruhi retrieval
+        pada permintaan berikutnya -- filter dokumen aktif dievaluasi di dalam
+        WHERE setiap query (FR-2), bukan di-cache.
+
+        Menonaktifkan dokumen TIDAK menghapus chunk-nya, sehingga dapat
+        dikembalikan bila ternyata keliru.
+
+        `updated_at` diperbarui saat `judul`, `unit`, `tahun_berlaku`, atau
+        `valid_until` berubah -- itu dianggap peninjauan dan menghapus badge
+        usia AD-2. Mengubah `is_active` saja tidak: menyalakan ulang dokumen
+        lama tidak boleh menghapus peringatannya.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DocumentUpdate' }
+      responses:
+        '200':
+          description: Tersimpan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Document' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+    delete:
+      tags: [admin-dokumen]
+      summary: Hapus dokumen beserta seluruh chunk-nya
+      operationId: delete_document
+      x-status: implemented
+      x-min-role: staf
+      security: [{ bearerAuth: [] }]
+      description: |
+        Permanen dan tidak dapat dibatalkan. Frontend WAJIB meminta konfirmasi
+        (PRD §9: semua aksi destruktif butuh konfirmasi).
+
+        Untuk sekadar mengeluarkan dokumen dari indeks, pakai
+        `PATCH { "is_active": false }` -- itu dapat dikembalikan.
+      responses:
+        '204':
+          description: Terhapus
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+
+  /api/admin/documents/{document_id}/chunks:
+    get:
+      tags: [admin-dokumen]
+      summary: Pratinjau hasil chunking
+      operationId: list_document_chunks
+      x-status: implemented
+      x-min-role: staf
+      security: [{ bearerAuth: [] }]
+      description: |
+        AD-3 menyebut "preview hasil chunk". Gunanya konkret: admin dapat
+        melihat apakah tabel atau daftar bernomor terpotong di tengah, yang
+        merupakan penyebab paling umum jawaban benar tetapi tidak lengkap.
+      parameters:
+        - name: document_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Daftar chunk terurut
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Chunk' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+
+  /api/admin/unanswered:
+    get:
+      tags: [admin-kualitas]
+      summary: Pertanyaan tak terjawab, dikelompokkan
+      operationId: list_unanswered
+      x-status: implemented
+      x-min-role: staf
+      security: [{ bearerAuth: [] }]
+      description: |
+        AD-4. PRD menyebut halaman ini "menentukan sistem membaik atau stagnan"
+        dan meminta ia ditempatkan menonjol di navigasi.
+
+        Pertanyaan yang mirip dikelompokkan beserta frekuensinya, sehingga admin
+        melihat "12 mahasiswa menanyakan ini" alih-alih 12 baris terpisah.
+
+        Kemiripan diukur dari kata yang sama setelah kata tanya dan sapaan
+        dibuang (bukan embedding), jadi dapat dijelaskan dan tidak memanggil API
+        berbayar. Pertanyaan yang sudah dan belum ditindaklanjuti tidak pernah
+        berada di kelompok yang sama. `limit` dan `offset` berlaku atas
+        kelompok, bukan atas baris.
+      parameters:
+        - name: resolved
+          in: query
+          description: Kosongkan untuk menampilkan keduanya.
+          schema: { type: boolean }
+        - name: sejak
+          in: query
+          schema: { type: string, format: date }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Kelompok pertanyaan
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/UnansweredGroup' }
+              example:
+                - ids:
+                    - 0b6f2c1e-3a4d-4e5f-9a8b-7c6d5e4f3a2b
+                    - 1c7a3d2f-4b5e-4f60-8b9c-8d7e6f5a4b3c
+                  contoh_pertanyaan: Bagaimana cara mengurus surat keterangan lulus?
+                  jumlah: 12
+                  top_score_rata2: 0.21
+                  terakhir_ditanyakan: '2026-09-09T14:22:11Z'
+                  resolved: false
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+
+  /api/admin/unanswered/{unanswered_id}:
+    patch:
+      tags: [admin-kualitas]
+      summary: Tandai pertanyaan sudah ditindaklanjuti
+      operationId: resolve_unanswered
+      x-status: implemented
+      x-min-role: admin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Ditandai `resolved` setelah dokumen yang menjawabnya diunggah. Ini
+        bukan sekadar penanda kerapian -- selisih antara pertanyaan masuk dan
+        pertanyaan terselesaikan adalah ukuran apakah sistem benar-benar
+        membaik.
+
+        Satu PATCH mengubah satu baris. Untuk menandai satu kelompok AD-4,
+        kirim PATCH untuk setiap id di `UnansweredGroup.ids`.
+      parameters:
+        - name: unanswered_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UnansweredUpdate' }
+      responses:
+        '204': { description: Tersimpan }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+
+  /api/admin/test-query:
+    post:
+      tags: [admin-kualitas]
+      summary: Uji coba retrieval, tampilkan chunk dan skornya
+      operationId: admin_test_query
+      x-status: implemented
+      x-min-role: staf
+      security: [{ bearerAuth: [] }]
+      description: |
+        AD-6. Berbeda dari `/api/chat`: balasan ikut membawa chunk yang terambil
+        beserta skor mentah tiap sumber (vector dan fulltext) dan skor RRF.
+
+        Ini alat diagnosa utama saat ada laporan "jawabannya salah". Skor mentah
+        yang ditampilkan, bukan skor RRF, karena skor RRF hanya mencerminkan
+        peringkat -- chunk terbaik dari sekumpulan chunk tak relevan tetap
+        mendapat skor RRF tertinggi.
+
+        Tidak tunduk pada kill switch (admin perlu mendiagnosis justru saat
+        layanan dimatikan) dan TIDAK dicatat ke log percakapan, supaya uji coba
+        tidak mencemari AD-4 maupun AD-5. LLM tetap dipanggil bila lolos ambang.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TestQueryRequest' }
+      responses:
+        '200':
+          description: Hasil beserta rincian retrieval
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestQueryResponse' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /api/admin/stats:
+    get:
+      tags: [admin-operasional]
+      summary: Statistik penggunaan dan biaya
+      operationId: admin_stats
+      x-status: implemented
+      x-min-role: admin
+      security: [{ bearerAuth: [] }]
+      description: |
+        AD-5. Termasuk `biaya_usd_berjalan` -- PRD §12 menandai biaya API
+        membengkak sebagai risiko dengan dampak layanan mati mendadak.
+
+        `total_percakapan` disajikan sebagai konteks, bukan sebagai ukuran
+        keberhasilan. PRD §3 menetapkannya sebagai anti-metrik.
+
+        Tanpa parameter: 30 hari terakhir sampai hari ini. Hari dihitung menurut
+        `TIMEZONE` server, bukan UTC. Rentang paling panjang 366 hari.
+      parameters:
+        - name: sejak
+          in: query
+          schema: { type: string, format: date }
+        - name: sampai
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Statistik
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Stats' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '422':
+          description: Rentang tanggal tidak sah (terbalik atau terlalu panjang)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/kill-switch:
+    get:
+      tags: [admin-operasional]
+      summary: Status kill switch
+      operationId: get_kill_switch
+      x-status: implemented
+      x-min-role: staf
+      description: Semua level boleh membaca, supaya banner "layanan dimatikan" tampil untuk semua admin.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KillSwitchState' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+
+    post:
+      tags: [admin-operasional]
+      summary: Nyalakan atau matikan kill switch
+      operationId: set_kill_switch
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        FR-9. Mematikan layanan chat dengan cepat saat insiden, tanpa menunggu
+        deploy ulang.
+
+        `alasan` wajib diisi saat menyalakan: insiden tanpa catatan alasan tidak
+        bisa diaudit setelahnya. Dashboard admin tetap hidup saat kill switch
+        aktif -- justru saat itulah admin perlu masuk untuk melihat apa yang
+        terjadi.
+
+        PRD §14 mensyaratkan kill switch DIUJI sebelum rilis, bukan sekadar ada.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/KillSwitchRequest' }
+      responses:
+        '200':
+          description: Status baru
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KillSwitchState' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /api/admin/me:
+    get:
+      tags: [admin-auth]
+      summary: Akun yang sedang masuk
+      operationId: get_me
+      x-status: implemented
+      x-min-role: staf
+      security: [{ bearerAuth: [] }]
+      description: |
+        Level dan unit menurut database SAAT INI, bukan isi token. Dashboard
+        memakainya untuk memilih menu yang tampil; penegakan aksesnya tetap di
+        server.
+      responses:
+        '200':
+          description: Akun
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminUser' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+
+  /api/admin/me/password:
+    post:
+      tags: [admin-auth]
+      summary: Ganti kata sandi sendiri
+      operationId: change_my_password
+      x-status: implemented
+      x-min-role: staf
+      security: [{ bearerAuth: [] }]
+      description: |
+        Dipakai terutama setelah menerima kata sandi sementara dari superadmin.
+        Semua sesi lain akun ini langsung berakhir. Balasan membawa token baru
+        untuk sesi yang dipakai mengganti, jadi tidak perlu masuk ulang.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasswordChange' }
+      responses:
+        '200':
+          description: Tersimpan; token baru
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '400':
+          description: Kata sandi lama salah, atau kata sandi baru sama dengan yang lama
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/admin/users:
+    get:
+      tags: [admin-pengguna]
+      summary: Daftar akun dashboard
+      operationId: list_users
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Akun, superadmin lebih dulu
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AdminUser' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+
+    post:
+      tags: [admin-pengguna]
+      summary: Buat akun dashboard
+      operationId: create_user
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Kata sandi dibangkitkan server dan dikembalikan SEKALI sebagai
+        `password_sementara`. Superadmin tidak memilih kata sandi orang lain,
+        sehingga tidak ada yang mengetahui kata sandi akhir selain pemiliknya
+        setelah ia menggantinya.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminUserCreate' }
+      responses:
+        '201':
+          description: Akun dibuat
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminUserCreated' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '409':
+          description: Email sudah dipakai, atau level staf tanpa unit
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /api/admin/users/{user_id}:
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [admin-pengguna]
+      summary: Ubah nama, level, unit, atau status aktif
+      operationId: update_user
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Berlaku pada permintaan berikutnya akun tersebut. Ditolak 409 bila:
+        superadmin menurunkan level atau menonaktifkan dirinya sendiri,
+        superadmin aktif terakhir disingkirkan, atau level staf tanpa unit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminUserUpdate' }
+      responses:
+        '200':
+          description: Tersimpan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminUser' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '409':
+          description: Melanggar aturan akun (lihat deskripsi)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+    delete:
+      tags: [admin-pengguna]
+      summary: Hapus akun dashboard
+      operationId: delete_user
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Permanen; frontend WAJIB meminta konfirmasi. Untuk menghentikan akses
+        sementara, nonaktifkan saja. Dokumen unggahan akun ini tidak ikut
+        terhapus.
+      responses:
+        '204':
+          description: Terhapus
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '409':
+          description: Menghapus diri sendiri, atau superadmin aktif terakhir
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/users/{user_id}/reset-password:
+    post:
+      tags: [admin-pengguna]
+      summary: Atur ulang kata sandi akun lain
+      operationId: reset_user_password
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Membangkitkan kata sandi sementara baru (ditampilkan sekali) dan
+        mengakhiri semua sesi akun itu. Untuk akun sendiri gunakan
+        `POST /api/admin/me/password`.
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Kata sandi sementara
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TemporaryPassword' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '409':
+          description: Mengatur ulang akun sendiri
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token dari `POST /api/admin/login`. Hanya untuk endpoint admin.
+
+  parameters:
+    SessionIdHeader:
+      name: X-Session-Id
+      in: header
+      required: false
+      description: |
+        Pembatasan laju per sesi (FR-9). Bila tidak dikirim, sistem jatuh ke
+        pembatasan per IP -- yang di jaringan kampus dipakai bersama ratusan
+        mahasiswa, sehingga jauh lebih mudah kena batas. Kirimkan nilai yang
+        sama dengan `session_id` di body.
+      schema: { type: string, minLength: 8, maxLength: 128 }
+
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+
+    Offset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+
+  responses:
+    ValidationError:
+      description: Body permintaan tidak sah
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/HTTPValidationError' }
+
+    RateLimited:
+      description: Melebihi batas laju (FR-9)
+      headers:
+        Retry-After:
+          description: Detik sampai boleh mencoba lagi.
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            detail: Terlalu banyak pertanyaan dalam waktu singkat. Coba lagi sebentar lagi.
+
+    KillSwitchAktif:
+      description: |
+        Layanan chat dimatikan operator (FR-9). Frontend menampilkan `detail`
+        apa adanya -- kalimatnya sudah memuat kontak manusia sebagai jalan keluar.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            detail: >-
+              Layanan chat sedang dinonaktifkan sementara. Silakan hubungi Biro
+              Administrasi Akademik pada jam kerja.
+
+    TidakBerwenang:
+      description: |
+        Token tidak ada, tidak valid, atau kedaluwarsa; akun sudah dinonaktifkan
+        atau dihapus; atau kata sandi sudah diganti sejak token terbit. Frontend
+        menghapus sesi dan kembali ke halaman login.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    Terlarang:
+      description: |
+        Level akun di bawah `x-min-role` operasi ini, atau staf/dosen menyentuh
+        dokumen unit lain. Sesi tetap berlaku; `detail` siap tampil.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    TidakDitemukan:
+      description: Sumber daya tidak ditemukan
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  examples:
+    JawabanNormal:
+      summary: Jawaban bersumber dokumen
+      value:
+        kind: answer
+        message_id: 9c3e1a44-6b2d-4f51-8a70-2d9b5c1e7f03
+        text: >-
+          Pengisian KRS semester ganjil dibuka pada 1-7 Agustus 2025
+          [Panduan Akademik 2025, hal. 12].
+        citations:
+          - judul: Panduan Akademik 2025
+            halaman: 12
+            document_id: 3f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8
+            file_path: storage/documents/3f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8.pdf
+        contacts: []
+        escalated: false
+        top_score: 0.82
+
+    JawabanEskalasi:
+      summary: Topik berisiko tinggi -- jawaban plus banner kontak (FR-6, FE-3)
+      value:
+        kind: answer
+        message_id: 1b7d9e02-3c4f-4a56-9d81-5e6f7a8b9c0d
+        text: >-
+          Batas akhir pembayaran UKT semester ganjil adalah 25 Agustus 2025
+          [Panduan Akademik 2025, hal. 30].
+        citations:
+          - judul: Panduan Akademik 2025
+            halaman: 30
+            document_id: 3f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8
+            file_path: storage/documents/3f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8.pdf
+        contacts:
+          - unit: Biro Administrasi Akademik
+            jam_layanan: Senin-Jumat, 08.00-15.00
+            kontak: akademik@kampus.ac.id
+          - unit: Biro Keuangan
+            jam_layanan: Senin-Jumat, 08.00-14.00
+            kontak: keuangan@kampus.ac.id
+        escalated: true
+        top_score: 0.77
+
+    Penolakan:
+      summary: Retrieval terlalu lemah -- LLM tidak dipanggil (FR-3)
+      value:
+        kind: refusal
+        message_id: 5a2c8f13-7e94-4b60-a1d2-3f4e5a6b7c8d
+        text: |-
+          Maaf, saya tidak menemukan informasi ini di dokumen resmi yang saya miliki. Supaya Anda tidak mendapat jawaban yang keliru, silakan tanyakan langsung ke:
+
+          - Biro Administrasi Akademik (Senin-Jumat, 08.00-15.00): akademik@kampus.ac.id
+        citations: []
+        contacts:
+          - unit: Biro Administrasi Akademik
+            jam_layanan: Senin-Jumat, 08.00-15.00
+            kontak: akademik@kampus.ac.id
+        escalated: true
+        top_score: 0.11
+
+    Dukungan:
+      summary: Pertanyaan bernuansa tekanan mental (FR-7)
+      value:
+        kind: support
+        message_id: 7e1f4a90-2b35-4c68-9d0a-1b2c3d4e5f60
+        text: |-
+          Terima kasih sudah menyampaikan ini. Yang Anda rasakan wajar dan Anda tidak sendirian. Saya tidak bisa membantu urusan seperti ini lewat dokumen administrasi, tetapi ada orang yang siap mendengarkan:
+
+          - Unit Bimbingan & Konseling Kampus (Senin-Jumat, 08.00-15.00): konseling@kampus.ac.id
+          - Dosen Wali (Sesuai jadwal bimbingan): Hubungi melalui program studi
+        citations: []
+        contacts:
+          - unit: Unit Bimbingan & Konseling Kampus
+            jam_layanan: Senin-Jumat, 08.00-15.00
+            kontak: konseling@kampus.ac.id
+          - unit: Dosen Wali
+            jam_layanan: Sesuai jadwal bimbingan
+            kontak: Hubungi melalui program studi
+        escalated: true
+        top_score: null
+
+    Sapaan:
+      summary: Sapaan atau basa-basi -- tanpa retrieval dan tanpa LLM
+      value:
+        kind: smalltalk
+        message_id: 2d4f6a81-9c03-4e57-b1a2-6f7e8d9c0b1a
+        text: >-
+          Halo! Saya asisten administrasi akademik. Silakan tanyakan urusan
+          administrasi Anda -- jawaban saya bersumber dari dokumen resmi kampus
+          dan selalu menyertakan sumbernya.
+        citations: []
+        contacts: []
+        escalated: false
+        top_score: null
+
+  schemas:
+    # --- Chat --------------------------------------------------------------
+    OutcomeKind:
+      type: string
+      enum: [answer, refusal, support, smalltalk]
+      description: |
+        Menentukan cara frontend menampilkan balasan. Hanya `answer` yang
+        membawa sitasi; `refusal`, `support`, dan `smalltalk` tidak pernah.
+
+    TurnIn:
+      type: object
+      required: [role, konten]
+      properties:
+        role:
+          type: string
+          pattern: '^(user|assistant)$'
+          description: '`system` sengaja tidak diterima -- itu jalur injeksi.'
+        konten: { type: string }
+
+    ChatRequest:
+      type: object
+      required: [question, session_id]
+      properties:
+        question:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: |
+            Pertanyaan apa adanya. Server yang menyanitasi dan membungkusnya
+            dengan delimiter; klien tidak perlu (dan tidak boleh) ikut memproses.
+        session_id:
+          type: string
+          minLength: 8
+          maxLength: 128
+          description: |
+            Dibangkitkan klien, disimpan di localStorage. JANGAN isi dengan NIM,
+            email, atau apa pun yang dapat mengenali orang (PRD §11).
+        history:
+          type: array
+          default: []
+          description: |
+            Riwayat percakapan. Hanya 3 pesan terakhir yang dipakai untuk
+            penulisan ulang query (FR-4); mengirim lebih banyak tidak menambah
+            ketepatan tetapi menaikkan biaya.
+          items: { $ref: '#/components/schemas/TurnIn' }
+
+    CitationOut:
+      type: object
+      required: [judul, halaman, document_id, file_path]
+      description: |
+        Isi kartu sitasi FE-2. Cukup untuk membuka PDF tepat di halamannya:
+        `GET /api/documents/{document_id}/file#page={halaman}`.
+      properties:
+        judul: { type: string }
+        halaman: { type: integer, minimum: 1 }
+        document_id: { type: string, format: uuid }
+        file_path:
+          type: string
+          description: Lintasan internal. Untuk ditampilkan, bukan untuk diakses langsung.
+
+    ContactOut:
+      type: object
+      required: [unit, jam_layanan, kontak]
+      description: Isi banner eskalasi FE-3.
+      properties:
+        unit: { type: string }
+        jam_layanan: { type: string }
+        kontak: { type: string }
+
+    ChatResponse:
+      type: object
+      required: [kind, text, citations, contacts, escalated]
+      properties:
+        kind: { $ref: '#/components/schemas/OutcomeKind' }
+        message_id:
+          type: [string, 'null']
+          format: uuid
+          description: |
+            Id jawaban di tabel `messages`, dipakai `POST /api/feedback`. Bernilai
+            null bila pencatatan ke database gagal (jawaban tetap terkirim) --
+            frontend harus menyembunyikan tombol 👍/👎 saat null, bukan mengirim
+            id kosong.
+        text: { type: string }
+        citations:
+          type: array
+          default: []
+          description: |
+            Hanya dokumen yang benar-benar dikutip di `text`, urut kemunculan --
+            bukan seluruh chunk yang terambil retrieval. Retrieval mengambil
+            beberapa chunk sebagai konteks LLM; menampilkan semuanya sebagai
+            "Sumber" memaksa mahasiswa menebak kartu mana yang relevan.
+
+            Sitasi ke dokumen di luar konteks (sumber karangan) tidak pernah
+            ikut: tautannya buntu. Jawaban tanpa satu pun penanda sitasi jatuh
+            kembali ke seluruh chunk terambil, supaya verifikasi tetap mungkin.
+
+            Selalu kosong bila `kind` bukan `answer`.
+          items: { $ref: '#/components/schemas/CitationOut' }
+        contacts:
+          type: array
+          default: []
+          items: { $ref: '#/components/schemas/ContactOut' }
+        escalated:
+          type: boolean
+          default: false
+          description: Tampilkan banner FE-3 bila true.
+        top_score:
+          type: [number, 'null']
+          description: |
+            Skor kemiripan mentah tertinggi, bukan skor RRF. Jangan ditampilkan
+            ke mahasiswa -- angka ini untuk AD-6 dan kalibrasi ambang.
+
+    FeedbackRequest:
+      type: object
+      required: [message_id, helpful]
+      properties:
+        message_id: { type: string, format: uuid }
+        helpful: { type: boolean, description: 'true = 👍, false = 👎' }
+        catatan: { type: [string, 'null'], maxLength: 1000 }
+
+    Suggestion:
+      type: object
+      required: [teks]
+      properties:
+        teks: { type: string }
+
+    HealthResponse:
+      type: object
+      required: [status, chat_enabled]
+      properties:
+        status: { type: string, const: ok }
+        chat_enabled:
+          type: boolean
+          description: false berarti kill switch aktif; proses tetap sehat.
+        kill_switch_reason: { type: [string, 'null'] }
+
+    # --- Admin -------------------------------------------------------------
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 1, maxLength: 256 }
+
+    TokenResponse:
+      type: object
+      required: [access_token, token_type]
+      properties:
+        access_token: { type: string }
+        token_type: { type: string, const: bearer }
+
+    Document:
+      type: object
+      required: [id, judul, unit, updated_at, is_active, jumlah_chunk, stale]
+      properties:
+        id: { type: string, format: uuid }
+        judul: { type: string }
+        unit: { type: string }
+        tahun_berlaku: { type: [integer, 'null'] }
+        valid_until:
+          type: [string, 'null']
+          format: date
+          description: |
+            null berarti berlaku tanpa batas. Lewat tanggal ini, dokumen
+            berhenti terambil retrieval secara otomatis (FR-2) -- tidak perlu
+            ada yang ingat menonaktifkannya.
+        updated_at: { type: string, format: date-time }
+        is_active: { type: boolean }
+        jumlah_chunk: { type: integer, minimum: 0 }
+        stale:
+          type: boolean
+          description: |
+            Badge peringatan AD-2: lebih dari 6 bulan tidak diperbarui, atau
+            sudah lewat `valid_until`.
+        uploaded_by:
+          type: [string, 'null']
+          description: |
+            Email admin pengunggah. PRD §12 memitigasi dokumen usang lewat admin
+            bernama -- badge tanpa nama penanggung jawab mudah diabaikan.
+
+    DocumentPage:
+      type: object
+      required: [items, total, jumlah_stale]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Document' }
+        total:
+          type: integer
+          minimum: 0
+          description: Jumlah dokumen yang cocok dengan filter, untuk paginasi.
+        jumlah_stale:
+          type: integer
+          minimum: 0
+          description: |
+            Dokumen AKTIF yang perlu ditinjau, tidak terpengaruh filter. Untuk
+            lencana angka di navigasi AD-2. Dokumen nonaktif tidak dihitung
+            karena sudah tidak terambil retrieval.
+
+    DocumentUpload:
+      type: object
+      required: [file, judul, unit]
+      properties:
+        file: { type: string, format: binary, description: Berkas PDF. }
+        judul: { type: string, minLength: 3, maxLength: 500 }
+        unit: { type: string, minLength: 2, maxLength: 200 }
+        tahun_berlaku: { type: [integer, 'null'], minimum: 2000, maximum: 2100 }
+        valid_until: { type: [string, 'null'], format: date }
+
+    DocumentUpdate:
+      type: object
+      description: Hanya field yang dikirim yang diubah.
+      properties:
+        judul: { type: string, minLength: 3, maxLength: 500 }
+        unit: { type: string, minLength: 2, maxLength: 200 }
+        tahun_berlaku: { type: [integer, 'null'], minimum: 2000, maximum: 2100 }
+        valid_until:
+          type: [string, 'null']
+          format: date
+          description: Kirim null untuk menjadikan dokumen berlaku tanpa batas.
+        is_active: { type: boolean }
+
+    IngestionResult:
+      type: object
+      required: [document_id, jumlah_halaman, jumlah_chunk]
+      properties:
+        document_id: { type: string, format: uuid }
+        jumlah_halaman: { type: integer, minimum: 1 }
+        jumlah_chunk: { type: integer, minimum: 1 }
+
+    Chunk:
+      type: object
+      required: [id, konten, halaman, urutan]
+      properties:
+        id: { type: string, format: uuid }
+        konten: { type: string }
+        halaman: { type: integer, minimum: 1 }
+        urutan: { type: integer, minimum: 0 }
+
+    UnansweredUpdate:
+      type: object
+      required: [resolved]
+      properties:
+        resolved: { type: boolean }
+
+    UnansweredGroup:
+      type: object
+      required: [ids, contoh_pertanyaan, jumlah, terakhir_ditanyakan, resolved]
+      properties:
+        ids:
+          type: array
+          minItems: 1
+          items: { type: string, format: uuid }
+          description: |
+            Seluruh baris `unanswered` dalam kelompok. Menandai kelompok selesai
+            berarti PATCH `/api/admin/unanswered/{id}` untuk setiap id.
+        contoh_pertanyaan:
+          type: string
+          description: Satu pertanyaan mewakili kelompok, apa adanya seperti diketik.
+        jumlah: { type: integer, minimum: 1 }
+        top_score_rata2:
+          type: [number, 'null']
+          description: |
+            Rata-rata skor tertinggi kelompok ini. Nilai yang mendekati ambang
+            menandakan dokumennya mungkin sudah ada tetapi retrieval-nya meleset;
+            nilai sangat rendah menandakan dokumennya memang belum ada.
+        terakhir_ditanyakan: { type: string, format: date-time }
+        resolved: { type: boolean }
+
+    RetrievedChunk:
+      type: object
+      required: [chunk_id, judul, halaman, konten, rrf_score, raw_scores, ranks]
+      description: Rincian diagnosa AD-6.
+      properties:
+        chunk_id: { type: string, format: uuid }
+        document_id: { type: [string, 'null'], format: uuid }
+        judul: { type: string }
+        halaman: { type: integer }
+        konten: { type: string }
+        rrf_score:
+          type: number
+          description: Skor gabungan. Berbasis peringkat -- jangan pakai untuk menilai relevansi.
+        raw_scores:
+          type: object
+          description: |
+            Skor mentah per sumber. Ini yang menentukan penolakan (FR-3). Kunci
+            sebuah sumber hanya ada bila sumber itu menemukan chunk ini: chunk
+            yang hanya ditemukan fulltext tidak punya `vector`.
+          properties:
+            vector: { type: number, description: 'Cosine similarity, 0..1.' }
+            fulltext: { type: number, description: '`ts_rank` Postgres.' }
+        ranks:
+          type: object
+          description: Peringkat 1-based di tiap sumber. Kunci absen seperti `raw_scores`.
+          properties:
+            vector: { type: integer }
+            fulltext: { type: integer }
+
+    TestQueryRequest:
+      type: object
+      required: [question]
+      properties:
+        question: { type: string, minLength: 1, maxLength: 2000 }
+        vector_threshold:
+          description: |
+            Timpa ambang vektor untuk uji coba ini saja, untuk mencari nilai yang
+            pas. Tidak mengubah ambang yang berlaku bagi mahasiswa.
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
+
+    ThresholdValues:
+      type: object
+      required: [vector, fulltext]
+      description: Ambang yang benar-benar dipakai pada uji coba ini (FR-3).
+      properties:
+        vector: { type: number }
+        fulltext: { type: number }
+
+    TestQueryResponse:
+      type: object
+      required: [kind, text, retrieved, decision, ambang, contacts, escalated, latency_ms]
+      properties:
+        kind: { $ref: '#/components/schemas/OutcomeKind' }
+        text: { type: string }
+        rewritten_query: { type: [string, 'null'] }
+        retrieved:
+          type: array
+          description: Tetap terisi saat ditolak -- justru itu yang perlu dilihat saat diagnosa.
+          items: { $ref: '#/components/schemas/RetrievedChunk' }
+        decision:
+          type: [object, 'null']
+          description: null bila pertanyaan dialihkan ke konseling (FR-7) sebelum retrieval.
+          required: [decision, reason]
+          properties:
+            decision: { type: string, enum: [proceed, refuse] }
+            reason: { type: string, enum: [ok, no_results, below_threshold] }
+            top_vector_score: { type: [number, 'null'] }
+            top_lexical_score: { type: [number, 'null'] }
+        ambang: { $ref: '#/components/schemas/ThresholdValues' }
+        contacts:
+          type: array
+          description: Kontak yang akan dilihat mahasiswa untuk pertanyaan yang sama (FE-3, FE-4).
+          items: { $ref: '#/components/schemas/ContactOut' }
+        escalated: { type: boolean }
+        latency_ms: { type: integer, minimum: 0 }
+        langsmith_run_id:
+          type: [string, 'null']
+          description: Penghubung ke trace LangSmith. Selalu null sampai tracing dipasang.
+
+    DailyVolume:
+      type: object
+      required: [tanggal, jumlah]
+      properties:
+        tanggal: { type: string, format: date }
+        jumlah: { type: integer, minimum: 0 }
+
+    TopicCount:
+      type: object
+      required: [topik, jumlah]
+      properties:
+        topik:
+          type: string
+          description: |
+            Nilai `RiskTopic` (FR-6): `deadline`, `syarat_kelulusan`,
+            `pembayaran`, `sanksi`, `drop_out`. Label tampilan diserahkan ke
+            frontend.
+        jumlah: { type: integer, minimum: 1 }
+
+    KindBreakdown:
+      type: object
+      required: [answer, refusal, support, smalltalk]
+      description: Jumlah balasan per `kind` dalam rentang.
+      properties:
+        answer: { type: integer, minimum: 0 }
+        refusal: { type: integer, minimum: 0 }
+        support: { type: integer, minimum: 0 }
+        smalltalk:
+          type: integer
+          minimum: 0
+          description: |
+            Sapaan dan basa-basi. Bukan pertanyaan administrasi -- jangan
+            disandingkan dengan `answer` seolah keduanya setara.
+
+    Stats:
+      type: object
+      required:
+        - sejak
+        - sampai
+        - total_percakapan
+        - total_pertanyaan
+        - rincian_jenis
+        - jumlah_feedback
+        - rasio_feedback_positif
+        - rasio_tak_terjawab
+        - volume_harian
+        - topik_populer
+        - biaya_usd_berjalan
+        - pesan_tanpa_estimasi_biaya
+        - latency_p95_ms
+      properties:
+        sejak: { type: string, format: date }
+        sampai: { type: string, format: date }
+        total_percakapan:
+          type: integer
+          description: |
+            Konteks, BUKAN ukuran keberhasilan. PRD §3 menetapkannya sebagai
+            anti-metrik: volume tinggi bisa berarti jawabannya buruk sehingga
+            mahasiswa bertanya berulang kali. Satu percakapan = pesan dari
+            `session_id` yang sama dengan jeda di bawah 30 menit.
+        total_pertanyaan: { type: integer }
+        rincian_jenis: { $ref: '#/components/schemas/KindBreakdown' }
+        jumlah_feedback: { type: integer, minimum: 0 }
+        rasio_feedback_positif:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
+          description: Target PRD §3 >= 0.75. null bila belum ada umpan balik.
+        rasio_tak_terjawab:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
+          description: Target PRD §3 < 0.15. null bila belum ada pertanyaan.
+        volume_harian:
+          type: array
+          description: Satu entri per hari dalam rentang, termasuk hari tanpa pertanyaan.
+          items: { $ref: '#/components/schemas/DailyVolume' }
+        topik_populer:
+          type: array
+          maxItems: 10
+          items: { $ref: '#/components/schemas/TopicCount' }
+        biaya_usd_berjalan:
+          type: number
+          description: Estimasi dari token terpakai, bukan dari API penagihan.
+        pesan_tanpa_estimasi_biaya:
+          type: integer
+          minimum: 0
+          description: |
+            Jawaban yang memanggil LLM tetapi modelnya belum punya tarif di
+            `app/observability/costs.py`. Lebih dari nol berarti
+            `biaya_usd_berjalan` KURANG dari biaya sebenarnya -- tampilkan
+            sebagai peringatan, jangan sebagai biaya nol.
+        latency_p95_ms:
+          type: [integer, 'null']
+          description: |
+            Persentil 95 waktu proses jawaban lengkap. Target PRD §11 (first
+            token < 3000 ms) diukur di LangSmith; angka ini batas atasnya.
+
+    KillSwitchRequest:
+      type: object
+      required: [engaged]
+      properties:
+        engaged: { type: boolean }
+        alasan:
+          type: [string, 'null']
+          maxLength: 500
+          description: Wajib diisi (bukan spasi saja) saat `engaged` true. Diabaikan saat false.
+
+    KillSwitchState:
+      type: object
+      required: [engaged]
+      properties:
+        engaged: { type: boolean }
+        reason: { type: [string, 'null'] }
+        engaged_at: { type: [string, 'null'], format: date-time }
+        engaged_by:
+          type: [string, 'null']
+          description: |
+            Email admin yang menyalakan, atau `konfigurasi server` bila
+            dinyalakan lewat `KILL_SWITCH_ENABLED`.
+
+    # --- Akun dan level akses ----------------------------------------------
+    AdminRole:
+      type: string
+      enum: [staf, admin, superadmin]
+      description: |
+        Level bertingkat; setiap level mencakup hak level di bawahnya. `staf`
+        ditampilkan sebagai "Staf/Dosen".
+
+    AdminUser:
+      type: object
+      required: [id, email, role, is_active]
+      description: Akun dashboard. Hash kata sandi tidak pernah dikirim.
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        role: { $ref: '#/components/schemas/AdminRole' }
+        is_active: { type: boolean }
+        nama: { type: [string, 'null'] }
+        unit:
+          type: [string, 'null']
+          description: |
+            Wajib untuk `staf`: membatasi dokumen yang dapat dikelola. Untuk level
+            lain hanya keterangan.
+        created_at: { type: [string, 'null'], format: date-time }
+        last_login_at: { type: [string, 'null'], format: date-time }
+
+    AdminUserCreate:
+      type: object
+      required: [email, role]
+      properties:
+        email: { type: string, format: email }
+        role: { $ref: '#/components/schemas/AdminRole' }
+        nama: { type: [string, 'null'], maxLength: 200 }
+        unit:
+          type: [string, 'null']
+          maxLength: 200
+          description: Wajib bila `role` bernilai `staf`.
+
+    AdminUserUpdate:
+      type: object
+      description: Hanya field yang dikirim yang diubah. Field tak dikenal ditolak.
+      properties:
+        nama: { type: [string, 'null'], maxLength: 200 }
+        role: { $ref: '#/components/schemas/AdminRole' }
+        unit: { type: [string, 'null'], maxLength: 200 }
+        is_active: { type: boolean }
+
+    AdminUserCreated:
+      type: object
+      required: [user, password_sementara]
+      properties:
+        user: { $ref: '#/components/schemas/AdminUser' }
+        password_sementara:
+          type: string
+          description: Ditampilkan SEKALI dan tidak dapat diambil lagi.
+
+    TemporaryPassword:
+      type: object
+      required: [password_sementara]
+      properties:
+        password_sementara: { type: string }
+
+    PasswordChange:
+      type: object
+      required: [password_lama, password_baru]
+      properties:
+        password_lama: { type: string, minLength: 1, maxLength: 256 }
+        password_baru:
+          type: string
+          minLength: 12
+          maxLength: 72
+          description: Maksimal 72 byte (batas bcrypt).
+
+    # --- Galat -------------------------------------------------------------
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: string
+          description: |
+            Kalimat siap tampil. Untuk endpoint admin bahasanya non-teknis
+            (PRD §9: "dokumen sedang diproses", bukan "embedding in progress").
+
+    ValidationError:
+      type: object
+      required: [loc, msg, type]
+      properties:
+        loc:
+          type: array
+          items:
+            type: [string, integer]
+        msg: { type: string }
+        type: { type: string }
+
+    HTTPValidationError:
+      type: object
+      properties:
+        detail:
+          type: array
+          items: { $ref: '#/components/schemas/ValidationError' }

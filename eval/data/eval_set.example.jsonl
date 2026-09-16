@@ -1,0 +1,6 @@
+// Contoh format set evaluasi. Salin ke eval_set.jsonl lalu isi dengan kasus asli.
+// relevant_chunk_ids diisi UUID chunk dari tabel `chunks` yang memang menjawab
+// pertanyaan tersebut. WAJIB divalidasi staf akademik, bukan hanya pengembang (PRD §14).
+{"question": "Kapan pengisian KRS semester ganjil dibuka?", "relevant_chunk_ids": ["00000000-0000-0000-0000-000000000001"]}
+{"question": "Apa saja syarat mengajukan cuti kuliah?", "relevant_chunk_ids": ["00000000-0000-0000-0000-000000000002", "00000000-0000-0000-0000-000000000003"]}
+{"question": "Berapa IPK minimal untuk yudisium?", "relevant_chunk_ids": ["00000000-0000-0000-0000-000000000004"]}
