@@ -13,6 +13,13 @@ def settings(**overrides) -> Settings:
     return Settings(_env_file=None, **overrides)
 
 
+def settings_produksi(**overrides) -> Settings:
+    """Settings produksi lengkap dengan kredensial yang diwajibkan validator."""
+    return settings(
+        environment="production", admin_jwt_secret="x" * 48, api_key="sk-uji", **overrides
+    )
+
+
 class TestNilaiDefault:
     def test_default_valid(self):
         assert settings().environment == "local"
@@ -243,3 +250,47 @@ class TestKillSwitch:
 
     def test_dapat_dinyalakan_lewat_konfigurasi(self):
         assert settings(kill_switch_enabled=True).kill_switch_enabled is True
+
+
+class TestCorsOrigin:
+    """Salah isi di sini tidak menggagalkan startup -- peramban yang menolak,
+    jauh kemudian, dengan 'No Access-Control-Allow-Origin header'."""
+
+    def test_local_tanpa_daftar_mengizinkan_semua(self):
+        assert settings(environment="local", cors_origins="").cors_origin_list() == ["*"]
+
+    def test_produksi_tanpa_daftar_tidak_mengizinkan_apa_pun(self):
+        """Tanpa daftar, front-end di domain lain diblokir -- benar hanya bila
+        API dan front-end berbagi domain."""
+        assert settings_produksi(cors_origins="").cors_origin_list() == []
+
+    def test_beberapa_asal_dipisah_koma(self):
+        s = settings_produksi(cors_origins="https://admin.dwipa.my.id, https://sads.dwipa.my.id")
+        assert s.cors_origin_list() == [
+            "https://admin.dwipa.my.id",
+            "https://sads.dwipa.my.id",
+        ]
+
+    def test_garis_miring_akhir_dibuang(self):
+        """Header `Origin` tidak pernah berakhiran '/'; tanpa ini nilai .env yang
+        disalin dari address bar tidak akan pernah cocok."""
+        s = settings_produksi(cors_origins="https://sads.dwipa.my.id/")
+        assert s.cors_origin_list() == ["https://sads.dwipa.my.id"]
+
+    def test_asal_ganda_tidak_diulang(self):
+        s = settings_produksi(
+            cors_origins="https://sads.dwipa.my.id,https://sads.dwipa.my.id/"
+        )
+        assert s.cors_origin_list() == ["https://sads.dwipa.my.id"]
+
+    def test_local_tetap_mengizinkan_dev_meski_daftar_produksi_diisi(self):
+        """.env pengembang berisi domain produksi; `npm run dev` tetap harus jalan."""
+        s = settings(environment="local", cors_origins="https://admin.dwipa.my.id")
+        asal = s.cors_origin_list()
+        assert "https://admin.dwipa.my.id" in asal
+        assert "http://localhost:3000" in asal
+        assert "http://localhost:3001" in asal
+
+    def test_produksi_tidak_kebocoran_localhost(self):
+        s = settings_produksi(cors_origins="https://admin.dwipa.my.id")
+        assert all("localhost" not in a for a in s.cors_origin_list())

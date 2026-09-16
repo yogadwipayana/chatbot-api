@@ -231,6 +231,32 @@ hanya efek fusi. Exit code 1 bila Recall@5 belum mencapai 0.85.
 
 Endpoint AD-1..AD-6 (`app/routers/admin_*.py`) dipakai oleh `../admin`.
 
+### CORS — saat front-end memakai domain lain
+
+`admin/` dan `client/` boleh berada di domain yang berbeda dari API. Begitu itu
+terjadi, `CORS_ORIGINS` di `.env` **wajib** menyebut setiap asal, dipisah koma
+dan tanpa garis miring akhir:
+
+```bash
+CORS_ORIGINS=https://admin.dwipa.my.id,https://sads.dwipa.my.id
+```
+
+Yang perlu diingat:
+
+- Nilai ini dibaca sekali saat proses start. Mengubahnya berarti **restart**
+  (`pm2 restart api`); tanpa itu nilai lama masih dipakai.
+- Asal harus cocok persis — skema, host, dan port. `https://sads.dwipa.my.id`
+  tidak mencakup `http://`, subdomain lain, maupun port lain.
+- Saat `ENVIRONMENT=local`, `http://localhost:3000` dan `:3001` selalu ikut
+  diizinkan, jadi mengisi daftar produksi di `.env` pengembang tidak
+  mematikan `npm run dev`.
+- Daftar kosong di luar `local` berarti tidak ada pemanggil lintas-asal yang
+  dilayani. Itu benar hanya bila API dan front-end berbagi domain di balik Caddy.
+
+Gejala bila ini salah: peramban menolak dengan `No 'Access-Control-Allow-Origin'
+header is present` dan permintaan tidak pernah sampai ke handler — log API bersih,
+seolah-olah front-end tidak pernah memanggil.
+
 ### Level akses
 
 | Level | Hak |

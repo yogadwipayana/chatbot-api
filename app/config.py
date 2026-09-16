@@ -20,6 +20,16 @@ PLACEHOLDER_JWT_SECRET = "GANTI-NILAI-INI-SEBELUM-DEPLOY-KE-PRODUKSI-0000"
 """Nilai sengaja panjang agar lolos syarat 32 byte saat pengembangan lokal,
 tetapi ditolak mentah-mentah di produksi oleh validator di bawah."""
 
+ORIGIN_LOKAL = (
+    "http://localhost:3000",  # admin/
+    "http://localhost:3001",  # client/
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+)
+"""Asal dev yang selalu diizinkan saat `ENVIRONMENT=local`. `CORS_ORIGINS` di
+.env berisi domain produksi; tanpa daftar ini mengisinya akan memblokir
+`npm run dev` di mesin sendiri."""
+
 
 def _terisi(kunci: SecretStr | None) -> SecretStr | None:
     """None bila kunci tidak ada atau hanya berisi spasi.
@@ -134,10 +144,14 @@ class Settings(BaseSettings):
     # --- Dashboard admin (AD-1..AD-6) --------------------------------
     cors_origins: str = ""
     """Asal peramban yang boleh memanggil API, dipisah koma, mis.
-    `https://admin.kampus.ac.id`. Kosong saat `ENVIRONMENT=local` berarti semua
-    asal diizinkan, supaya `admin/` di localhost:3000 langsung dapat dipakai. Di
-    produksi admin dan API berada di balik Caddy pada domain yang sama, jadi
-    biasanya tetap kosong."""
+    `https://admin.kampus.ac.id,https://portal.kampus.ac.id`.
+
+    Wajib diisi begitu dashboard/portal memakai domain yang berbeda dari API
+    (mis. admin.* dan sads.* memanggil api.*): peramban menolak respons yang
+    tidak menyebut asalnya, dan permintaan gagal sebelum mencapai handler.
+    Kosong saat `ENVIRONMENT=local` berarti semua asal diizinkan; asal localhost
+    tetap ditambahkan saat local meski daftar produksi sudah diisi, supaya
+    `admin/` dan `client/` versi dev tidak ikut terkunci."""
 
     max_upload_mb: int = 50
     """Batas ukuran PDF yang diunggah admin (AD-3). Batas keras ukuran body
@@ -147,10 +161,17 @@ class Settings(BaseSettings):
     """Zona waktu IANA untuk pengelompokan harian statistik (AD-5)."""
 
     def cors_origin_list(self) -> list[str]:
+        """Daftar asal untuk `CORSMiddleware`, tanpa duplikat.
+
+        Daftar kosong di luar `local` berarti tidak ada pemanggil lintas-asal
+        yang dilayani -- benar hanya bila front-end berbagi domain dengan API.
+        """
         asal = [a.strip().rstrip("/") for a in self.cors_origins.split(",") if a.strip()]
-        if not asal and self.environment == "local":
+        if self.environment != "local":
+            return list(dict.fromkeys(asal))
+        if not asal:
             return ["*"]
-        return asal
+        return list(dict.fromkeys([*asal, *ORIGIN_LOKAL]))
 
     @model_validator(mode="after")
     def _model_ai_valid(self) -> Settings:
