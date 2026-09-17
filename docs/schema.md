@@ -24,6 +24,7 @@ erDiagram
     conversations ||--o{ messages : "1..N (CASCADE)"
     messages ||--o{ feedback : "1..N (CASCADE)"
     messages ||--o| unanswered : "0..1 (SET NULL)"
+    documents ||--o{ usage_log : "0..N (SET NULL)"
 
     documents {
         uuid     id PK
@@ -94,6 +95,20 @@ erDiagram
         varchar  updated_by "255 — email admin"
     }
 
+    usage_log {
+        uuid     id PK
+        timestamptz created_at "NOT NULL, default now()"
+        varchar  operasi "20, NOT NULL — ingest/reindex"
+        varchar  model "200, NOT NULL — model yang diminta"
+        varchar  model_dilaporkan "200, bila penyedia menyebut nama lain"
+        int      tokens "NULL = tidak dilaporkan"
+        float    biaya_usd "tanpa pembulatan"
+        varchar  biaya_sumber "20 — provider/estimasi"
+        boolean  is_byok
+        uuid     document_id FK "NULL-able, SET NULL"
+        varchar  keterangan "500 — judul dokumen saat itu"
+    }
+
     admins {
         uuid     id PK
         varchar  email "255, UNIQUE + unik lower()"
@@ -124,6 +139,7 @@ boleh menghapus atau membuat NULL riwayat dokumen yang pernah diunggahnya.
 | **Log** | `conversations`, `messages`, `feedback`, `unanswered` | `app/observability/chatlog.py`, `app/routers/chat.py` | dashboard AD-4, AD-5 |
 | **Akun** | `admins` | `app/admin/accounts.py`, `scripts/create_admin.py` | auth AD-1 |
 | **Setelan** | `runtime_config` | `app/routers/admin_config.py` | `get_effective_settings` di setiap permintaan |
+| **Biaya** | `usage_log` | `app/ingestion/`, `app/admin/faq.py` | biaya AD-5 |
 
 ---
 
@@ -260,6 +276,7 @@ dua akun berbeda.
 | `messages.conversation_id` → `conversations.id` | `CASCADE` | Pesan tanpa percakapan tidak punya arti |
 | `feedback.message_id` → `messages.id` | `CASCADE` | Umpan balik tanpa pesan tidak dapat ditafsirkan |
 | `unanswered.message_id` → `messages.id` | **`SET NULL`** | Log percakapan boleh dibersihkan, sinyal perbaikan AD-4 tidak ikut hilang |
+| `usage_log.document_id` → `documents.id` | **`SET NULL`** | Menghapus dokumen tidak boleh mengecilkan laporan biaya bulan yang sudah lewat |
 
 `unanswered` sengaja berbeda. Ia bukan turunan log, melainkan daftar pekerjaan
 admin — retensi log tidak boleh mengosongkannya.
@@ -282,6 +299,11 @@ Hanya diisi pada baris `role = 'assistant'`.
 | `input_tokens` / `output_tokens` | int \| null | Dari `usage_metadata` LangChain |
 | `biaya_usd` | float \| null | `null` bila tarif modelnya tidak dikenal |
 | `rewritten_query` | string \| null | Hasil penulisan ulang query (FR-4) |
+| `embed_dipanggil` | bool | `false` untuk FR-7 dan smalltalk — keduanya berhenti sebelum retrieval |
+| `embed_model` | string \| null | Model yang **diminta**, bukan yang dilaporkan gateway |
+| `embed_tokens` | int \| null | `usage.prompt_tokens`; `null` bila endpoint tidak melaporkannya |
+| `embed_biaya_usd` | float \| null | Biaya meng-embed pertanyaan, **tanpa pembulatan** |
+| `embed_biaya_sumber` | string \| null | `provider` atau `estimasi` |
 
 Struktur ini bukan sekadar catatan — statistik AD-5 memfilter langsung atasnya
 (`m.meta->>'kind'`, `m.meta->'topik'`). Menambah nilai `kind` baru tanpa
@@ -290,6 +312,75 @@ menyesuaikan `app/admin/stats.py` membuat pesan itu hilang dari semua hitungan.
 **`biaya_usd = null` ≠ biaya nol.** Jawaban dari model yang tarifnya belum ada di
 `app/observability/costs.py` dilaporkan terpisah sebagai
 `pesan_tanpa_estimasi_biaya`, bukan dianggap gratis.
+
+**`biaya_usd` adalah biaya LLM saja, bukan total.** Biaya embedding berdiri di
+kunci `embed_biaya_usd` dan sengaja tidak dijumlahkan ke dalamnya: `biaya_usd`
+sudah berarti "biaya LLM" di seluruh baris yang tercatat sebelumnya dan di setiap
+query `app/admin/stats.py`. Mengubah artinya diam-diam membuat baris sebelum dan
+sesudah perubahan tidak lagi sebanding. Penjumlahan keduanya dilakukan saat
+menyajikan, bukan saat menyimpan.
+
+**Penolakan FR-3 berbiaya embedding meskipun `llm_dipanggil = false`.** Retrieval
+berjalan lebih dulu (`app/rag/chain.py:141`), baru ambangnya memutuskan menolak —
+pertanyaannya sudah terlanjur di-embed. Karena itu penjumlahan biaya embedding
+**tidak boleh** menumpang filter `meta->>'llm_dipanggil' = 'true'` yang dipakai
+query biaya LLM; pakai syaratnya sendiri, `meta->>'embed_tokens' IS NOT NULL`.
+Menyaringnya dengan filter yang salah akan menghapus seluruh penolakan dari
+laporan — padahal pertanyaan yang banyak ditolak justru yang paling perlu terlihat
+(sinyal AD-4).
+
+Bedakan tiga keadaan: `embed_dipanggil = false` berarti benar-benar tidak ada
+panggilan (FR-7 dan smalltalk); `true` dengan `embed_tokens = null` berarti
+panggilannya nyata dan berbiaya tetapi endpoint tidak melaporkan pemakaian; `true`
+dengan angka lengkap berarti terhitung penuh. Hanya yang pertama yang gratis.
+
+---
+
+## `usage_log` — biaya yang tidak punya baris pesan
+
+Biaya chat menumpang `messages.meta`. Embedding saat ingestion tidak bisa: ia
+terjadi ketika tidak ada mahasiswa yang bertanya sama sekali, jadi tidak ada
+baris yang dapat dititipi. Tanpa tabel ini halaman Biaya AD-5 diam-diam hanya
+melaporkan sebagian dari yang benar-benar dibelanjakan.
+
+Kolom di `documents` sempat dipertimbangkan dan ditolak. Menghapus dokumen akan
+mengecilkan total bulan yang sudah lewat, dan menyunting entri tanya jawab akan
+menimpa biaya ingestion pertamanya — buku biaya yang berubah surut tidak dapat
+menjawab "bulan lalu habis berapa". Karena itu tabelnya **append-only** dan
+`document_id` memakai `SET NULL`, alasan yang sama dengan `unanswered.message_id`.
+`keterangan` menyimpan judul dokumen saat panggilan terjadi supaya barisnya tetap
+terbaca setelah induknya hilang.
+
+### Biaya penyedia mengalahkan taksiran
+
+Gateway proyek ini mengembalikan `usage.cost` — biaya sebenarnya, bukan hitungan
+kita. Angka itu selalu menang; `costs.PRICES_PER_MTOK` hanyalah salinan tarif yang
+bisa tertinggal, dan dipakai hanya untuk endpoint yang tidak melaporkan biaya
+(`cost` bukan bagian spesifikasi OpenAI). `biaya_sumber` mencatat yang mana yang
+terpakai, ditegakkan database:
+
+```sql
+CONSTRAINT ck_usage_log_biaya_lengkap CHECK ((biaya_usd IS NULL) = (biaya_sumber IS NULL))
+```
+
+Angka biaya tanpa asal-usul tidak dapat ditafsirkan lagi setelah beberapa bulan,
+dan asal-usul tanpa angka tidak ada artinya.
+
+### `biaya_usd` disimpan tanpa pembulatan
+
+Ini bukan kerapian, melainkan syarat agar kolomnya berguna. `costs.estimate_cost`
+membulatkan ke enam desimal, sementara embedding satu pertanyaan (sembilan token
+pada `text-embedding-3-small`) berharga **$0,00000018** — `round(…, 6)`
+menjadikannya nol bulat. Ribuan pertanyaan yang seluruhnya berbiaya nol bukan
+laporan biaya. Karena itu jalur embedding memakai `costs.estimate_input_cost`
+yang tidak membulatkan, dan pembulatan baru terjadi di `app/admin/stats.py`
+setelah dijumlahkan.
+
+> **Status:** embedding pertanyaan mahasiswa sudah tercatat di `messages.meta`
+> dan ditampilkan halaman Biaya. `app/admin/stats.py` juga sudah membaca
+> `usage_log`, tetapi tabel itu **belum punya penulis** — `app/ingestion/` dan
+> `app/admin/faq.py` belum mengisinya. Karena itu bagian ingestion/reindex masih
+> nol sampai jalur penulisannya diterapkan.
 
 ---
 
@@ -360,6 +451,8 @@ pertanyaan hari sebelumnya.
 | `0004_level_akses_admin` | `nama`, `unit`, `is_active`, `password_changed_at`, `last_login_at`; `editor` → `admin`; unik `lower(email)` |
 | `0005_entri_tanya_jawab` | `jenis`, `jawaban`; `file_path` menjadi nullable; dua CHECK constraint |
 | `0006_nama_file_asli` | `nama_file` untuk nama tab browser dan nama unduhan PDF |
+| `0007_konfigurasi_runtime` | `runtime_config` — parameter `.env` yang dapat ditimpa dari dashboard |
+| `0008_buku_biaya_pemakaian` | `usage_log` — biaya embedding yang tidak punya baris pesan untuk ditumpangi |
 
 Catatan per migrasi:
 

@@ -44,6 +44,13 @@ class ChatLogEntry:
     model: str | None = None
     usage: dict[str, Any] | None = None
     """`usage_metadata` LangChain: `input_tokens`, `output_tokens`."""
+    embed_dipanggil: bool = False
+    """False untuk FR-7 dan smalltalk: keduanya berhenti sebelum retrieval,
+    sehingga pertanyaannya tidak pernah di-embed sama sekali."""
+    embed_model: str | None = None
+    embed_tokens: int | None = None
+    embed_biaya_usd: float | None = None
+    embed_biaya_sumber: str | None = None
 
 
 def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
@@ -74,6 +81,15 @@ def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
         "output_tokens": output_tokens,
         "biaya_usd": biaya,
         "rewritten_query": outcome.rewritten_query,
+        # Biaya meng-embed pertanyaan mahasiswa. Dipisah dari `biaya_usd`, bukan
+        # dijumlahkan ke dalamnya: `biaya_usd` sudah berarti "biaya LLM" di
+        # seluruh baris lama dan di `app/admin/stats.py`, dan mengubah artinya
+        # diam-diam membuat baris sebelum dan sesudah hari ini tidak sebanding.
+        "embed_dipanggil": entry.embed_dipanggil,
+        "embed_model": entry.embed_model if entry.embed_dipanggil else None,
+        "embed_tokens": entry.embed_tokens,
+        "embed_biaya_usd": entry.embed_biaya_usd,
+        "embed_biaya_sumber": entry.embed_biaya_sumber,
     }
 
 

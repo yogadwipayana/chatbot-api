@@ -17,7 +17,8 @@ from urllib.parse import urlsplit
 
 from app.config import Settings, get_settings
 from app.db.models import EMBEDDING_DIM
-from app.rag.providers import build_embeddings, build_llm
+from app.observability.costs import biaya_embedding
+from app.rag.providers import build_embeddings, build_llm, embed_with_usage
 
 
 def baris(label: str, nilai: object) -> None:
@@ -86,13 +87,16 @@ async def cek_embedding(settings: Settings) -> bool:
     print(f"\nEmbedding ({settings.embed_model})")
     try:
         emb = build_embeddings(settings)
-        vektor = await emb.aembed_query("Kapan batas akhir pengisian KRS semester ganjil?")
+        hasil = await embed_with_usage(
+            emb, ["Kapan batas akhir pengisian KRS semester ganjil?"]
+        )
     except Exception as exc:
         pesan = _ringkas(exc, settings)
         print(f"  GAGAL  {type(exc).__name__}: {pesan}")
         print(_petunjuk(pesan, "EMBED_MODEL"))
         return False
 
+    vektor = hasil.vectors[0]
     baris("dimensi", len(vektor))
     if len(vektor) != EMBEDDING_DIM:
         print(
@@ -100,7 +104,42 @@ async def cek_embedding(settings: Settings) -> bool:
             "dimensi akan ditolak saat ingestion."
         )
         return False
+
+    _lapor_pemakaian(settings, hasil)
     return True
+
+
+def _lapor_pemakaian(settings: Settings, hasil) -> None:
+    """Angka yang akan masuk laporan biaya AD-5, bukan syarat lulus.
+
+    Endpoint yang tidak melaporkan pemakaian tetap sah dipakai -- yang hilang
+    hanya ketelitian angkanya, dan itu harus terlihat di sini daripada muncul
+    sebagai biaya nol di dashboard.
+    """
+    if hasil.model and hasil.model != settings.embed_model:
+        # Gateway boleh memetakan nama model; tarif keduanya bisa berbeda jauh.
+        baris("dilaporkan", f"{hasil.model} (diminta: {settings.embed_model})")
+    if hasil.is_byok:
+        baris("byok", "ya -- `cost` adalah ongkos platform, bukan belanja ke penyedia hulu")
+
+    if hasil.tokens is None:
+        baris("pemakaian", "tidak dilaporkan endpoint")
+        print(
+            "  Catatan: biaya embedding akan ditaksir dari costs.PRICES_PER_MTOK, "
+            "atau kosong bila tarifnya belum terdaftar."
+        )
+        return
+
+    baris("token", hasil.tokens)
+    biaya, sumber = biaya_embedding(settings.embed_model, hasil.tokens, hasil.biaya_usd)
+    if biaya is None:
+        baris("biaya", "tidak diketahui")
+        print(
+            f"  Catatan: tarif '{settings.embed_model}' belum ada di "
+            "costs.PRICES_PER_MTOK dan endpoint tidak melaporkan biaya."
+        )
+        return
+    baris("biaya", f"${biaya:.10f} ({sumber})")
 
 
 async def jalankan() -> int:

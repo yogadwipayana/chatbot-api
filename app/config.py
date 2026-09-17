@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     """Kosong = endpoint resmi OpenAI. Isi untuk gateway atau penyedia lain."""
     api_key: SecretStr | None = None
     chat_model: str = "gpt-4o-mini"
+    llm_stream_usage: bool = True
+    """Minta jumlah token ikut dikirim saat menjawab secara streaming (FE-1).
+
+    langchain-openai hanya menyalakan ini sendiri untuk endpoint resmi OpenAI;
+    dengan `BASE_URL` terisi defaultnya mati, dan tanpa itu `usage_metadata`
+    kosong sehingga seluruh jawaban streaming kehilangan estimasi biaya AD-5.
+    Matikan hanya bila gateway menolak `stream_options` -- jawabannya tetap
+    utuh, yang hilang hanya angka biayanya."""
     embed_model: str = "text-embedding-3-large"
     """Harus menghasilkan 1024 dimensi, sama dengan kolom `chunks.embedding`
     (`app.db.models.EMBEDDING_DIM`). Mengganti model = re-index seluruh dokumen."""

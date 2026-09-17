@@ -325,6 +325,49 @@ class Stats(BaseModel):
     latency_p95_ms: int | None
 
 
+class CostByModel(BaseModel):
+    jenis: Literal["llm_chat", "embedding_chat", "embedding_ingestion"]
+    model: str
+    jumlah_panggilan: int
+    input_tokens: int
+    output_tokens: int
+    tokens: int
+    biaya_usd: float
+
+
+class DailyCost(BaseModel):
+    tanggal: date
+    jumlah_panggilan: int
+    llm_tokens: int
+    embed_tokens: int
+    biaya_llm_usd: float
+    biaya_embedding_usd: float
+    biaya_ingestion_usd: float
+    biaya_usd: float
+
+
+class Costs(BaseModel):
+    sejak: date
+    sampai: date
+    jumlah_panggilan_llm: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    biaya_usd: float
+    biaya_llm_usd: float
+    embed_chat_tokens: int
+    biaya_embed_chat_usd: float
+    jumlah_embed_chat: int
+    usage_log_tokens: int
+    biaya_usage_log_usd: float
+    jumlah_usage_log: int
+    llm_tanpa_biaya: int
+    embed_chat_tanpa_biaya: int
+    usage_log_tanpa_biaya: int
+    rincian_model: list[CostByModel]
+    biaya_harian: list[DailyCost]
+
+
 # --- FR-9 -------------------------------------------------------------------
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -64,7 +65,9 @@ async def chat(
         policy=policy_from(settings),
     )
     response = to_response(outcome)
-    response.message_id = await catat(chat_logger, payload, outcome, mulai, llm_call)
+    response.message_id = await catat(
+        chat_logger, payload, outcome, mulai, llm_call, retriever
+    )
     return response
 
 
@@ -85,17 +88,45 @@ async def chat_stream(
 
     async def event_stream() -> AsyncIterator[str]:
         yield sse("status", {"stage": "mencari dokumen"})
-        outcome = await run_pipeline(
-            payload.question,
-            retriever=retriever,
-            llm_call=llm_call,
-            history=[Turn(t.role, t.konten) for t in payload.history],
-            policy=policy_from(settings),
-        )
-        response = to_response(outcome)
-        response.message_id = await catat(chat_logger, payload, outcome, mulai, llm_call)
-        yield sse("message", response.model_dump(mode="json"))
-        yield sse("done", {})
+
+        # Pipeline berjalan sebagai task tersendiri dan menitipkan potongan
+        # jawaban lewat antrean; generator ini hanya meneruskannya. Alternatifnya
+        # adalah menjadikan `run_pipeline` generator, padahal `/api/chat` dan
+        # seluruh test pipeline memakainya sebagai fungsi biasa.
+        antrean: asyncio.Queue[tuple[str, dict] | None] = asyncio.Queue()
+
+        async def jalankan() -> ChatResponse:
+            try:
+                outcome = await run_pipeline(
+                    payload.question,
+                    retriever=retriever,
+                    llm_call=llm_call,
+                    history=[Turn(t.role, t.konten) for t in payload.history],
+                    policy=policy_from(settings),
+                    on_token=lambda teks: antrean.put(("token", {"text": teks})),
+                    on_stage=lambda stage: antrean.put(("status", {"stage": stage})),
+                )
+                response = to_response(outcome)
+                response.message_id = await catat(
+                    chat_logger, payload, outcome, mulai, llm_call, retriever
+                )
+                return response
+            finally:
+                # Penutup antrean, juga saat pipeline gagal: tanpa ini penerus di
+                # bawah menunggu potongan yang tidak akan pernah datang.
+                await antrean.put(None)
+
+        tugas = asyncio.create_task(jalankan())
+        try:
+            while (item := await antrean.get()) is not None:
+                yield sse(*item)
+            response = await tugas
+            yield sse("message", response.model_dump(mode="json"))
+            yield sse("done", {})
+        finally:
+            # Mahasiswa menutup panel di tengah jawaban: generator ditutup di
+            # `yield`, dan tanpa ini pipeline-nya berjalan terus sampai selesai.
+            tugas.cancel()
 
     return StreamingResponse(
         event_stream(), media_type="text/event-stream", headers=SSE_HEADERS
@@ -214,8 +245,10 @@ async def catat(
     outcome: PipelineOutcome,
     mulai: float,
     llm_call: Any,
+    retriever: Any = None,
 ) -> str | None:
     """Catat putaran ini (FR-8). None bila pencatatan gagal; jawaban tetap terkirim."""
+    embed = getattr(retriever, "embed_query", None)
     return await chat_logger.log(
         ChatLogEntry(
             session_id=payload.session_id,
@@ -224,6 +257,14 @@ async def catat(
             latency_ms=round((time.perf_counter() - mulai) * 1000),
             model=getattr(llm_call, "model", None),
             usage=getattr(llm_call, "usage", None),
+            # `getattr` berlapis, sama seperti `llm_call` di atas: test menyuntikkan
+            # retriever palsu tanpa alat ukur, dan pencatatan tidak boleh menuntut
+            # jenis retriever tertentu.
+            embed_dipanggil=bool(getattr(embed, "panggilan", 0)),
+            embed_model=getattr(embed, "model", None),
+            embed_tokens=getattr(embed, "tokens", None),
+            embed_biaya_usd=getattr(embed, "biaya_usd", None),
+            embed_biaya_sumber=getattr(embed, "biaya_sumber", None),
         )
     )
 

@@ -9,6 +9,34 @@ import pytest
 from app.rag.chain import OutcomeKind
 
 
+def events(response) -> list[tuple[str, dict]]:
+    """Urai aliran SSE menjadi daftar `(nama event, data)` sesuai urutannya."""
+    hasil: list[tuple[str, dict]] = []
+    for blok in response.text.split("\n\n"):
+        nama, data = "message", None
+        for baris in blok.splitlines():
+            if baris.startswith("event: "):
+                nama = baris.removeprefix("event: ")
+            elif baris.startswith("data: "):
+                data = json.loads(baris.removeprefix("data: "))
+        if data is not None:
+            hasil.append((nama, data))
+    return hasil
+
+
+def nama_event(response) -> list[str]:
+    return [nama for nama, _ in events(response)]
+
+
+def pesan_akhir(response) -> dict:
+    """Payload `ChatResponse` dari event `message`."""
+    return next(data for nama, data in events(response) if nama == "message")
+
+
+def potongan(response) -> list[str]:
+    return [data["text"] for nama, data in events(response) if nama == "token"]
+
+
 class TestJawabanNormal:
     def test_mengembalikan_200(self, client, payload):
         assert client.post("/api/chat", json=payload).status_code == 200
@@ -231,9 +259,7 @@ class TestStreaming:
         assert client.post("/api/chat/stream", json=payload).text.rstrip().endswith("{}")
 
     def test_payload_message_berisi_jawaban_dan_sitasi(self, client, payload):
-        teks = client.post("/api/chat/stream", json=payload).text
-        baris = [b for b in teks.splitlines() if b.startswith("data: ")]
-        pesan = json.loads(baris[1].removeprefix("data: "))
+        pesan = pesan_akhir(client.post("/api/chat/stream", json=payload))
         assert pesan["kind"] == OutcomeKind.ANSWER
         assert pesan["citations"]
 
@@ -242,6 +268,50 @@ class TestStreaming:
         r = client.post("/api/chat/stream", json=payload)
         assert r.headers["cache-control"] == "no-cache"
         assert r.headers["x-accel-buffering"] == "no"
+
+
+class TestPotonganJawaban:
+    """FE-1: jawaban tiba sepotong demi sepotong, bukan sekaligus di akhir.
+
+    Tanpa test ini `/api/chat/stream` bisa saja tetap memenuhi kontrak SSE --
+    `status`, `message`, `done` -- sambil menahan seluruh jawaban sampai
+    pipeline selesai, yang di layar mahasiswa tidak berbeda dari tanpa
+    streaming sama sekali.
+    """
+
+    def test_dikirim_lebih_dari_satu_potongan(self, client, payload):
+        assert len(potongan(client.post("/api/chat/stream", json=payload))) > 1
+
+    def test_potongan_dirangkai_menjadi_jawaban_yang_sama(self, client, payload):
+        r = client.post("/api/chat/stream", json=payload)
+        assert "".join(potongan(r)) == pesan_akhir(r)["text"]
+
+    def test_potongan_mendahului_message(self, client, payload):
+        nama = nama_event(client.post("/api/chat/stream", json=payload))
+        assert nama.index("token") < nama.index("message")
+
+    def test_status_berganti_sebelum_potongan_pertama(self, client, payload):
+        """Indikator FE-1 tidak boleh tertinggal di 'mencari dokumen' selama LLM
+        menyusun kalimat pertamanya."""
+        peristiwa = events(client.post("/api/chat/stream", json=payload))
+        tahap = [d["stage"] for n, d in peristiwa if n == "status"]
+        nama = [n for n, _ in peristiwa]
+        assert tahap == ["mencari dokumen", "menyusun jawaban"]
+        assert nama.index("status") < nama.index("token")
+
+    def test_penolakan_tidak_mengalirkan_potongan(
+        self, make_client, weak_documents, payload
+    ):
+        """FR-3 menolak tanpa memanggil LLM; tidak ada yang bisa dialirkan."""
+        r = make_client(weak_documents).post("/api/chat/stream", json=payload)
+        assert potongan(r) == []
+        assert pesan_akhir(r)["kind"] == OutcomeKind.REFUSAL
+
+    def test_jawaban_utuh_tetap_dicatat_sekali(self, client, payload, chat_logger):
+        """FR-8 mencatat jawaban, bukan potongan terakhirnya."""
+        r = client.post("/api/chat/stream", json=payload)
+        assert len(chat_logger.entries) == 1
+        assert chat_logger.entries[0].outcome.text == pesan_akhir(r)["text"]
 
 
 class TestPertanyaanKosongSetelahSanitasi:
@@ -279,9 +349,7 @@ class TestPencatatan:
         assert chat_logger.entries[0].outcome.kind == OutcomeKind.REFUSAL
 
     def test_streaming_juga_dicatat(self, client, payload, chat_logger):
-        teks = client.post("/api/chat/stream", json=payload).text
-        baris = [b for b in teks.splitlines() if b.startswith("data: ")]
-        pesan = json.loads(baris[1].removeprefix("data: "))
+        pesan = pesan_akhir(client.post("/api/chat/stream", json=payload))
         assert pesan["message_id"] == chat_logger.message_id
         assert len(chat_logger.entries) == 1
 

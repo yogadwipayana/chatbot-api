@@ -303,3 +303,75 @@ class RuntimeConfigEntry(Base):
     )
     updated_by: Mapped[str | None] = mapped_column(String(255))
     """Email admin yang mengubah, untuk jejak audit di halaman Konfigurasi."""
+
+
+class OperasiPemakaian(StrEnum):
+    """Apa yang memicu satu panggilan embedding di luar percakapan mahasiswa."""
+
+    INGEST = "ingest"
+    """Dokumen atau entri tanya jawab baru diindeks untuk pertama kalinya."""
+    REINDEX = "reindex"
+    """Entri tanya jawab yang disunting: chunk lama dibuang, embedding dihitung
+    ulang. Menyunting entri yang sama berulang kali membayar penuh setiap kali,
+    dan sebelum tabel ini hal itu sama sekali tidak meninggalkan jejak."""
+
+
+class UsageLog(Base):
+    """Buku biaya panggilan model yang tidak punya baris pesan untuk ditumpangi.
+
+    Biaya chat menumpang `messages.meta`, tetapi embedding saat ingestion terjadi
+    ketika tidak ada mahasiswa yang bertanya sama sekali -- tidak ada baris yang
+    bisa dititipi. Tanpa tabel ini, halaman Biaya AD-5 diam-diam hanya melaporkan
+    sebagian dari yang benar-benar dibelanjakan.
+
+    Sengaja append-only: tidak ada jalur yang memperbarui atau menghapus barisnya.
+    Buku biaya yang bisa berubah surut tidak dapat dipakai menjawab "bulan lalu
+    habis berapa".
+    """
+
+    __tablename__ = "usage_log"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    operasi: Mapped[str] = mapped_column(String(20), nullable=False)
+    """Nilai `OperasiPemakaian`."""
+    model: Mapped[str] = mapped_column(String(200), nullable=False)
+    """Model yang DIMINTA, sama seperti `EMBED_MODEL` -- kunci yang cocok dengan
+    `costs.PRICES_PER_MTOK`."""
+    model_dilaporkan: Mapped[str | None] = mapped_column(String(200))
+    """Nama menurut respons penyedia, diisi hanya bila berbeda dari `model`."""
+    tokens: Mapped[int | None] = mapped_column(Integer)
+    """NULL bila endpoint tidak melaporkan pemakaian -- bukan berarti nol token."""
+    biaya_usd: Mapped[float | None] = mapped_column()
+    """Disimpan tanpa pembulatan. Satu batch embedding bisa berharga $0,000002;
+    membulatkannya per baris membuat totalnya nol. Lihat
+    `costs.estimate_input_cost`."""
+    biaya_sumber: Mapped[str | None] = mapped_column(String(20))
+    """`provider` (angka penyedia) atau `estimasi` (hitungan kita). Tanpa penanda
+    ini, dua angka berdasar berbeda dalam satu kolom tidak dapat ditafsirkan."""
+    is_byok: Mapped[bool | None] = mapped_column(Boolean)
+    document_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("documents.id", ondelete="SET NULL")
+    )
+    """SET NULL, bukan CASCADE -- alasan yang sama dengan `unanswered.message_id`:
+    menghapus dokumen tidak boleh mengubah laporan biaya bulan yang sudah lewat."""
+    keterangan: Mapped[str | None] = mapped_column(String(500))
+    """Judul dokumen pada saat panggilan terjadi, supaya barisnya tetap terbaca
+    setelah `document_id` menjadi NULL."""
+
+    __table_args__ = (
+        CheckConstraint("operasi IN ('ingest', 'reindex')", name="ck_usage_log_operasi"),
+        CheckConstraint(
+            "biaya_sumber IS NULL OR biaya_sumber IN ('provider', 'estimasi')",
+            name="ck_usage_log_biaya_sumber_nilai",
+        ),
+        # Angka biaya tanpa asal-usul tidak dapat ditafsirkan, dan asal-usul tanpa
+        # angka tidak ada artinya. Keduanya ada, atau keduanya tidak ada.
+        CheckConstraint(
+            "(biaya_usd IS NULL) = (biaya_sumber IS NULL)",
+            name="ck_usage_log_biaya_lengkap",
+        ),
+        Index("ix_usage_log_created_at", "created_at"),
+    )

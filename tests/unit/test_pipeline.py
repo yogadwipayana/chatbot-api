@@ -317,3 +317,79 @@ class TestValidasiInput:
             policy=POLICY,
         )
         assert hasil.kind is OutcomeKind.ANSWER
+
+
+def pencatat(kotak: list[str]):
+    """Callback async yang menumpuk apa pun yang diterimanya."""
+
+    async def catat(nilai: str) -> None:
+        kotak.append(nilai)
+
+    return catat
+
+
+class TestPotonganJawaban:
+    """FE-1: jawaban boleh dialirkan sepotong demi sepotong, tanpa mengubah hasil.
+
+    Potongan hanya jalan keluar tambahan; `PipelineOutcome` tetap memuat jawaban
+    utuh, karena sitasi FE-2 dan pencatatan FR-8 dibaca dari sana.
+    """
+
+    async def test_potongan_diteruskan_saat_diminta(self, strong_retriever, llm):
+        potongan: list[str] = []
+        hasil = await run_pipeline(
+            "kapan KRS",
+            retriever=strong_retriever,
+            llm_call=llm,
+            policy=POLICY,
+            on_token=pencatat(potongan),
+        )
+        assert len(potongan) > 1
+        assert "".join(potongan) == hasil.text
+
+    async def test_tanpa_on_token_jawabannya_sama(self, strong_retriever, llm):
+        hasil = await run_pipeline(
+            "kapan KRS", retriever=strong_retriever, llm_call=llm, policy=POLICY
+        )
+        assert hasil.text == llm.reply
+
+    async def test_llm_tanpa_metode_stream_tetap_dilayani(self, strong_retriever):
+        """Pengganti LLM yang hanya callable -- jangan menuntut metode `stream`."""
+
+        async def polos(pertanyaan, dokumen):
+            return "Jawaban [Panduan Akademik 2025, hal. 12]."
+
+        potongan: list[str] = []
+        hasil = await run_pipeline(
+            "kapan KRS",
+            retriever=strong_retriever,
+            llm_call=polos,
+            policy=POLICY,
+            on_token=pencatat(potongan),
+        )
+        assert potongan == []
+        assert hasil.kind is OutcomeKind.ANSWER
+
+    async def test_tahap_menyusun_jawaban_dilaporkan(self, strong_retriever, llm):
+        tahap: list[str] = []
+        await run_pipeline(
+            "kapan KRS",
+            retriever=strong_retriever,
+            llm_call=llm,
+            policy=POLICY,
+            on_stage=pencatat(tahap),
+        )
+        assert tahap == ["menyusun jawaban"]
+
+    async def test_penolakan_tidak_melaporkan_tahap_menyusun(self, weak_retriever, llm):
+        """FR-3 menolak sebelum LLM; tidak ada yang sedang disusun."""
+        tahap: list[str] = []
+        hasil = await run_pipeline(
+            "kapan KRS",
+            retriever=weak_retriever,
+            llm_call=llm,
+            policy=POLICY,
+            on_stage=pencatat(tahap),
+        )
+        assert hasil.kind is OutcomeKind.REFUSAL
+        assert tahap == []

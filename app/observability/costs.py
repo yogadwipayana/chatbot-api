@@ -67,3 +67,55 @@ def _hitung(harga: tuple[float, float], input_tokens: int, output_tokens: int) -
     price_in, price_out = harga
     usd = (input_tokens / 1_000_000) * price_in + (output_tokens / 1_000_000) * price_out
     return CostEstimate(input_tokens, output_tokens, round(usd, 6))
+
+
+SUMBER_PROVIDER = "provider"
+"""`biaya_usd` berasal dari `usage.cost` yang dilaporkan penyedia -- angka
+penyedia sendiri, bukan hitungan kita."""
+
+SUMBER_ESTIMASI = "estimasi"
+"""`biaya_usd` dihitung dari `PRICES_PER_MTOK`. Ikut salah bila tarifnya usang."""
+
+
+def estimate_input_cost(model: str, input_tokens: int) -> float | None:
+    """Biaya sisi input saja, TANPA pembulatan. None bila tarifnya belum terdaftar.
+
+    Dua-duanya disengaja. Embedding tidak punya token keluaran, jadi sisi output
+    `estimate_cost` selalu nol dan hanya menambah kebisingan. Dan pembulatan
+    `round(usd, 6)` di `_hitung` mematikan angkanya: embedding satu pertanyaan
+    hanya sembilan token, yang pada tarif `text-embedding-3-small` berharga
+    $0,00000018 -- membulat menjadi nol bulat. Ribuan pertanyaan yang seluruhnya
+    berbiaya nol bukan laporan biaya. Pembulatan baru boleh terjadi setelah
+    angka-angka ini dijumlahkan, di `app/admin/stats.py`.
+    """
+    harga = price_for(model)
+    if harga is None:
+        return None
+    if input_tokens < 0:
+        raise ValueError("jumlah token tidak boleh negatif")
+    return (input_tokens / 1_000_000) * harga[0]
+
+
+def biaya_embedding(
+    model: str, tokens: int | None, biaya_provider: float | None
+) -> tuple[float | None, str | None]:
+    """Tentukan biaya satu panggilan embedding beserta asal angkanya.
+
+    Biaya yang dilaporkan penyedia selalu menang: ia sudah memperhitungkan
+    tarif yang berlaku saat itu, sedangkan `PRICES_PER_MTOK` adalah salinan
+    yang bisa tertinggal. Taksiran lokal hanya dipakai untuk endpoint yang tidak
+    melaporkan biaya -- `cost` bukan bagian spesifikasi OpenAI.
+
+    Return: `(biaya, sumber)`, keduanya None bila tidak dapat ditentukan.
+    Asalnya ikut dikembalikan supaya tersimpan bersama angkanya; dua angka dengan
+    dasar berbeda dalam satu kolom, tanpa penanda, tidak dapat ditafsirkan lagi
+    di kemudian hari.
+    """
+    if biaya_provider is not None:
+        return biaya_provider, SUMBER_PROVIDER
+    if tokens is None:
+        return None, None
+    taksiran = estimate_input_cost(model, tokens)
+    if taksiran is None:
+        return None, None
+    return taksiran, SUMBER_ESTIMASI

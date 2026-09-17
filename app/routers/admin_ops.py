@@ -8,7 +8,7 @@ from datetime import date, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.admin.permissions import AdminRole
-from app.admin.stats import compute_stats, today
+from app.admin.stats import compute_costs, compute_stats, today
 from app.deps import (
     BaseSettingsDep,
     CurrentAdminDep,
@@ -17,7 +17,7 @@ from app.deps import (
     require_admin,
     require_role,
 )
-from app.schemas.admin import KillSwitchRequest, KillSwitchState, Stats
+from app.schemas.admin import Costs, KillSwitchRequest, KillSwitchState, Stats
 from app.schemas.common import Error
 
 audit = logging.getLogger("app.audit")
@@ -61,6 +61,34 @@ async def admin_stats(
     return Stats(
         **await compute_stats(session, sejak=sejak, sampai=sampai, timezone=settings.timezone)
     )
+
+
+@router.get(
+    "/costs",
+    response_model=Costs,
+    dependencies=[Depends(require_role(AdminRole.ADMIN))],
+    responses={403: {"model": Error}},
+)
+async def admin_costs(
+    session: SessionDep,
+    settings: BaseSettingsDep,
+    sejak: date | None = None,
+    sampai: date | None = None,
+) -> Costs:
+    """Rincian token dan estimasi biaya dari `messages.meta`."""
+    sampai = sampai or await today(session, settings.timezone)
+    sejak = sejak or sampai - timedelta(days=RENTANG_DEFAULT_HARI - 1)
+    if sejak > sampai:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "Tanggal awal tidak boleh setelah tanggal akhir.",
+        )
+    if (sampai - sejak).days >= RENTANG_MAKS_HARI:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"Rentang tanggal paling panjang {RENTANG_MAKS_HARI} hari.",
+        )
+    return Costs(**await compute_costs(session, sejak=sejak, sampai=sampai, timezone=settings.timezone))
 
 
 @router.get("/kill-switch", response_model=KillSwitchState)

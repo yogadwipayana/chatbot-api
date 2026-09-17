@@ -80,6 +80,8 @@ async def run_pipeline(
     history: list[Turn] | None = None,
     rewrite_call: Callable[[str, str], Awaitable[str]] | None = None,
     policy: ThresholdPolicy | None = None,
+    on_token: Callable[[str], Awaitable[None]] | None = None,
+    on_stage: Callable[[str], Awaitable[None]] | None = None,
 ) -> PipelineOutcome:
     """Jalankan satu putaran tanya-jawab.
 
@@ -90,6 +92,11 @@ async def run_pipeline(
         history: riwayat percakapan; kosong berarti pesan pertama (FR-4).
         rewrite_call: (pertanyaan, riwayat_terformat) -> pertanyaan mandiri.
         policy: ambang penolakan FR-3.
+        on_token: dipanggil untuk setiap potongan jawaban LLM (FE-1). Tanpa ini
+            jawaban tetap dirakit utuh dulu, seperti `/api/chat`.
+        on_stage: dipanggil saat tahap yang terlihat mahasiswa berganti, supaya
+            indikator FE-1 tidak tertinggal di "mencari dokumen" sepanjang LLM
+            menyusun kalimat pertamanya.
 
     `llm_call` dan `rewrite_call` disuntikkan agar test dapat membuktikan
     kapan LLM dipanggil dan kapan tidak, tanpa memanggil API sungguhan.
@@ -157,8 +164,11 @@ async def run_pipeline(
     # FR-6
     assessment = risk_module.detect(clean)
 
+    if on_stage is not None:
+        await on_stage("menyusun jawaban")
+
     # FR-5
-    answer = await llm_call(wrap_user_input(clean), documents)
+    answer = await _jawab(llm_call, wrap_user_input(clean), documents, on_token)
 
     return PipelineOutcome(
         kind=OutcomeKind.ANSWER,
@@ -171,6 +181,33 @@ async def run_pipeline(
         llm_called=True,
         contacts=assessment.contacts,
     )
+
+
+async def _jawab(
+    llm_call: Any,
+    wrapped_question: str,
+    documents: Sequence[Any],
+    on_token: Callable[[str], Awaitable[None]] | None,
+) -> str:
+    """Panggil LLM, alirkan potongannya bila pemanggil memintanya.
+
+    Teks yang dikembalikan tetap jawaban utuh, bukan sisa potongan: sitasi
+    (FE-2), penanda `[Judul, hal. N]`, dan baris log FR-8 semuanya dibaca dari
+    satu nilai yang sama, entah jawabannya dialirkan atau tidak.
+
+    `llm_call` tanpa metode `stream` dilayani lewat jalur biasa. Test menyuntik
+    callable polos, dan tidak ada gunanya memaksa setiap pengganti LLM ikut
+    menyediakan versi streaming hanya agar pipeline-nya berjalan.
+    """
+    stream = getattr(llm_call, "stream", None)
+    if on_token is None or stream is None:
+        return await llm_call(wrapped_question, documents)
+
+    bagian: list[str] = []
+    async for potongan in stream(wrapped_question, documents):
+        bagian.append(potongan)
+        await on_token(potongan)
+    return "".join(bagian)
 
 
 def _hits_from_documents(documents: Sequence[Any]):

@@ -85,6 +85,17 @@ class RecordingLLM:
         self.calls.append((wrapped_question, tuple(documents)))
         return self.reply
 
+    async def stream(self, wrapped_question: str, documents):
+        """Jalur streaming FE-1: jawaban yang sama, tiba sepotong demi sepotong.
+
+        Sengaja dipecah per kata. Pengganti yang mengembalikan jawaban utuh
+        dalam satu potongan tetap membuat test lulus padahal mahasiswa melihat
+        jawabannya muncul sekaligus -- justru keluhan yang memicu fitur ini.
+        """
+        self.calls.append((wrapped_question, tuple(documents)))
+        for indeks, kata in enumerate(self.reply.split(" ")):
+            yield kata if indeks == 0 else f" {kata}"
+
     @property
     def called(self) -> bool:
         return bool(self.calls)
