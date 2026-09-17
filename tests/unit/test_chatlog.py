@@ -5,13 +5,20 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
-from app.observability.chatlog import ChatLogEntry, build_meta, retrieved_chunk_ids
+from app.observability.chatlog import (
+    _PESAN_SQL,
+    ChatLogEntry,
+    build_meta,
+    retrieved_chunk_ids,
+)
 from app.observability.costs import estimate_cost
 from app.rag.chain import OutcomeKind, PipelineOutcome, run_pipeline
 from tests.fixtures.fakes import make_document
 
 USAGE = {"input_tokens": 1000, "output_tokens": 200}
+CHAT_MODEL = "cx/gpt-5.5"
 
 
 def entri(outcome: PipelineOutcome, **kw) -> ChatLogEntry:
@@ -25,13 +32,13 @@ class TestMeta:
         outcome = await run_pipeline(
             "kapan deadline pembayaran UKT?", retriever=strong_retriever, llm_call=llm
         )
-        meta = build_meta(entri(outcome, model="gpt-4o-mini", usage=USAGE))
+        meta = build_meta(entri(outcome, model=CHAT_MODEL, usage=USAGE))
         assert meta["kind"] == "answer"
         assert meta["llm_dipanggil"] is True
         assert {"deadline", "pembayaran"} <= set(meta["topik"])
         assert meta["escalated"] is True
-        assert meta["model"] == "gpt-4o-mini"
-        assert meta["biaya_usd"] == pytest.approx(estimate_cost("gpt-4o-mini", 1000, 200).usd)
+        assert meta["model"] == CHAT_MODEL
+        assert meta["biaya_usd"] == pytest.approx(estimate_cost(CHAT_MODEL, 1000, 200).usd)
 
     async def test_model_tanpa_tarif_biayanya_none_bukan_nol(self, strong_retriever, llm):
         """AD-5 menghitung pesan seperti ini sebagai peringatan."""
@@ -42,11 +49,11 @@ class TestMeta:
 
     async def test_tanpa_data_token_biayanya_none(self, strong_retriever, llm):
         outcome = await run_pipeline("kapan KRS?", retriever=strong_retriever, llm_call=llm)
-        assert build_meta(entri(outcome, model="gpt-4o-mini"))["biaya_usd"] is None
+        assert build_meta(entri(outcome, model=CHAT_MODEL))["biaya_usd"] is None
 
     async def test_penolakan_tidak_berbiaya_dan_tanpa_model(self, weak_retriever, llm):
         outcome = await run_pipeline("kapan KRS?", retriever=weak_retriever, llm_call=llm)
-        meta = build_meta(entri(outcome, model="gpt-4o-mini", usage=USAGE))
+        meta = build_meta(entri(outcome, model=CHAT_MODEL, usage=USAGE))
         assert meta["kind"] == "refusal"
         assert meta["llm_dipanggil"] is False
         assert meta["model"] is None
@@ -65,7 +72,7 @@ class TestMeta:
 class TestSapaan:
     async def test_tanpa_model_dan_tanpa_biaya(self, strong_retriever, llm):
         outcome = await run_pipeline("halo", retriever=strong_retriever, llm_call=llm)
-        meta = build_meta(entri(outcome, model="gpt-4o-mini", usage=USAGE))
+        meta = build_meta(entri(outcome, model=CHAT_MODEL, usage=USAGE))
         assert meta["kind"] == OutcomeKind.SMALLTALK
         assert meta["llm_dipanggil"] is False
         assert meta["biaya_usd"] is None
@@ -172,3 +179,9 @@ class TestChunkIds:
             documents=(make_document(str(a)), make_document(str(b))),
         )
         assert retrieved_chunk_ids(outcome) == [a, b]
+
+
+def test_insert_message_menyimpan_langsmith_run_id():
+    sql = str(_PESAN_SQL.compile(dialect=postgresql.dialect()))
+    assert "langsmith_run_id" in sql
+    assert "%(langsmith_run_id)s" in sql

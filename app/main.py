@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -25,11 +26,17 @@ from app.routers import (
 from app.security.killswitch import KillSwitch, get_kill_switch
 from app.security.sanitize import InvalidQuestion
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    app.state.tracing_enabled = configure_tracing(settings)
+    aktif = configure_tracing(settings)
+    # Dicatat saat start, bukan hanya dibaca lewat /health: tracing yang mati
+    # tidak menimbulkan galat apa pun, dan tanpa satu baris di log start tidak
+    # ada momen lain yang memaksa siapa pun menyadarinya (FR-8).
+    logger.info("Tracing LangSmith %s", "aktif" if aktif else "mati")
     apply_initial_kill_switch(settings, get_kill_switch())
     yield
 

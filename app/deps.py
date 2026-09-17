@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.admin.permissions import ROLE_LABELS, AdminRole, CurrentAdmin
 from app.config import Settings, get_settings
 from app.db.session import get_session
+from app.observability.tracing import id_run, konfigurasi_run
 from app.security.auth import decode_access_token
 from app.security.killswitch import KillSwitch, get_kill_switch
 from app.security.ratelimit import FailureLimiter, get_login_limiter
@@ -214,6 +215,17 @@ class LLMCall:
         self.settings = settings
         self.model = settings.chat_model
         self.usage: dict[str, Any] | None = None
+        self.run_id: str | None = None
+        self.session_id: str | None = None
+        """Diisi router lewat `tandai_sesi` supaya run ini ikut terkelompok ke
+        thread percakapannya di LangSmith."""
+
+    def _config(self) -> dict[str, Any]:
+        run_id = id_run()
+        self.run_id = str(run_id)
+        return konfigurasi_run(
+            "generate_answer", run_id=run_id, session_id=self.session_id
+        )
 
     async def __call__(self, wrapped_question: str, documents) -> str:
         from app.rag.prompts import answer_prompt, format_context
@@ -221,7 +233,8 @@ class LLMCall:
 
         chain = answer_prompt() | build_llm(self.settings, streaming=False)
         result = await chain.ainvoke(
-            {"context": format_context(documents), "question": wrapped_question}
+            {"context": format_context(documents), "question": wrapped_question},
+            config=self._config(),
         )
         self.usage = getattr(result, "usage_metadata", None)
         return result.content
@@ -240,7 +253,8 @@ class LLMCall:
         chain = answer_prompt() | build_llm(self.settings, streaming=True)
         utuh: Any = None
         async for potongan in chain.astream(
-            {"context": format_context(documents), "question": wrapped_question}
+            {"context": format_context(documents), "question": wrapped_question},
+            config=self._config(),
         ):
             utuh = potongan if utuh is None else utuh + potongan
             teks = str(potongan.text)
@@ -257,6 +271,35 @@ def build_llm_call(settings: SettingsDep) -> Any:
     penolakan (FR-3) dan pertanyaan sensitif (FR-7).
     """
     return LLMCall(settings)
+
+
+class RewriteCall:
+    """Tulis pertanyaan lanjutan menjadi query mandiri untuk retrieval (FR-4)."""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.run_id: str | None = None
+        self.session_id: str | None = None
+
+    async def __call__(self, question: str, history: str) -> str:
+        from app.rag.prompts import rewrite_prompt
+        from app.rag.providers import build_llm
+
+        run_id = id_run()
+        self.run_id = str(run_id)
+        chain = rewrite_prompt() | build_llm(self.settings, streaming=False)
+        result = await chain.ainvoke(
+            {"question": question, "history": history},
+            config=konfigurasi_run(
+                "rewrite_query", run_id=run_id, session_id=self.session_id
+            ),
+        )
+        return str(result.content)
+
+
+def build_rewrite_call(settings: SettingsDep) -> Any:
+    """Dependency terpisah agar rewrite produksi dapat diganti tanpa jaringan di test."""
+    return RewriteCall(settings)
 
 
 def get_embeddings(settings: SettingsDep) -> Any:

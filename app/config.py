@@ -141,6 +141,17 @@ class Settings(BaseSettings):
     langsmith_api_key: SecretStr | None = None
     langsmith_project: str = "chatbot-administrasi"
 
+    langsmith_endpoint: str | None = None
+    """Alamat API LangSmith. Kosong berarti memakai bawaan SDK
+    (`https://api.smith.langchain.com`).
+
+    Wajib diisi untuk region Eropa (`https://eu.api.smith.langchain.com`) atau
+    instans self-hosted. Field ini harus ada meski nilainya jarang diubah:
+    `extra="ignore"` membuat LANGSMITH_ENDPOINT di .env dibuang diam-diam bila
+    tidak dideklarasikan, dan `configure_tracing` tidak akan pernah
+    meneruskannya ke SDK -- trace mendarat di region yang salah tanpa satu pun
+    pesan galat."""
+
     # --- Keamanan (FR-9) ---------------------------------------------
     admin_jwt_secret: SecretStr = SecretStr(PLACEHOLDER_JWT_SECRET)
     admin_token_ttl_minutes: int = 480

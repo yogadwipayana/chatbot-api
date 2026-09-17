@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.routers import health
+
 
 class TestHealth:
     def test_200_saat_normal(self, client):
@@ -27,3 +29,13 @@ class TestHealth:
 
     def test_alasan_kosong_saat_normal(self, client):
         assert client.get("/health").json()["kill_switch_reason"] is None
+
+    def test_melaporkan_tracing_mati(self, client):
+        """Tracing mati tidak menjatuhkan permintaan apa pun, jadi ia tidak pernah
+        muncul sebagai insiden. Satu-satunya cara operator menyadarinya adalah
+        bila status itu ikut dilaporkan (FR-8)."""
+        assert client.get("/health").json()["tracing_enabled"] is False
+
+    def test_melaporkan_tracing_aktif(self, client, monkeypatch):
+        monkeypatch.setattr(health, "sedang_menjejak", lambda: True)
+        assert client.get("/health").json()["tracing_enabled"] is True

@@ -23,6 +23,7 @@ from app.deps import (
     require_admin,
     require_role,
 )
+from app.observability.tracing import akhiri_jejak, id_giliran, jejak_giliran
 from app.rag.chain import run_pipeline
 from app.rag.threshold import ThresholdPolicy
 from app.routers.chat import to_response
@@ -149,9 +150,14 @@ async def admin_test_query(
     )
 
     mulai = time.perf_counter()
-    outcome = await run_pipeline(
-        payload.question, retriever=retriever, llm_call=llm_call, policy=policy
-    )
+    run_id = id_giliran()
+    async with jejak_giliran(
+        run_id=run_id, pertanyaan=payload.question, nama="uji_coba_admin"
+    ) as akar:
+        outcome = await run_pipeline(
+            payload.question, retriever=retriever, llm_call=llm_call, policy=policy
+        )
+        akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
     latency_ms = round((time.perf_counter() - mulai) * 1000)
 
     respons = to_response(outcome)
@@ -194,4 +200,5 @@ async def admin_test_query(
         contacts=respons.contacts,
         escalated=respons.escalated,
         latency_ms=latency_ms,
+        langsmith_run_id=run_id,
     )

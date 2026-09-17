@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.deps import KillSwitchDep
+from app.observability.tracing import sedang_menjejak
 from app.schemas.common import HealthResponse
 
 router = APIRouter(tags=["sistem"])
@@ -22,4 +23,5 @@ async def health(switch: KillSwitchDep) -> HealthResponse:
         status="ok",
         chat_enabled=not switch.engaged,
         kill_switch_reason=switch.reason,
+        tracing_enabled=sedang_menjejak(),
     )

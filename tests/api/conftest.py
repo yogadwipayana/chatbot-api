@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.deps import (
     build_llm_call,
     build_retriever,
+    build_rewrite_call,
     get_account_store,
     get_chat_logger,
     get_embeddings,
@@ -37,6 +38,7 @@ from tests.fixtures.fakes import (
     FakeRetriever,
     FakeRuntimeConfigStore,
     RecordingLLM,
+    RecordingRewriter,
 )
 
 SANDI = "kata-sandi-admin-yang-panjang"
@@ -62,6 +64,11 @@ def kill_switch() -> KillSwitch:
 @pytest.fixture
 def api_llm() -> RecordingLLM:
     return RecordingLLM()
+
+
+@pytest.fixture
+def api_rewriter() -> RecordingRewriter:
+    return RecordingRewriter()
 
 
 @pytest.fixture
@@ -92,13 +99,22 @@ def accounts() -> FakeAccountStore:
 
 
 @pytest.fixture
-def make_client(kill_switch, api_llm, chat_logger, login_limiter, accounts, runtime_config):
+def make_client(
+    kill_switch,
+    api_llm,
+    api_rewriter,
+    chat_logger,
+    login_limiter,
+    accounts,
+    runtime_config,
+):
     """Bangun TestClient dengan retriever yang hasilnya ditentukan test."""
 
     def factory(documents, *, session=None) -> TestClient:
         app = create_app()
         app.dependency_overrides[build_retriever] = lambda: FakeRetriever(documents)
         app.dependency_overrides[build_llm_call] = lambda: api_llm
+        app.dependency_overrides[build_rewrite_call] = lambda: api_rewriter
         app.dependency_overrides[get_kill_switch] = lambda: kill_switch
         app.dependency_overrides[get_session] = lambda: session
         app.dependency_overrides[get_chat_logger] = lambda: chat_logger

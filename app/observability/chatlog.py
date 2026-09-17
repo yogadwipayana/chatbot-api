@@ -44,6 +44,10 @@ class ChatLogEntry:
     model: str | None = None
     usage: dict[str, Any] | None = None
     """`usage_metadata` LangChain: `input_tokens`, `output_tokens`."""
+    langsmith_run_id: str | None = None
+    """Akar trace giliran ini: penulisan ulang query, retrieval, dan penyusunan
+    jawaban berada di bawahnya. None saat tracing mati -- tidak ada trace yang
+    dikirim, jadi tidak ada yang bisa dirujuk."""
     embed_dipanggil: bool = False
     """False untuk FR-7 dan smalltalk: keduanya berhenti sebelum retrieval,
     sehingga pertanyaannya tidak pernah di-embed sama sekali."""
@@ -123,10 +127,10 @@ _PESAN_SQL = text(
     """
     INSERT INTO messages
         (id, conversation_id, role, konten, retrieved_chunk_ids, top_score,
-         latency_ms, meta, created_at)
+         latency_ms, langsmith_run_id, meta, created_at)
     VALUES
         (:id, :conversation_id, :role, :konten, CAST(:chunk_ids AS uuid[]), :top_score,
-         :latency_ms, CAST(:meta AS jsonb), clock_timestamp())
+         :latency_ms, :langsmith_run_id, CAST(:meta AS jsonb), clock_timestamp())
     """
 )
 
@@ -172,6 +176,7 @@ class ChatLogger:
                     "chunk_ids": None,
                     "top_score": None,
                     "latency_ms": None,
+                    "langsmith_run_id": None,
                     "meta": None,
                 },
             )
@@ -188,6 +193,7 @@ class ChatLogger:
                     "chunk_ids": retrieved_chunk_ids(outcome),
                     "top_score": top_score,
                     "latency_ms": entry.latency_ms,
+                    "langsmith_run_id": entry.langsmith_run_id,
                     "meta": json.dumps(build_meta(entry), ensure_ascii=False),
                 },
             )

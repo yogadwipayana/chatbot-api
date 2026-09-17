@@ -47,6 +47,29 @@ Chat dan embedding memakai satu endpoint OpenAI-compatible:
 - Model chat baru perlu tarifnya di `app/observability/costs.py` agar estimasi
   biaya (AD-5) berjalan.
 
+## Tracing LangSmith (FR-8)
+
+Menyala bila `LANGSMITH_TRACING=true` **dan** `LANGSMITH_API_KEY` terisi. Status
+sebenarnya dilaporkan `GET /health` (`tracing_enabled`) dan satu baris log saat
+proses start -- tracing yang mati tidak menjatuhkan permintaan apa pun, jadi
+tanpa dua tanda itu ia baru ketahuan saat ada jawaban buruk yang jejaknya
+ternyata tidak pernah dikirim.
+
+- **Satu giliran tanya-jawab = satu trace.** Penulisan ulang query (FR-4),
+  retrieval (FR-2), dan penyusunan jawaban (FR-5) menjadi child run di bawah
+  satu akar. `messages.langsmith_run_id` menyimpan ID akar itu, bukan ID
+  panggilan LLM di dalamnya.
+- **Kolom itu `NULL` saat tracing mati**, dan memang harus begitu: ID yang
+  dicatat tanpa trace yang terkirim hanya menghasilkan tautan buntu di AD-4.
+- **`session_id` ikut di setiap run**, bukan hanya di akar, supaya trace satu
+  percakapan dapat dikelompokkan sebagai thread dan biayanya dijumlahkan.
+- **`LANGSMITH_ENDPOINT`** hanya perlu diisi untuk region Eropa atau instans
+  self-hosted.
+- Variabel `LANGCHAIN_TRACING` / `LANGCHAIN_TRACING_V2` yang tertinggal di
+  environment sengaja **dihapus** saat start: langsmith membacanya lebih dulu
+  daripada `LANGSMITH_TRACING`, sehingga sisa variabel dari proyek lain bisa
+  menyalakan tracing yang sudah dimatikan, atau sebaliknya.
+
 ## Penyimpanan dokumen PDF
 
 Dua backend, dipilih lewat `STORAGE_BACKEND`:
@@ -366,6 +389,5 @@ Beberapa hal yang tidak terlihat dari kontrak:
 ## Belum diimplementasikan
 
 Rate limiter untuk endpoint chat (login admin sudah dibatasi), saran pertanyaan
-(FE-6, menunggu hasil survei), chain penulisan ulang query yang benar-benar
-memanggil LLM (fungsi pembantunya sudah ada dan teruji), dan `langsmith_run_id`
-pada log percakapan.
+(FE-6, menunggu hasil survei), dan chain penulisan ulang query yang benar-benar
+memanggil LLM (fungsi pembantunya sudah ada dan teruji).

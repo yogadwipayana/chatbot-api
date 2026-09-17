@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from uuid import UUID
 
 import pytest
 
+from app.observability import tracing
 from app.rag.chain import OutcomeKind
 
 
@@ -65,6 +67,36 @@ class TestJawabanNormal:
     def test_top_score_dilaporkan(self, client, payload):
         """Dipakai AD-6 untuk menunjukkan chunk terambil beserta skornya."""
         assert client.post("/api/chat", json=payload).json()["top_score"] is not None
+
+
+class TestQueryRewriting:
+    def test_dilewati_tanpa_riwayat(self, client, payload, api_rewriter):
+        client.post("/api/chat", json=payload)
+        assert api_rewriter.calls == []
+
+    @pytest.mark.parametrize("path", ["/api/chat", "/api/chat/stream"])
+    def test_riwayat_memicu_rewrite_produksi(
+        self, client, payload, api_rewriter, chat_logger, path
+    ):
+        r = client.post(
+            path,
+            json={
+                **payload,
+                "question": "kalau telat gimana?",
+                "history": [
+                    {"role": "user", "konten": "Kapan KRS dibuka?"},
+                    {"role": "assistant", "konten": "Tanggal 1-7 Agustus."},
+                ],
+            },
+        )
+        assert r.status_code == 200
+        assert api_rewriter.calls == [
+            (
+                "kalau telat gimana?",
+                "user: Kapan KRS dibuka?\nassistant: Tanggal 1-7 Agustus.",
+            )
+        ]
+        assert chat_logger.entries[0].outcome.rewritten_query == api_rewriter.rewritten
 
 
 class TestSitasiHanyaYangDikutip:
@@ -352,6 +384,56 @@ class TestPencatatan:
         pesan = pesan_akhir(client.post("/api/chat/stream", json=payload))
         assert pesan["message_id"] == chat_logger.message_id
         assert len(chat_logger.entries) == 1
+
+    @pytest.mark.parametrize("path", ["/api/chat", "/api/chat/stream"])
+    def test_run_id_tidak_dicatat_saat_tracing_mati(
+        self, client, payload, chat_logger, path
+    ):
+        """Tracing mati berarti tidak ada trace yang dikirim ke LangSmith.
+
+        Mencatat ID di situ menghasilkan tautan yang dibuka admin dari AD-4 dan
+        berakhir di halaman yang tidak ada -- lebih buruk daripada kolom kosong,
+        karena kolom kosong jujur mengatakan tidak ada yang bisa ditelusuri.
+        """
+        client.post(path, json=payload)
+        assert chat_logger.entries[0].langsmith_run_id is None
+
+    @pytest.mark.parametrize("path", ["/api/chat", "/api/chat/stream"])
+    def test_akar_trace_dicatat_saat_tracing_aktif(
+        self, client, payload, chat_logger, api_llm, api_rewriter, monkeypatch, path
+    ):
+        """Yang dicatat adalah AKAR giliran, bukan run panggilan LLM di dalamnya.
+
+        Akar menaungi penulisan ulang query, retrieval, dan penyusunan jawaban
+        sekaligus; run LLM hanya potongan terakhirnya. Admin yang menelusuri
+        jawaban buruk justru paling sering butuh dua yang pertama.
+
+        Hanya `sedang_menjejak` yang dipalsukan, bukan variabel lingkungan
+        langsmith: dengan begitu langsmith sendiri tetap menganggap tracing mati
+        dan tidak mengirim apa pun ke jaringan (`trace` baru memanggil `post()`
+        saat tracing benar-benar aktif).
+        """
+        monkeypatch.setattr(tracing, "sedang_menjejak", lambda: True)
+
+        client.post(path, json=payload)
+
+        dicatat = chat_logger.entries[0].langsmith_run_id
+        assert UUID(dicatat).version == 7  # LangSmith meminta v7 untuk ID buatan sendiri
+        assert dicatat != api_llm.run_id
+        assert dicatat != api_rewriter.run_id
+
+    @pytest.mark.parametrize("path", ["/api/chat", "/api/chat/stream"])
+    def test_session_id_diteruskan_ke_panggilan_llm(
+        self, client, payload, api_llm, api_rewriter, path
+    ):
+        """Metadata thread harus menempel pada SETIAP run, bukan hanya akarnya.
+
+        Child run tanpa `session_id` terlewat saat trace difilter per percakapan
+        dan saat token serta biaya satu percakapan dijumlahkan (AD-5).
+        """
+        client.post(path, json=payload)
+        assert api_llm.session_id == payload["session_id"]
+        assert api_rewriter.session_id == payload["session_id"]
 
     def test_diblokir_kill_switch_tidak_dicatat(
         self, client, payload, kill_switch, chat_logger

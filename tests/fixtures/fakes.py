@@ -80,6 +80,7 @@ class RecordingLLM:
     def __init__(self, reply: str = "Jawaban [Panduan Akademik 2025, hal. 12].") -> None:
         self.reply = reply
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
+        self.run_id = "11111111-1111-4111-8111-111111111111"
 
     async def __call__(self, wrapped_question: str, documents) -> str:
         self.calls.append((wrapped_question, tuple(documents)))
@@ -112,6 +113,7 @@ class RecordingRewriter:
     def __init__(self, rewritten: str = "pertanyaan mandiri hasil tulis ulang") -> None:
         self.rewritten = rewritten
         self.calls: list[tuple[str, str]] = []
+        self.run_id = "22222222-2222-4222-8222-222222222222"
 
     async def __call__(self, question: str, history: str) -> str:
         self.calls.append((question, history))

@@ -283,6 +283,7 @@ class TestQueryResponse(BaseModel):
     escalated: bool
     latency_ms: int
     langsmith_run_id: str | None = None
+    """Akar trace uji coba ini. None saat tracing mati (FR-8)."""
 
 
 # --- AD-5 -------------------------------------------------------------------

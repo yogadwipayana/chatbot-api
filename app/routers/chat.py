@@ -19,10 +19,17 @@ from app.deps import (
     SettingsDep,
     build_llm_call,
     build_retriever,
+    build_rewrite_call,
     get_chat_logger,
     guard_kill_switch,
 )
 from app.observability.chatlog import ChatLogEntry
+from app.observability.tracing import (
+    akhiri_jejak,
+    id_giliran,
+    jejak_giliran,
+    tandai_sesi,
+)
 from app.rag.chain import OutcomeKind, PipelineOutcome, run_pipeline
 from app.rag.citations import extract_citations
 from app.rag.rewriter import Turn
@@ -53,20 +60,29 @@ async def chat(
     settings: SettingsDep,
     retriever: Any = Depends(build_retriever),
     llm_call: Any = Depends(build_llm_call),
+    rewrite_call: Any = Depends(build_rewrite_call),
     chat_logger: Any = Depends(get_chat_logger),
 ) -> ChatResponse:
     """Jawaban sekali kirim. Dipakai kotak uji coba admin (AD-6) dan test."""
     mulai = time.perf_counter()
-    outcome = await run_pipeline(
-        payload.question,
-        retriever=retriever,
-        llm_call=llm_call,
-        history=[Turn(t.role, t.konten) for t in payload.history],
-        policy=policy_from(settings),
-    )
+    run_id = id_giliran()
+    tandai_sesi(payload.session_id, llm_call, rewrite_call)
+    async with jejak_giliran(
+        run_id=run_id, session_id=payload.session_id, pertanyaan=payload.question
+    ) as akar:
+        outcome = await run_pipeline(
+            payload.question,
+            retriever=retriever,
+            llm_call=llm_call,
+            rewrite_call=rewrite_call,
+            history=[Turn(t.role, t.konten) for t in payload.history],
+            policy=policy_from(settings),
+        )
+        akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
+
     response = to_response(outcome)
     response.message_id = await catat(
-        chat_logger, payload, outcome, mulai, llm_call, retriever
+        chat_logger, payload, outcome, mulai, llm_call, retriever, run_id
     )
     return response
 
@@ -77,6 +93,7 @@ async def chat_stream(
     settings: SettingsDep,
     retriever: Any = Depends(build_retriever),
     llm_call: Any = Depends(build_llm_call),
+    rewrite_call: Any = Depends(build_rewrite_call),
     chat_logger: Any = Depends(get_chat_logger),
 ) -> StreamingResponse:
     """Server-Sent Events untuk streaming token (FE-1)."""
@@ -85,6 +102,8 @@ async def chat_stream(
     # alih-alih 422 yang jelas.
     sanitize_question(payload.question)
     mulai = time.perf_counter()
+    run_id = id_giliran()
+    tandai_sesi(payload.session_id, llm_call, rewrite_call)
 
     async def event_stream() -> AsyncIterator[str]:
         yield sse("status", {"stage": "mencari dokumen"})
@@ -97,18 +116,26 @@ async def chat_stream(
 
         async def jalankan() -> ChatResponse:
             try:
-                outcome = await run_pipeline(
-                    payload.question,
-                    retriever=retriever,
-                    llm_call=llm_call,
-                    history=[Turn(t.role, t.konten) for t in payload.history],
-                    policy=policy_from(settings),
-                    on_token=lambda teks: antrean.put(("token", {"text": teks})),
-                    on_stage=lambda stage: antrean.put(("status", {"stage": stage})),
-                )
+                async with jejak_giliran(
+                    run_id=run_id,
+                    session_id=payload.session_id,
+                    pertanyaan=payload.question,
+                ) as akar:
+                    outcome = await run_pipeline(
+                        payload.question,
+                        retriever=retriever,
+                        llm_call=llm_call,
+                        rewrite_call=rewrite_call,
+                        history=[Turn(t.role, t.konten) for t in payload.history],
+                        policy=policy_from(settings),
+                        on_token=lambda teks: antrean.put(("token", {"text": teks})),
+                        on_stage=lambda stage: antrean.put(("status", {"stage": stage})),
+                    )
+                    akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
+
                 response = to_response(outcome)
                 response.message_id = await catat(
-                    chat_logger, payload, outcome, mulai, llm_call, retriever
+                    chat_logger, payload, outcome, mulai, llm_call, retriever, run_id
                 )
                 return response
             finally:
@@ -246,8 +273,16 @@ async def catat(
     mulai: float,
     llm_call: Any,
     retriever: Any = None,
+    run_id: str | None = None,
 ) -> str | None:
-    """Catat putaran ini (FR-8). None bila pencatatan gagal; jawaban tetap terkirim."""
+    """Catat putaran ini (FR-8). None bila pencatatan gagal; jawaban tetap terkirim.
+
+    `run_id` adalah akar trace giliran ini, bukan ID salah satu panggilan LLM di
+    dalamnya: yang dibuka admin dari AD-4 harus giliran utuh -- rewrite,
+    retrieval, dan jawaban sekaligus. Ia None saat tracing mati, dan None itu
+    ikut tersimpan apa adanya; mencatat ID saat tidak ada trace yang dikirim
+    hanya menghasilkan tautan yang berujung pada halaman kosong.
+    """
     embed = getattr(retriever, "embed_query", None)
     return await chat_logger.log(
         ChatLogEntry(
@@ -257,6 +292,7 @@ async def catat(
             latency_ms=round((time.perf_counter() - mulai) * 1000),
             model=getattr(llm_call, "model", None),
             usage=getattr(llm_call, "usage", None),
+            langsmith_run_id=run_id,
             # `getattr` berlapis, sama seperti `llm_call` di atas: test menyuntikkan
             # retriever palsu tanpa alat ukur, dan pencatatan tidak boleh menuntut
             # jenis retriever tertentu.

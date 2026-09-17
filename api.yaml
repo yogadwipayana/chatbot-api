@@ -1705,6 +1705,12 @@ components:
           type: boolean
           description: false berarti kill switch aktif; proses tetap sehat.
         kill_switch_reason: { type: [string, 'null'] }
+        tracing_enabled:
+          type: boolean
+          description: >-
+            Apakah trace FR-8 benar-benar terkirim ke LangSmith. Tracing yang mati
+            tidak menjatuhkan satu pun permintaan, sehingga tanpa baris ini ia hanya
+            ketahuan saat ada jawaban buruk yang jejaknya ternyata tidak pernah ada.
 
     # --- Admin -------------------------------------------------------------
     LoginRequest:
@@ -2057,7 +2063,10 @@ components:
         latency_ms: { type: integer, minimum: 0 }
         langsmith_run_id:
           type: [string, 'null']
-          description: Penghubung ke trace LangSmith. Selalu null sampai tracing dipasang.
+          description: >-
+            Akar trace LangSmith untuk uji coba ini -- mencakup penulisan ulang query,
+            retrieval, dan penyusunan jawaban sekaligus. Null bila tracing mati
+            (LANGSMITH_TRACING=false atau LANGSMITH_API_KEY kosong).
 
     DailyVolume:
       type: object

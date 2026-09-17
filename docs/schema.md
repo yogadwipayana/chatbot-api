@@ -66,7 +66,7 @@ erDiagram
         uuid_arr retrieved_chunk_ids "chunk yang dipakai"
         float    top_score "skor mentah tertinggi"
         int      latency_ms
-        varchar  langsmith_run_id "64, belum diisi"
+        varchar  langsmith_run_id "64, akar trace; null bila tracing mati"
         jsonb    meta "kind, topik, token, biaya"
         timestamptz created_at "NOT NULL, default now()"
     }
