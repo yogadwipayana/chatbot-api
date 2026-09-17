@@ -10,10 +10,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.admin.permissions import AdminRole
 from app.admin.stats import compute_stats, today
 from app.deps import (
+    BaseSettingsDep,
     CurrentAdminDep,
     KillSwitchDep,
     SessionDep,
-    SettingsDep,
     require_admin,
     require_role,
 )
@@ -41,7 +41,7 @@ RENTANG_MAKS_HARI = 366
 )
 async def admin_stats(
     session: SessionDep,
-    settings: SettingsDep,
+    settings: BaseSettingsDep,
     sejak: date | None = None,
     sampai: date | None = None,
 ) -> Stats:

@@ -21,10 +21,61 @@ from app.security.auth import decode_access_token
 from app.security.killswitch import KillSwitch, get_kill_switch
 from app.security.ratelimit import FailureLimiter, get_login_limiter
 
-SettingsDep = Annotated[Settings, Depends(get_settings)]
+BaseSettingsDep = Annotated[Settings, Depends(get_settings)]
+"""Isi `.env` apa adanya, tanpa penimpaan dari dashboard.
+
+Dipakai untuk hal yang memang hanya boleh diubah pengelola server -- rahasia
+JWT, zona waktu, batas unggah -- dan untuk jalur yang tidak perlu membayar
+satu query tambahan (verifikasi token pada setiap permintaan admin).
+"""
+
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 KillSwitchDep = Annotated[KillSwitch, Depends(get_kill_switch)]
 LoginLimiterDep = Annotated[FailureLimiter, Depends(get_login_limiter)]
+
+
+def get_runtime_config_store(session: SessionDep) -> Any:
+    """Tabel setelan yang dapat diubah dari dashboard. Di-override di test."""
+    from app.admin.runtime_config import SqlRuntimeConfigStore
+
+    return SqlRuntimeConfigStore(session)
+
+
+RuntimeConfigStoreDep = Annotated[Any, Depends(get_runtime_config_store)]
+
+
+async def get_effective_settings(
+    base: BaseSettingsDep, store: RuntimeConfigStoreDep
+) -> Settings:
+    """`.env` ditimpa setelan dashboard (`app.admin.runtime_config`).
+
+    Dibaca per permintaan, bukan di-cache: perubahan dari halaman Konfigurasi
+    harus langsung berlaku di semua worker, termasuk worker yang tidak melayani
+    permintaan yang mengubahnya. Tanpa baris penimpaan sama sekali -- keadaan
+    normal -- fungsinya mengembalikan objek `.env` yang sama tanpa menyusun
+    ulang apa pun.
+    """
+    from app.admin.runtime_config import terapkan
+
+    return terapkan(base, await store.load())
+
+
+SettingsDep = Annotated[Settings, Depends(get_effective_settings)]
+"""Setelan yang benar-benar berlaku: `.env` + penimpaan dari dashboard."""
+
+
+def pastikan_unit(admin: CurrentAdmin, unit: str | None, *, apa: str) -> None:
+    """403 bila staf/dosen menyentuh isi milik unit lain.
+
+    `apa` adalah nama bendanya dalam kalimat ("dokumen", "entri tanya jawab"),
+    supaya admin membaca penolakan yang menyebut hal yang benar-benar ia buka.
+    """
+    if not admin.can_manage_unit(unit):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"{apa.capitalize()} ini milik unit lain. Akun Anda hanya dapat "
+            f"mengelola {apa} unit {admin.unit}.",
+        )
 
 
 def guard_kill_switch(switch: KillSwitchDep) -> None:
@@ -153,7 +204,7 @@ AccountStoreDep = Annotated[Any, Depends(get_account_store)]
 
 
 async def require_admin(
-    settings: SettingsDep,
+    settings: BaseSettingsDep,
     store: AccountStoreDep,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
 ) -> CurrentAdmin:

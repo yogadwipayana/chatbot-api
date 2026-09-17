@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.db.models import JenisDokumen
 from app.rag.chain import OutcomeKind
 
 
@@ -27,6 +28,11 @@ class CitationOut(BaseModel):
     halaman: int
     document_id: str
     file_path: str
+    """Kosong untuk sumber tanpa berkas; jangan dijadikan tautan."""
+    jenis: JenisDokumen = JenisDokumen.PDF
+    """`tanya_jawab` berarti sumbernya diketik admin di dashboard, bukan PDF:
+    tidak ada berkas yang bisa dibuka dan nomor halaman tidak berarti apa-apa,
+    jadi kartunya harus tampil tanpa tautan dan tanpa "hal. N"."""
 
 
 class ContactOut(BaseModel):

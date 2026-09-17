@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 import anyio
 from fastapi import APIRouter, HTTPException, Request, status
 
-from app.deps import AccountStoreDep, CurrentAdminDep, LoginLimiterDep, SettingsDep
+from app.deps import AccountStoreDep, BaseSettingsDep, CurrentAdminDep, LoginLimiterDep
 from app.routers.admin_users import user_out
 from app.schemas.admin import AdminUser, LoginRequest, PasswordChange, TokenResponse
 from app.schemas.common import Error
@@ -54,7 +54,7 @@ async def admin_login(
     payload: LoginRequest,
     request: Request,
     store: AccountStoreDep,
-    settings: SettingsDep,
+    settings: BaseSettingsDep,
     limiter: LoginLimiterDep,
 ) -> TokenResponse:
     """Tukar email + kata sandi dengan JWT.
@@ -118,7 +118,7 @@ async def change_my_password(
     payload: PasswordChange,
     admin: CurrentAdminDep,
     store: AccountStoreDep,
-    settings: SettingsDep,
+    settings: BaseSettingsDep,
     limiter: LoginLimiterDep,
 ) -> TokenResponse:
     """Ganti kata sandi sendiri, mis. setelah menerima kata sandi sementara.

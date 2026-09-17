@@ -34,7 +34,12 @@ class LocalStorage:
         return calon
 
     async def save(
-        self, key: str, data: bytes, *, content_type: str = "application/pdf"
+        self,
+        key: str,
+        data: bytes,
+        *,
+        content_type: str = "application/pdf",
+        content_disposition: str | None = None,
     ) -> str:
         path = self._path(key)
         await anyio.to_thread.run_sync(lambda: path.parent.mkdir(parents=True, exist_ok=True))
@@ -63,7 +68,13 @@ class LocalStorage:
     async def exists(self, key: str) -> bool:
         return await anyio.to_thread.run_sync(self._path(key).is_file)
 
-    def url_for(self, key: str, *, expires_in: int | None = None) -> str | None:
+    def url_for(
+        self,
+        key: str,
+        *,
+        expires_in: int | None = None,
+        content_disposition: str | None = None,
+    ) -> str | None:
         """Selalu None -- disk lokal tidak dapat diakses peramban secara langsung.
 
         Endpoint FE-2 harus mengalirkan isinya sendiri.

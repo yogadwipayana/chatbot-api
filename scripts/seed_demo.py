@@ -228,6 +228,7 @@ async def seed_dokumen(maker: async_sessionmaker[AsyncSession]) -> None:
                     tahun_berlaku=dok.tahun_berlaku,
                     valid_until=dok.valid_until,
                     uploaded_by=PENANDA_DOKUMEN,
+                    nama_file=path.name,
                     chunk_size=settings.chunk_size,
                     chunk_overlap=settings.chunk_overlap,
                 )
@@ -298,6 +299,16 @@ KELOMPOK_DITOLAK = (
     KelompokDitolak(2, ("Jadwal bus kampus jam berapa?",)),
     KelompokDitolak(1, ("Wifi perpustakaan passwordnya apa?",)),
 )
+
+CATATAN_UMPAN_BALIK = (
+    "Jawabannya belum menyebut berapa biayanya",
+    "Tidak menjawab yang saya tanyakan",
+    "Dokumen sumbernya tahun lalu, apa masih berlaku?",
+    "Kurang jelas, harus ke gedung mana?",
+    "Sudah saya coba tapi loketnya bilang lain",
+)
+"""Hanya dipakai sebagian jempol ke bawah: FE-5 satu klik tanpa kotak isian,
+jadi halaman umpan balik memang lebih sering berisi penilaian tanpa catatan."""
 
 PERTANYAAN_SENSITIF = (
     "saya stres berat skripsi tidak selesai-selesai",
@@ -440,13 +451,18 @@ async def tulis_percakapan(
             membantu = rng.random() < (0.82 if jenis == "answer" else 0.3)
             await session.execute(
                 text(
-                    "INSERT INTO feedback (id, message_id, helpful, created_at)"
-                    " VALUES (:id, :mid, :helpful, :t)"
+                    "INSERT INTO feedback (id, message_id, helpful, catatan, created_at)"
+                    " VALUES (:id, :mid, :helpful, :catatan, :t)"
                 ),
                 {
                     "id": uuid.uuid4(),
                     "mid": jawaban_id,
                     "helpful": membantu,
+                    "catatan": (
+                        rng.choice(CATATAN_UMPAN_BALIK)
+                        if not membantu and rng.random() < 0.4
+                        else None
+                    ),
                     "t": dijawab + timedelta(seconds=20),
                 },
             )

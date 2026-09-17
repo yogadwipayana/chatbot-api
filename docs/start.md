@@ -4,4 +4,6 @@ ssh root@ai.dwipa.my.id cat /root/pgweb-credentials.txt
 
 uv venv --python 3.12
 uv pip install -e ".[dev]"
+
+.venv\Scripts\activate
 uvicorn app.main:app --reload

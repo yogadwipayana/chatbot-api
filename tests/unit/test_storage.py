@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.storage.base import ObjectNotFound, StorageError, document_key
+from app.storage.base import ObjectNotFound, StorageError, content_disposition, document_key
 from app.storage.local import LocalStorage
 
 PDF = b"%PDF-1.7\nisi dokumen panduan akademik\n%%EOF"
@@ -45,6 +45,18 @@ class TestKunciObjek:
         """Kunci ikut membentuk lintasan berkas dan URL; jangan biarkan lolos."""
         with pytest.raises(ValueError, match="pemisah lintasan"):
             document_key(jahat)
+
+
+class TestNamaBerkas:
+    def test_content_disposition_mempertahankan_nama_utf8(self):
+        header = content_disposition("Panduan Keuangan (2026).pdf")
+        assert header.startswith('inline; filename="Panduan Keuangan (2026).pdf";')
+        assert "filename*=UTF-8''Panduan%20Keuangan%20%282026%29.pdf" in header
+
+    def test_content_disposition_menolak_pemisah_dan_header_injection(self):
+        header = content_disposition("../rahasia\r\nX-Leak: true")
+        assert ".._rahasiaX-Leak: true" in header
+        assert "\r" not in header and "\n" not in header
 
 
 class TestLocalStorage:

@@ -17,6 +17,7 @@ from app.deps import (
     get_account_store,
     get_chat_logger,
     get_embeddings,
+    get_runtime_config_store,
     get_session,
     get_storage,
 )
@@ -34,6 +35,7 @@ from tests.fixtures.fakes import (
     FakeChatLogger,
     FakeEmbeddings,
     FakeRetriever,
+    FakeRuntimeConfigStore,
     RecordingLLM,
 )
 
@@ -74,6 +76,12 @@ def login_limiter() -> FailureLimiter:
 
 
 @pytest.fixture
+def runtime_config() -> FakeRuntimeConfigStore:
+    """Tanpa penimpaan: setiap test berangkat dari nilai `.env`."""
+    return FakeRuntimeConfigStore()
+
+
+@pytest.fixture
 def accounts() -> FakeAccountStore:
     """Satu akun untuk setiap level, semuanya dengan kata sandi `SANDI`."""
     store = FakeAccountStore()
@@ -84,7 +92,7 @@ def accounts() -> FakeAccountStore:
 
 
 @pytest.fixture
-def make_client(kill_switch, api_llm, chat_logger, login_limiter, accounts):
+def make_client(kill_switch, api_llm, chat_logger, login_limiter, accounts, runtime_config):
     """Bangun TestClient dengan retriever yang hasilnya ditentukan test."""
 
     def factory(documents, *, session=None) -> TestClient:
@@ -96,6 +104,7 @@ def make_client(kill_switch, api_llm, chat_logger, login_limiter, accounts):
         app.dependency_overrides[get_chat_logger] = lambda: chat_logger
         app.dependency_overrides[get_login_limiter] = lambda: login_limiter
         app.dependency_overrides[get_account_store] = lambda: accounts
+        app.dependency_overrides[get_runtime_config_store] = lambda: runtime_config
         app.dependency_overrides[get_embeddings] = lambda: FakeEmbeddings()
         app.dependency_overrides[get_storage] = lambda: None
         return TestClient(app)

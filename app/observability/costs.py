@@ -11,9 +11,8 @@ from dataclasses import dataclass
 
 PRICES_PER_MTOK: dict[str, tuple[float, float]] = {
     # model: (input, output)
-    "claude-sonnet-5": (3.00, 15.00),
-    "gpt-4o-mini": (0.15, 0.60),
-    "text-embedding-3-large": (0.13, 0.0),
+    "cx/gpt-5.5": (5, 30),
+    "openrouter/openai/text-embedding-3-small": (0.02, 0.0),
 }
 
 

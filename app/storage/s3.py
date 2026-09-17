@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import functools
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import anyio
 
@@ -119,15 +119,25 @@ class S3Storage:
 
     # --- operasi ---------------------------------------------------------
     async def save(
-        self, key: str, data: bytes, *, content_type: str = "application/pdf"
+        self,
+        key: str,
+        data: bytes,
+        *,
+        content_type: str = "application/pdf",
+        content_disposition: str | None = None,
     ) -> str:
+        parameter: dict[str, Any] = {
+            "Bucket": self.bucket,
+            "Key": key,
+            "Body": data,
+            "ContentType": content_type,
+        }
+        if content_disposition is not None:
+            parameter["ContentDisposition"] = content_disposition
         await self._jalankan(
             functools.partial(
                 self.client.put_object,
-                Bucket=self.bucket,
-                Key=key,
-                Body=data,
-                ContentType=content_type,
+                **parameter,
             )
         )
         return key
@@ -156,7 +166,13 @@ class S3Storage:
             return False
         return True
 
-    def url_for(self, key: str, *, expires_in: int | None = None) -> str | None:
+    def url_for(
+        self,
+        key: str,
+        *,
+        expires_in: int | None = None,
+        content_disposition: str | None = None,
+    ) -> str | None:
         """URL yang dapat dibuka peramban.
 
         Bila `public_base_url` diisi, kembalikan URL publik apa adanya --
@@ -168,12 +184,20 @@ class S3Storage:
         konteks async tanpa threadpool.
         """
         if self.public_base_url:
-            return f"{self.public_base_url}/{quote(key)}"
+            url = f"{self.public_base_url}/{quote(key)}"
+            if content_disposition is not None:
+                url += "?" + urlencode(
+                    {"response-content-disposition": content_disposition}
+                )
+            return url
 
         try:
+            parameter: dict[str, Any] = {"Bucket": self.bucket, "Key": key}
+            if content_disposition is not None:
+                parameter["ResponseContentDisposition"] = content_disposition
             return self.client.generate_presigned_url(
                 "get_object",
-                Params={"Bucket": self.bucket, "Key": key},
+                Params=parameter,
                 ExpiresIn=expires_in or self.presign_ttl,
             )
         except Exception as exc:  # pragma: no cover - jalur galat penyedia

@@ -1,4 +1,4 @@
-"""Pertanyaan tak terjawab dan uji coba retrieval (AD-4, AD-6)."""
+"""Pertanyaan tak terjawab, umpan balik mahasiswa, dan uji coba retrieval (AD-4, AD-6)."""
 
 from __future__ import annotations
 
@@ -9,10 +9,13 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
+from app.admin.feedback import fetch_feedback
 from app.admin.grouping import group_questions
 from app.admin.permissions import AdminRole
 from app.admin.unanswered import fetch_items, set_resolved
+from app.db.models import JenisDokumen
 from app.deps import (
+    BaseSettingsDep,
     SessionDep,
     SettingsDep,
     build_llm_call,
@@ -24,6 +27,7 @@ from app.rag.chain import run_pipeline
 from app.rag.threshold import ThresholdPolicy
 from app.routers.chat import to_response
 from app.schemas.admin import (
+    FeedbackPage,
     RetrievedChunk,
     TestQueryRequest,
     TestQueryResponse,
@@ -47,7 +51,7 @@ router = APIRouter(
 @router.get("/unanswered", response_model=list[UnansweredGroup])
 async def list_unanswered(
     session: SessionDep,
-    settings: SettingsDep,
+    settings: BaseSettingsDep,
     resolved: Annotated[
         bool | None, Query(description="Kosongkan untuk menampilkan keduanya.")
     ] = None,
@@ -86,6 +90,40 @@ async def resolve_unanswered(
     if not await set_resolved(session, unanswered_id, payload.resolved):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Pertanyaan tidak ditemukan.")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/feedback",
+    response_model=FeedbackPage,
+    dependencies=[Depends(require_role(AdminRole.ADMIN))],
+    responses={403: {"model": Error}},
+)
+async def list_feedback(
+    session: SessionDep,
+    settings: BaseSettingsDep,
+    helpful: Annotated[
+        bool | None, Query(description="Kosongkan untuk menampilkan keduanya.")
+    ] = None,
+    sejak: date | None = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> FeedbackPage:
+    """Umpan balik FE-5, terbaru lebih dulu, beserta pertanyaan yang dinilai.
+
+    Sama seperti statistik AD-5: isi percakapan, jadi minimal level admin.
+    Jempol ke bawah tanpa catatan pun berguna -- pertanyaan dan jawabannya
+    ikut tampil, sehingga dokumen yang keliru dipakai tetap dapat ditelusuri.
+    """
+    return FeedbackPage(
+        **await fetch_feedback(
+            session,
+            helpful=helpful,
+            sejak=sejak,
+            timezone=settings.timezone,
+            limit=limit,
+            offset=offset,
+        )
+    )
 
 
 @router.post("/test-query", response_model=TestQueryResponse)
@@ -131,6 +169,7 @@ async def admin_test_query(
                     else None
                 ),
                 judul=doc.metadata.get("judul", ""),
+                jenis=doc.metadata.get("jenis") or JenisDokumen.PDF,
                 halaman=doc.metadata.get("halaman", 0),
                 konten=doc.page_content,
                 rrf_score=float(doc.metadata.get("rrf_score", 0.0)),

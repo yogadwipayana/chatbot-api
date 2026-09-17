@@ -35,7 +35,7 @@ SANDI_BARU = "kata-sandi-baru-yang-juga-panjang"
 
 
 def konkret(path: str) -> str:
-    for parameter in ("{document_id}", "{unanswered_id}", "{user_id}"):
+    for parameter in ("{document_id}", "{entry_id}", "{unanswered_id}", "{user_id}"):
         path = path.replace(parameter, UUID_CONTOH)
     return path
 
@@ -363,3 +363,33 @@ class TestDokumenStaf:
         )
         assert r.status_code == 403
         assert STAF_UNIT in r.json()["detail"]
+
+
+class TestTanyaJawabStaf:
+    """Entri tanya jawab mengikuti batas unit yang sama dengan dokumen."""
+
+    ENTRI = {
+        "pertanyaan": "Bagaimana cara mengurus KTM yang hilang?",
+        "jawaban": "Bawa surat kehilangan dari kepolisian ke loket 3.",
+    }
+
+    def test_menambah_untuk_unit_lain_ditolak(self, client, headers_for):
+        r = client.post(
+            "/api/admin/faq",
+            json={**self.ENTRI, "unit": "Biro Administrasi Akademik"},
+            headers=headers_for(STAF_EMAIL),
+        )
+        assert r.status_code == 403
+        assert STAF_UNIT in r.json()["detail"]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"pertanyaan": "?", "jawaban": "Cukup panjang.", "unit": STAF_UNIT},
+            {"pertanyaan": "Kapan wisuda?", "jawaban": "Okt", "unit": STAF_UNIT},
+            {"pertanyaan": "Kapan wisuda?", "jawaban": "Bulan Oktober."},
+        ],
+    )
+    def test_isian_tidak_lengkap_ditolak_422(self, client, headers_for, payload):
+        r = client.post("/api/admin/faq", json=payload, headers=headers_for(STAF_EMAIL))
+        assert r.status_code == 422

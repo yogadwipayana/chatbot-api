@@ -23,6 +23,20 @@ from app.rag.retriever import FTS_CONFIG, vector_literal
 class EmbeddingDimensionError(RuntimeError):
     """Model embedding menghasilkan dimensi yang berbeda dari kolom `chunks.embedding`."""
 
+
+def galat_layanan_ai(exc: BaseException) -> bool:
+    """True bila galat berasal dari API model AI, bukan dari kode kita.
+
+    Dipakai router untuk memisahkan "layanan luar sedang bermasalah, coba lagi"
+    (502) dari bug yang harus tetap menjadi 500 dan terlihat di log.
+    """
+    try:
+        import openai
+    except ModuleNotFoundError:  # pragma: no cover - langchain-openai selalu membawanya
+        return False
+    return isinstance(exc, openai.APIError)
+
+
 BATCH_SIZE = 64
 """Jumlah chunk per panggilan embedding. Terlalu besar berisiko kena batas
 ukuran request penyedia; terlalu kecil membuat ingestion lambat dan mahal."""

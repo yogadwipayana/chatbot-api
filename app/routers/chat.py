@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 
+from app.db.models import JenisDokumen
 from app.deps import (
     SessionDep,
     SettingsDep,
@@ -187,7 +188,11 @@ def citations_for(outcome: PipelineOutcome) -> list[CitationOut]:
             judul=meta.get("judul", ""),
             halaman=meta.get("halaman", 0),
             document_id=str(meta.get("document_id", "")),
-            file_path=meta.get("file_path", ""),
+            # Entri tanya jawab tidak punya berkas: `file_path` NULL dari database
+            # menjadi string kosong, dan `jenis` memberi tahu frontend agar
+            # kartunya tidak dibuat sebagai tautan yang buntu.
+            file_path=meta.get("file_path") or "",
+            jenis=meta.get("jenis") or JenisDokumen.PDF,
         )
         # Chunk berbeda dari halaman yang sama menghasilkan kartu yang sama.
         tersedia.setdefault((kartu.judul.casefold(), kartu.halaman), kartu)

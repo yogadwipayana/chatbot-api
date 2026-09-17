@@ -59,6 +59,9 @@ Dua backend, dipilih lewat `STORAGE_BACKEND`:
 
 Kolom `documents.file_path` menyimpan **kunci objek** (`documents/<uuid>.pdf`),
 bukan lintasan disk — pindah dari lokal ke R2 tidak memaksa migrasi data.
+Kolom `documents.nama_file` menyimpan nama asli unggahan untuk nama tab browser
+dan nama berkas saat PDF dilihat atau diunduh. Key objek tetap berbasis UUID agar
+nama file tidak dapat menimpa unggahan lain.
 
 ### Kredensial yang diperlukan — Cloudflare R2
 
@@ -204,6 +207,47 @@ Perlu diganti sebelum rilis — semuanya bergantung pada Fase 0 PRD §13:
   (`SELECT cfgname FROM pg_ts_config`) — kalau tidak ada, seluruh jalur FTS
   gagal diam-diam. Test integrasi memeriksa ini.
 
+## Setelan yang dapat diubah dari dashboard
+
+Sembilan parameter retrieval dan chunking dapat disetel superadmin lewat menu
+**Konfigurasi** di `../admin`, tanpa menyunting `.env` dan tanpa restart:
+
+| Kelompok | Variabel |
+|---|---|
+| Pencarian | `RETRIEVAL_CANDIDATES`, `RETRIEVAL_TOP_N`, `RRF_K`, `RRF_WEIGHT_VECTOR`, `RRF_WEIGHT_FULLTEXT` |
+| Ambang (FR-3) | `VECTOR_THRESHOLD`, `LEXICAL_THRESHOLD` |
+| Chunking (FR-1) | `CHUNK_SIZE`, `CHUNK_OVERLAP` |
+
+Cara kerjanya (`app/admin/runtime_config.py`, tabel `runtime_config`):
+
+- **Hanya nilai yang ditimpa yang disimpan.** Parameter tanpa baris di tabel itu
+  tetap mengikuti `.env`, jadi menyunting `.env` lalu restart masih berlaku untuk
+  parameter yang belum pernah disentuh dari dashboard.
+- **Nilainya disimpan sebagai teks** dan di-parse ulang oleh `Settings`, sehingga
+  validasi -- termasuk `chunk_overlap < chunk_size` dan
+  `retrieval_top_n <= retrieval_candidates` -- hanya ditulis satu kali.
+- **Dibaca per permintaan** (`get_effective_settings` di `app/deps.py`), bukan
+  di-cache di memori proses: perubahan berlaku seketika di semua worker.
+  Endpoint yang tidak membutuhkannya memakai `BaseSettingsDep` supaya tidak
+  membayar query tambahan.
+- **Baris yang tidak dapat dipakai diabaikan, bukan menjatuhkan layanan.** Bila
+  `.env` berubah sehingga kombinasinya melanggar aturan, layanan kembali memakai
+  `.env` dan halaman Konfigurasi menampilkan alasannya.
+- `CHUNK_SIZE` dan `CHUNK_OVERLAP` hanya mengenai dokumen yang diproses
+  setelahnya; dokumen lama baru ikut berubah bila diunggah ulang.
+
+Sisanya -- nama model, kredensial, CORS, batas unggah, zona waktu -- tetap hanya
+lewat `.env` + restart. Mengganti `EMBED_MODEL` menuntut re-index seluruh
+dokumen, jadi ia sengaja bukan setelan yang dapat diubah sambil layanan jalan.
+
+```bash
+# Melihat dan mengubah tanpa dashboard
+curl -H "Authorization: Bearer $TOKEN" localhost:8000/api/admin/config
+curl -X PATCH -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"vector_threshold": 0.42}' localhost:8000/api/admin/config
+curl -X DELETE -H "Authorization: Bearer $TOKEN" localhost:8000/api/admin/config  # kembali ke .env
+```
+
 ## Kalibrasi ambang (FR-3)
 
 PRD menuntut ambang ditentukan empiris, bukan ditebak. Butuh dua kumpulan:
@@ -230,6 +274,11 @@ hanya efek fusi. Exit code 1 bila Recall@5 belum mencapai 0.85.
 ## Dashboard admin
 
 Endpoint AD-1..AD-6 (`app/routers/admin_*.py`) dipakai oleh `../admin`.
+
+Sumber jawaban chatbot ada dua jenis, keduanya baris `documents` (lihat
+`docs/schema.md`): dokumen PDF yang diunggah (`/api/admin/documents`) dan
+entri tanya jawab yang diketik langsung (`/api/admin/faq`). Retrieval
+memperlakukan keduanya sama; yang berbeda hanya cara admin menyuntingnya.
 
 ### CORS — saat front-end memakai domain lain
 
@@ -261,9 +310,9 @@ seolah-olah front-end tidak pernah memanggil.
 
 | Level | Hak |
 |---|---|
-| `staf` (Staf/Dosen) | Kelola dokumen **unitnya sendiri**, uji coba jawaban, lihat pertanyaan tak terjawab |
-| `admin` | + dokumen semua unit, tandai pertanyaan selesai, statistik |
-| `superadmin` | + kill switch, kelola akun (`/api/admin/users`) |
+| `staf` (Staf/Dosen) | Kelola dokumen dan tanya jawab **unitnya sendiri**, uji coba jawaban, lihat pertanyaan tak terjawab |
+| `admin` | + dokumen dan tanya jawab semua unit, tandai pertanyaan selesai, statistik, umpan balik mahasiswa |
+| `superadmin` | + kill switch, konfigurasi retrieval dan chunking, kelola akun (`/api/admin/users`) |
 
 Aturannya ada di `app/admin/permissions.py` (tanpa impor pihak ketiga). Setiap
 operasi admin di `api.yaml` mencatat `x-min-role`, dan

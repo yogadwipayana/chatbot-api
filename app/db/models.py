@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
+from enum import StrEnum
 
 from sqlalchemy import (
     ARRAY,
@@ -39,6 +40,24 @@ except ModuleNotFoundError:  # pragma: no cover - hanya jalur degradasi
 EMBEDDING_DIM = 1024
 
 
+class JenisDokumen(StrEnum):
+    """Asal isi satu baris `documents`.
+
+    `pdf`: berkas resmi yang diunggah admin; isinya hidup di penyimpanan objek
+    dan `file_path` menunjuk ke sana.
+    `tanya_jawab`: satu pasang pertanyaan-jawaban yang diketik admin langsung di
+    dashboard, tanpa berkas sama sekali.
+
+    Keduanya sengaja berbagi satu tabel: filter dokumen aktif (FR-2), masa
+    berlaku, unit, dan chunking berlaku sama persis, sehingga retrieval tidak
+    perlu tahu bedanya. Yang berbeda hanya dari mana isinya berasal dan
+    bagaimana admin menyuntingnya.
+    """
+
+    PDF = "pdf"
+    TANYA_JAWAB = "tanya_jawab"
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -52,8 +71,28 @@ class Document(Base):
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     judul: Mapped[str] = mapped_column(String(500), nullable=False)
+    """Untuk entri tanya jawab: pertanyaannya sendiri. Judul inilah yang muncul
+    sebagai sumber pada sitasi yang dilihat mahasiswa (FE-2)."""
     unit: Mapped[str] = mapped_column(String(200), nullable=False)
-    file_path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    jenis: Mapped[str] = mapped_column(
+        String(20),
+        default=JenisDokumen.PDF,
+        server_default=JenisDokumen.PDF.value,
+        nullable=False,
+    )
+    file_path: Mapped[str | None] = mapped_column(String(1000))
+    """Kunci objek di penyimpanan. NULL untuk entri tanya jawab: tidak ada berkas
+    yang bisa dibuka, dan `GET /api/documents/{id}/file` menolaknya 404."""
+    nama_file: Mapped[str | None] = mapped_column(String(255))
+    """Nama asli unggahan untuk nama tab browser dan berkas unduhan.
+
+    `file_path` tetap memakai key berbasis UUID agar nama pengguna tidak menjadi
+    bagian dari lokasi objek. NULL untuk entri tanya jawab dan baris lama.
+    """
+    jawaban: Mapped[str | None] = mapped_column(Text)
+    """Jawaban entri tanya jawab, apa adanya seperti diketik admin. Ini sumber
+    kebenarannya yang dapat disunting; chunk hanyalah turunannya -- sejajar
+    dengan PDF, yang sumbernya berkas asli dan chunk-nya hasil ekstraksi."""
     tahun_berlaku: Mapped[int | None] = mapped_column(Integer)
     valid_until: Mapped[date | None] = mapped_column(Date)
     """NULL = berlaku tanpa batas. Diperiksa di setiap retrieval (FR-2)."""
@@ -69,6 +108,18 @@ class Document(Base):
 
     __table_args__ = (
         Index("ix_documents_aktif", "is_active", "valid_until"),
+        CheckConstraint(
+            "jenis IN ('pdf', 'tanya_jawab')",
+            name="ck_documents_jenis",
+        ),
+        # Satu tabel untuk dua jenis isi hanya aman bila setiap baris lengkap
+        # menurut jenisnya: PDF tanpa berkas akan membuat kartu sitasi buntu,
+        # dan entri tanya jawab tanpa jawaban tidak dapat disunting kembali.
+        CheckConstraint(
+            "(jenis = 'pdf' AND file_path IS NOT NULL AND jawaban IS NULL)"
+            " OR (jenis = 'tanya_jawab' AND file_path IS NULL AND jawaban IS NOT NULL)",
+            name="ck_documents_isi_sesuai_jenis",
+        ),
     )
 
 
@@ -227,3 +278,28 @@ class Admin(Base):
         # "Admin@kampus.ac.id" dan "admin@kampus.ac.id" bisa menjadi dua akun.
         Index("ix_admins_email_lower", text("lower(email)"), unique=True),
     )
+
+
+class RuntimeConfigEntry(Base):
+    """Nilai `.env` yang boleh ditimpa dari dashboard, satu baris per parameter.
+
+    Hanya parameter yang benar-benar ditimpa yang punya baris di sini: tidak ada
+    baris berarti "ikut `.env`". Dengan begitu mengubah `.env` lalu restart tetap
+    berlaku untuk parameter yang belum pernah disentuh dari dashboard, dan
+    "kembalikan ke nilai .env" cukup menghapus barisnya.
+
+    Nilainya disimpan sebagai teks, sama seperti asalnya di `.env`, dan di-parse
+    ulang oleh `Settings` -- satu tempat validasi untuk kedua sumber.
+    """
+
+    __tablename__ = "runtime_config"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    """Nama field `app.config.Settings`, mis. `retrieval_top_n`. Daftar yang
+    boleh ditimpa: `app.admin.runtime_config.DAPAT_DIUBAH`."""
+    value: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_by: Mapped[str | None] = mapped_column(String(255))
+    """Email admin yang mengubah, untuk jejak audit di halaman Konfigurasi."""

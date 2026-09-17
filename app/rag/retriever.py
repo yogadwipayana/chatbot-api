@@ -46,6 +46,7 @@ VECTOR_SQL = text(
            c.halaman,
            d.id::text AS document_id,
            d.judul,
+           d.jenis,
            d.file_path,
            1 - (c.embedding <=> (:query_embedding)::vector) AS score
     FROM chunks c
@@ -63,6 +64,7 @@ FULLTEXT_SQL = text(
            c.halaman,
            d.id::text AS document_id,
            d.judul,
+           d.jenis,
            d.file_path,
            ts_rank(c.tsv, websearch_to_tsquery('{FTS_CONFIG}', :query)) AS score
     FROM chunks c
@@ -153,6 +155,7 @@ class PostgresHybridRetriever(BaseRetriever):
                     "chunk_id": hit.chunk_id,
                     "document_id": by_id[hit.chunk_id]["document_id"],
                     "judul": by_id[hit.chunk_id]["judul"],
+                    "jenis": by_id[hit.chunk_id].get("jenis"),
                     "halaman": by_id[hit.chunk_id]["halaman"],
                     "file_path": by_id[hit.chunk_id]["file_path"],
                     "rrf_score": hit.rrf_score,

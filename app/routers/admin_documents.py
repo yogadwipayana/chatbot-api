@@ -35,11 +35,12 @@ from app.deps import (
     SettingsDep,
     StorageDep,
     get_embeddings,
+    pastikan_unit,
     require_admin,
 )
-from app.ingestion.embedder import EmbeddingDimensionError
 from app.ingestion.loader import ScannedPdfError, UnreadablePdfError
 from app.ingestion.pipeline import EmptyDocumentError, ingest_document
+from app.routers.common import terjemahkan_galat_ai
 from app.schemas.admin import Chunk, Document, DocumentPage, DocumentUpdate, IngestionResult
 from app.schemas.common import Error
 from app.storage import StorageError
@@ -54,21 +55,12 @@ router = APIRouter(
 )
 
 TIDAK_DITEMUKAN = "Dokumen tidak ditemukan."
+APA = "dokumen"
 PDF_MAGIC = b"%PDF-"
 BACA_PER = 1024 * 1024
 
 Limit = Annotated[int, Query(ge=1, le=200)]
 Offset = Annotated[int, Query(ge=0)]
-
-
-def pastikan_unit(admin: CurrentAdmin, unit: str | None) -> None:
-    """403 bila staf/dosen menyentuh dokumen unit lain."""
-    if not admin.can_manage_unit(unit):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            f"Dokumen ini milik unit lain. Akun Anda hanya dapat mengelola dokumen "
-            f"unit {admin.unit}.",
-        )
 
 
 async def _dokumen_milik(
@@ -77,7 +69,7 @@ async def _dokumen_milik(
     row = await repo.get_document(session, document_id)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, TIDAK_DITEMUKAN)
-    pastikan_unit(admin, row["unit"])
+    pastikan_unit(admin, row["unit"], apa=APA)
     return row
 
 
@@ -171,19 +163,21 @@ async def upload_document(
                 )
 
         try:
-            hasil = await ingest_document(
-                session,
-                path=path,
-                judul=judul,
-                unit=unit,
-                embeddings=embeddings,
-                storage=storage,
-                tahun_berlaku=tahun_berlaku,
-                valid_until=valid_until,
-                uploaded_by=admin.email,
-                chunk_size=settings.chunk_size,
-                chunk_overlap=settings.chunk_overlap,
-            )
+            with terjemahkan_galat_ai(f"'{nama}'"):
+                hasil = await ingest_document(
+                    session,
+                    path=path,
+                    judul=judul,
+                    unit=unit,
+                    embeddings=embeddings,
+                    storage=storage,
+                    tahun_berlaku=tahun_berlaku,
+                    valid_until=valid_until,
+                    uploaded_by=admin.email,
+                    nama_file=nama,
+                    chunk_size=settings.chunk_size,
+                    chunk_overlap=settings.chunk_overlap,
+                )
         except (ScannedPdfError, UnreadablePdfError, EmptyDocumentError) as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
         except StorageError as exc:
@@ -193,27 +187,12 @@ async def upload_document(
                 "Berkas tidak dapat disimpan ke penyimpanan dokumen. "
                 "Coba lagi beberapa saat lagi.",
             ) from exc
-        except EmbeddingDimensionError as exc:
-            logger.error("Ingestion '%s' gagal: %s", nama, exc)
-            raise HTTPException(
-                status.HTTP_502_BAD_GATEWAY,
-                "Dokumen tidak dapat diproses karena pengaturan model AI tidak sesuai. "
-                "Hubungi pengelola teknis.",
-            ) from exc
-        except Exception as exc:
-            if not _galat_layanan_ai(exc):
-                raise
-            logger.exception("Layanan embedding gagal saat memproses '%s'", nama)
-            raise HTTPException(
-                status.HTTP_502_BAD_GATEWAY,
-                "Layanan AI untuk memproses dokumen sedang tidak dapat dihubungi. "
-                "Coba lagi beberapa saat lagi.",
-            ) from exc
 
     return IngestionResult(
         document_id=str(hasil.document_id),
         jumlah_halaman=hasil.jumlah_halaman,
         jumlah_chunk=hasil.jumlah_chunk,
+        peringatan=list(hasil.peringatan),
     )
 
 
@@ -236,7 +215,7 @@ async def update_document(
     changes = payload.model_dump(exclude_unset=True)
     if "unit" in changes:
         # Staf juga tidak boleh "memindahkan" dokumennya ke unit lain.
-        pastikan_unit(admin, changes["unit"])
+        pastikan_unit(admin, changes["unit"], apa=APA)
     row = await repo.update_document(session, document_id, changes)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, TIDAK_DITEMUKAN)
@@ -301,11 +280,3 @@ def nama_berkas_aman(nama: str | None) -> str:
     dasar = Path((nama or "").replace("\\", "/")).name
     dasar = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", dasar).strip(" .")
     return dasar[:150] or "dokumen.pdf"
-
-
-def _galat_layanan_ai(exc: BaseException) -> bool:
-    try:
-        import openai
-    except ModuleNotFoundError:  # pragma: no cover - langchain-openai selalu membawanya
-        return False
-    return isinstance(exc, openai.APIError)

@@ -59,6 +59,15 @@ class TestOperasiDasar:
         objek = storage.client.get_object(Bucket=BUCKET, Key=kunci)
         assert objek["ContentType"] == "application/pdf"
 
+    async def test_nama_file_tersimpan_sebagai_content_disposition(self, storage):
+        kunci = await storage.save(
+            document_key("nama-asli"),
+            PDF,
+            content_disposition='inline; filename="Panduan UKT.pdf"',
+        )
+        objek = storage.client.get_object(Bucket=BUCKET, Key=kunci)
+        assert objek["ContentDisposition"] == 'inline; filename="Panduan UKT.pdf"'
+
     async def test_menimpa_isi_lama(self, storage):
         kunci = document_key("abc")
         await storage.save(kunci, PDF)

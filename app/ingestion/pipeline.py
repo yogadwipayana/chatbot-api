@@ -19,10 +19,14 @@ import anyio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.chunker import split_pages
+from app.ingestion.chunker import (
+    DEFAULT_CHUNK_OVERLAP,
+    DEFAULT_CHUNK_SIZE,
+    split_pages,
+)
 from app.ingestion.embedder import embed_and_store
-from app.ingestion.loader import load_pdf
-from app.storage import ObjectStorage, document_key
+from app.ingestion.loader import load_pdf, peringatan_kepadatan
+from app.storage import ObjectStorage, content_disposition, document_key
 
 
 class EmptyDocumentError(ValueError):
@@ -34,6 +38,8 @@ class IngestionResult:
     document_id: uuid.UUID
     jumlah_halaman: int
     jumlah_chunk: int
+    peringatan: tuple[str, ...] = ()
+    """Catatan mutu untuk admin. Dokumen tetap diterima -- ini bukan galat."""
 
 
 async def ingest_document(
@@ -47,8 +53,9 @@ async def ingest_document(
     tahun_berlaku: int | None = None,
     valid_until: date | None = None,
     uploaded_by: str | None = None,
-    chunk_size: int = 700,
-    chunk_overlap: int = 105,
+    nama_file: str | None = None,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> IngestionResult:
     """Muat, pecah, embed, simpan berkas ke penyimpanan objek, lalu catat ke DB.
 
@@ -80,8 +87,13 @@ async def ingest_document(
     if not chunks:
         raise EmptyDocumentError(f"'{Path(path).name}' tidak menghasilkan satu chunk pun")
 
+    # Dokumen tetap diterima; admin hanya diberi tahu bila teks yang terbaca
+    # tipis, karena jawaban chatbot atas dokumen seperti itu akan ikut tipis.
+    peringatan = tuple(p for p in [peringatan_kepadatan([h.konten for h in halaman])] if p)
+
     document_id = uuid.uuid4()
     key = document_key(str(document_id))
+    nama_file = (nama_file or Path(path).name).strip() or "dokumen.pdf"
 
     # Berkas diunggah lebih dulu, baris DB menyusul. Urutan ini disengaja:
     # penyimpanan objek berada di luar transaksi database, jadi salah satunya
@@ -89,7 +101,12 @@ async def ingest_document(
     # hanya memakan tempat; baris yatim (ada di DB, berkasnya hilang) membuat
     # kartu sitasi FE-2 menunjuk ke ketiadaan -- dan itu terlihat oleh mahasiswa.
     isi = await anyio.to_thread.run_sync(Path(path).read_bytes)
-    await storage.save(key, isi, content_type="application/pdf")
+    await storage.save(
+        key,
+        isi,
+        content_type="application/pdf",
+        content_disposition=content_disposition(nama_file),
+    )
 
     try:
         return await _catat_dokumen(
@@ -101,9 +118,11 @@ async def ingest_document(
             tahun_berlaku=tahun_berlaku,
             valid_until=valid_until,
             uploaded_by=uploaded_by,
+            nama_file=nama_file,
             halaman=halaman,
             chunks=chunks,
             embeddings=embeddings,
+            peringatan=peringatan,
         )
     except Exception:
         # Bersihkan objek yang sudah terlanjur terunggah, lalu teruskan galatnya.
@@ -122,15 +141,17 @@ async def _catat_dokumen(
     tahun_berlaku: int | None,
     valid_until: date | None,
     uploaded_by: str | None,
+    nama_file: str,
     halaman: list,
     chunks: list,
     embeddings: Any,
+    peringatan: tuple[str, ...],
 ) -> IngestionResult:
     await session.execute(
         text(
-            "INSERT INTO documents (id, judul, unit, file_path, tahun_berlaku,"
+            "INSERT INTO documents (id, judul, unit, file_path, nama_file, tahun_berlaku,"
             " valid_until, uploaded_by, updated_at, is_active)"
-            " VALUES (:id, :judul, :unit, :file_path, :tahun_berlaku,"
+            " VALUES (:id, :judul, :unit, :file_path, :nama_file, :tahun_berlaku,"
             " :valid_until, :uploaded_by, now(), true)"
         ),
         {
@@ -138,6 +159,7 @@ async def _catat_dokumen(
             "judul": judul,
             "unit": unit,
             "file_path": key,
+            "nama_file": nama_file,
             "tahun_berlaku": tahun_berlaku,
             "valid_until": valid_until,
             "uploaded_by": uploaded_by,
@@ -151,4 +173,5 @@ async def _catat_dokumen(
         document_id=document_id,
         jumlah_halaman=len(halaman),
         jumlah_chunk=jumlah,
+        peringatan=peringatan,
     )

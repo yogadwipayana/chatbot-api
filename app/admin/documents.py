@@ -9,11 +9,15 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.permissions import normalize_unit
+from app.db.models import JenisDokumen
 
 STALE_AFTER_MONTHS = 6
 
 UNIT_MATCH = r"lower(regexp_replace(btrim(d.unit), '\s+', ' ', 'g')) = :unit"
 """Sepadan dengan `permissions.normalize_unit`: huruf kecil, spasi dirapikan."""
+
+PDF_SAJA = "d.jenis = :jenis"
+"""Tabel `documents` juga menampung entri tanya jawab (lihat `admin.faq`)."""
 
 
 def stale_clause(alias: str = "d") -> str:
@@ -35,7 +39,7 @@ def stale_clause(alias: str = "d") -> str:
 _STALE = stale_clause("d")
 
 _KOLOM = f"""
-    d.id::text AS id, d.judul, d.unit, d.tahun_berlaku, d.valid_until, d.updated_at,
+    d.id::text AS id, d.judul, d.unit, d.jenis, d.tahun_berlaku, d.valid_until, d.updated_at,
     d.is_active, d.uploaded_by, d.file_path,
     (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) AS jumlah_chunk,
     {_STALE} AS stale
@@ -61,9 +65,12 @@ async def list_documents(
 
     `unit` membatasi seluruh angka -- termasuk `jumlah_stale` -- pada satu unit;
     dipakai untuk staf/dosen. None berarti semua unit.
+
+    Entri tanya jawab tidak ikut: ia berbagi tabel ini, tetapi dikelola di menu
+    sendiri dan tidak punya berkas yang bisa dibuka di halaman dokumen.
     """
-    lingkup: list[str] = []
-    params: dict[str, Any] = {}
+    lingkup: list[str] = [PDF_SAJA]
+    params: dict[str, Any] = {"jenis": JenisDokumen.PDF.value}
     if unit is not None:
         lingkup.append(UNIT_MATCH)
         params["unit"] = normalize_unit(unit)
@@ -96,10 +103,13 @@ async def list_documents(
 
 
 async def get_document(session: AsyncSession, document_id: uuid.UUID) -> dict[str, Any] | None:
+    """Hanya dokumen PDF. Id entri tanya jawab dijawab None, sehingga router
+    menganggapnya tidak ada -- bukan menampilkan baris tanpa berkas."""
     row = (
         (
             await session.execute(
-                text(f"SELECT {_KOLOM} FROM documents d WHERE d.id = :id"), {"id": document_id}
+                text(f"SELECT {_KOLOM} FROM documents d WHERE d.id = :id AND {PDF_SAJA}"),
+                {"id": document_id, "jenis": JenisDokumen.PDF.value},
             )
         )
         .mappings()
@@ -125,8 +135,11 @@ async def update_document(
         set_clause.append("updated_at = now()")
 
     hasil = await session.execute(
-        text(f"UPDATE documents SET {', '.join(set_clause)} WHERE id = :id RETURNING id"),
-        {**{k: changes[k] for k in kolom}, "id": document_id},
+        text(
+            f"UPDATE documents d SET {', '.join(set_clause)}"
+            f" WHERE d.id = :id AND {PDF_SAJA} RETURNING d.id"
+        ),
+        {**{k: changes[k] for k in kolom}, "id": document_id, "jenis": JenisDokumen.PDF.value},
     )
     if hasil.first() is None:
         await session.rollback()
@@ -139,8 +152,11 @@ async def delete_document(session: AsyncSession, document_id: uuid.UUID) -> str 
     """Hapus dokumen beserta chunk-nya (ON DELETE CASCADE). Return: kunci objek berkasnya."""
     row = (
         await session.execute(
-            text("DELETE FROM documents WHERE id = :id RETURNING file_path"),
-            {"id": document_id},
+            text(
+                f"DELETE FROM documents d WHERE d.id = :id AND {PDF_SAJA}"
+                " RETURNING file_path"
+            ),
+            {"id": document_id, "jenis": JenisDokumen.PDF.value},
         )
     ).first()
     if row is None:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Response, status
 from fastapi.responses import RedirectResponse
@@ -12,15 +11,17 @@ from sqlalchemy import text
 from app.deps import SessionDep, StorageDep
 from app.rag.filters import active_document_clause
 from app.schemas.common import Error
-from app.storage import ObjectNotFound
+from app.storage import ObjectNotFound, content_disposition
 
 router = APIRouter(prefix="/api", tags=["dokumen"])
 
 TIDAK_TERSEDIA = "Dokumen tidak ditemukan atau sudah tidak berlaku."
 
+# `file_path IS NOT NULL` menyaring entri tanya jawab, yang memang tak berberkas:
+# tanpa itu, tautan sitasi ke entri semacam itu berakhir sebagai 500.
 _BERKAS_AKTIF_SQL = text(
-    "SELECT d.file_path, d.judul FROM documents d"
-    f" WHERE d.id = :id AND {active_document_clause('d')}"
+    "SELECT d.file_path, d.nama_file, d.judul FROM documents d"
+    f" WHERE d.id = :id AND d.file_path IS NOT NULL AND {active_document_clause('d')}"
 )
 
 
@@ -49,7 +50,9 @@ async def get_document_file(
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, TIDAK_TERSEDIA)
 
-    url = storage.url_for(row["file_path"])
+    nama_file = row["nama_file"] or f"{row['judul']}.pdf"
+    disposition = content_disposition(nama_file)
+    url = storage.url_for(row["file_path"], content_disposition=disposition)
     if url is not None:
         # Presigned URL kedaluwarsa; peramban tidak boleh menyimpan pengalihannya.
         return RedirectResponse(
@@ -63,9 +66,8 @@ async def get_document_file(
     except ObjectNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, TIDAK_TERSEDIA) from exc
 
-    nama = quote(f"{row['judul']}.pdf")
     return Response(
         isi,
         media_type="application/pdf",
-        headers={"Content-Disposition": f"inline; filename*=UTF-8''{nama}"},
+        headers={"Content-Disposition": disposition},
     )

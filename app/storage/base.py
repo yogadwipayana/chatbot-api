@@ -13,6 +13,7 @@ protokol S3).
 from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
+from urllib.parse import quote
 
 DOCUMENT_PREFIX = "documents"
 """Awalan kunci objek untuk PDF sumber."""
@@ -24,6 +25,20 @@ class StorageError(RuntimeError):
 
 class ObjectNotFound(StorageError):
     """Kunci tidak ada di penyimpanan."""
+
+
+def content_disposition(filename: str | None, *, disposition: str = "inline") -> str:
+    """Bentuk header Content-Disposition yang aman untuk nama berkas UTF-8."""
+    if disposition not in {"inline", "attachment"}:
+        raise ValueError("disposition harus inline atau attachment")
+    nama = (filename or "").replace("\r", "").replace("\n", "").strip()
+    nama = nama.replace("/", "_").replace("\\", "_") or "dokumen.pdf"
+    ascii_name = nama.encode("ascii", "ignore").decode("ascii") or "dokumen.pdf"
+    ascii_name = ascii_name.replace('"', "'")
+    return (
+        f'{disposition}; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{quote(nama, safe='')}"
+    )
 
 
 def document_key(document_id: str, *, prefix: str = DOCUMENT_PREFIX) -> str:
@@ -53,7 +68,12 @@ class ObjectStorage(Protocol):
     """Kontrak minimum yang dipakai aplikasi."""
 
     async def save(
-        self, key: str, data: bytes, *, content_type: str = "application/pdf"
+        self,
+        key: str,
+        data: bytes,
+        *,
+        content_type: str = "application/pdf",
+        content_disposition: str | None = None,
     ) -> str:
         """Simpan objek. Menimpa bila kunci sudah ada. Return: kunci."""
         ...
@@ -72,7 +92,13 @@ class ObjectStorage(Protocol):
 
     async def exists(self, key: str) -> bool: ...
 
-    def url_for(self, key: str, *, expires_in: int | None = None) -> str | None:
+    def url_for(
+        self,
+        key: str,
+        *,
+        expires_in: int | None = None,
+        content_disposition: str | None = None,
+    ) -> str | None:
         """URL yang dapat dibuka peramban secara langsung, atau None.
 
         None berarti backend tidak bisa melayani peramban sendiri (mis. disk

@@ -12,7 +12,9 @@ from app.config import Settings, get_settings
 from app.observability.tracing import configure_tracing
 from app.routers import (
     admin_auth,
+    admin_config,
     admin_documents,
+    admin_faq,
     admin_ops,
     admin_quality,
     admin_users,
@@ -76,8 +78,10 @@ def create_app() -> FastAPI:
     app.include_router(documents.router)
     app.include_router(admin_auth.router)
     app.include_router(admin_documents.router)
+    app.include_router(admin_faq.router)
     app.include_router(admin_quality.router)
     app.include_router(admin_ops.router)
+    app.include_router(admin_config.router)
     app.include_router(admin_users.router)
     return app
 

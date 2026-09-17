@@ -83,9 +83,11 @@ class Settings(BaseSettings):
     lexical_threshold: float = 0.05
 
     # --- Ingestion (FR-1) --------------------------------------------
-    chunk_size: int = 700
+    chunk_size: int = 900
+    """Pagar atas untuk bagian yang kepanjangan. Batas chunk yang sebenarnya
+    struktural: judul bagian di dalam dokumen (lihat `ingestion.chunker`)."""
     chunk_overlap: int = 105
-    """~15% dari chunk_size, sesuai FR-1."""
+    """~12% dari chunk_size. Hanya berlaku saat satu bagian harus dipecah."""
     storage_dir: str = "storage/documents"
     """Dipakai hanya bila `storage_backend` bernilai `local`."""
 

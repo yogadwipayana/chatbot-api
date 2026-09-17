@@ -17,6 +17,7 @@ import bcrypt
 
 from app.admin.accounts import EDITABLE_FIELDS, Account, DuplicateEmailError
 from app.admin.permissions import ROLE_LEVEL, AdminRole
+from app.admin.runtime_config import NilaiTersimpan
 
 
 @dataclass
@@ -247,3 +248,26 @@ class FakeAccountStore:
         self.accounts[account_id] = replace(
             self.accounts[account_id], last_login_at=datetime.now(UTC)
         )
+
+
+class FakeRuntimeConfigStore:
+    """Pengganti `SqlRuntimeConfigStore`: penimpaan setelan di memori."""
+
+    def __init__(self, awal: dict[str, str] | None = None) -> None:
+        self.values: dict[str, NilaiTersimpan] = {
+            k: NilaiTersimpan(v, datetime.now(UTC), "seed@kampus.ac.id")
+            for k, v in (awal or {}).items()
+        }
+
+    async def load(self) -> dict[str, NilaiTersimpan]:
+        return dict(self.values)
+
+    async def replace(self, changes, *, by: str) -> None:
+        for key, value in changes.items():
+            if value is None:
+                self.values.pop(key, None)
+            else:
+                self.values[key] = NilaiTersimpan(value, datetime.now(UTC), by)
+
+    async def clear(self) -> None:
+        self.values.clear()

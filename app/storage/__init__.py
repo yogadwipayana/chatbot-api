@@ -8,6 +8,7 @@ from app.storage.base import (
     ObjectNotFound,
     ObjectStorage,
     StorageError,
+    content_disposition,
     document_key,
 )
 from app.storage.local import LocalStorage
@@ -18,6 +19,7 @@ __all__ = [
     "ObjectNotFound",
     "ObjectStorage",
     "StorageError",
+    "content_disposition",
     "build_storage",
     "document_key",
 ]

@@ -72,8 +72,8 @@ info:
 
     | Level | Hak |
     |---|---|
-    | `staf` (Staf/Dosen) | Kelola dokumen **unitnya sendiri**, uji coba jawaban, lihat pertanyaan tak terjawab |
-    | `admin` | + kelola dokumen semua unit, tandai pertanyaan selesai, statistik |
+    | `staf` (Staf/Dosen) | Kelola dokumen dan entri tanya jawab **unitnya sendiri**, uji coba jawaban, lihat pertanyaan tak terjawab |
+    | `admin` | + kelola dokumen dan tanya jawab semua unit, tandai pertanyaan selesai, statistik |
     | `superadmin` | + kill switch layanan chat, kelola akun dashboard |
 
     Level dan unit dibaca dari database pada setiap permintaan, bukan dari isi
@@ -102,6 +102,8 @@ tags:
     description: Autentikasi dashboard admin (AD-1).
   - name: admin-dokumen
     description: Kelola dokumen sumber (AD-2, AD-3).
+  - name: admin-tanya-jawab
+    description: Entri tanya jawab, sumber jawaban yang diketik langsung tanpa PDF.
   - name: admin-kualitas
     description: Pertanyaan tak terjawab dan uji coba retrieval (AD-4, AD-6).
   - name: admin-operasional
@@ -650,6 +652,143 @@ paths:
         '403': { $ref: '#/components/responses/Terlarang' }
         '404': { $ref: '#/components/responses/TidakDitemukan' }
 
+  /api/admin/faq:
+    get:
+      tags: [admin-tanya-jawab]
+      summary: Daftar entri tanya jawab
+      operationId: list_faq
+      x-status: implemented
+      x-min-role: staf
+      security: [{ bearerAuth: [] }]
+      description: |
+        Entri tanya jawab adalah satu pasang pertanyaan dan jawaban yang diketik
+        admin langsung di dashboard, tanpa berkas PDF sama sekali.
+
+        Chatbot memperlakukannya persis seperti dokumen: ikut terambil retrieval
+        hibrida, ikut berhenti dipakai saat `valid_until` lewat (FR-2), dan ikut
+        menjadi kartu sitasi -- dengan `jenis: tanya_jawab`, sehingga frontend
+        tahu tidak ada berkas yang bisa dibuka.
+
+        Inilah jalan tercepat menutup pertanyaan tak terjawab (AD-4): tidak
+        semua jawaban perlu menunggu dokumen resmi terbit lebih dulu.
+
+        Staf/dosen hanya melihat entri unitnya, sama seperti dokumen, dan
+        `total` pun dihitung atas unit itu.
+      parameters:
+        - name: include_inactive
+          in: query
+          schema: { type: boolean, default: false }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Daftar entri tanya jawab
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FaqPage' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+
+    post:
+      tags: [admin-tanya-jawab]
+      summary: Tambah entri tanya jawab
+      operationId: create_faq
+      x-status: implemented
+      x-min-role: staf
+      security: [{ bearerAuth: [] }]
+      description: |
+        Sinkron seperti unggah dokumen: entri disimpan, dipecah menjadi chunk,
+        dan di-embed dalam satu transaksi. Begitu balasan 201 diterima, chatbot
+        sudah dapat memakainya pada pertanyaan berikutnya.
+
+        Tulis pertanyaannya seperti mahasiswa akan menanyakannya -- kalimat itu
+        ikut diindeks dan ikut tampil sebagai judul sumber pada kartu sitasi.
+
+        Jawaban panjang dipecah menjadi beberapa chunk, dan setiap potongannya
+        tetap membawa pertanyaannya.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FaqEntryCreate' }
+      responses:
+        '201':
+          description: Entri tersimpan dan terindeks
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FaqEntry' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '502':
+          description: |
+            Layanan AI untuk menghitung embedding gagal. `detail` berisi kalimat
+            siap tampil yang menyarankan mencoba lagi; entri tidak tersimpan.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/faq/{entry_id}:
+    parameters:
+      - name: entry_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [admin-tanya-jawab]
+      summary: Perbarui entri tanya jawab
+      operationId: update_faq
+      x-status: implemented
+      x-min-role: staf
+      security: [{ bearerAuth: [] }]
+      description: |
+        Mengubah `pertanyaan` atau `jawaban` membuang chunk lama dan menghitung
+        ulang embedding-nya dalam transaksi yang sama. Indeks yang masih memuat
+        kalimat versi lama akan menjawab mahasiswa dengan aturan yang sudah
+        dicabut -- persis risiko yang diangkat PRD §12.
+
+        `updated_at` diperbarui saat isi berubah (`pertanyaan`, `jawaban`,
+        `unit`, `valid_until`), tetapi tidak saat hanya `is_active` yang
+        berubah -- sama seperti dokumen.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FaqEntryUpdate' }
+      responses:
+        '200':
+          description: Tersimpan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FaqEntry' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '502':
+          description: Layanan AI gagal saat mengindeks ulang; entri tidak berubah.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+    delete:
+      tags: [admin-tanya-jawab]
+      summary: Hapus entri tanya jawab
+      operationId: delete_faq
+      x-status: implemented
+      x-min-role: staf
+      security: [{ bearerAuth: [] }]
+      description: |
+        Permanen dan tidak dapat dibatalkan; frontend WAJIB meminta konfirmasi
+        (PRD §9). Untuk sekadar menghentikan pemakaiannya, pakai
+        `PATCH { "is_active": false }`.
+      responses:
+        '204':
+          description: Terhapus
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+
   /api/admin/unanswered:
     get:
       tags: [admin-kualitas]
@@ -731,6 +870,63 @@ paths:
         '401': { $ref: '#/components/responses/TidakBerwenang' }
         '403': { $ref: '#/components/responses/Terlarang' }
         '404': { $ref: '#/components/responses/TidakDitemukan' }
+
+  /api/admin/feedback:
+    get:
+      tags: [admin-kualitas]
+      summary: Umpan balik mahasiswa atas jawaban
+      operationId: list_feedback
+      x-status: implemented
+      x-min-role: admin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Penilaian 👍/👎 yang dikirim mahasiswa lewat `POST /api/feedback` (FE-5),
+        terbaru lebih dulu, beserta pertanyaan dan jawaban yang dinilai.
+
+        Statistik AD-5 hanya memuat rasio kepuasan: ia memberi tahu ada yang
+        salah, bukan apanya. Daftar ini melengkapinya -- jempol ke bawah dapat
+        ditelusuri ke pertanyaan yang memicunya, lalu diuji ulang lewat
+        `POST /api/admin/test-query`.
+
+        `catatan` jarang terisi: FE-5 satu klik tanpa modal, jadi sebagian besar
+        baris hanya berupa jempol. `pertanyaan` diambil dari pesan mahasiswa
+        terakhir sebelum jawaban itu di percakapan yang sama; untuk pertanyaan
+        sensitif (FR-7) yang tersimpan adalah penanda tetap, bukan kalimat
+        aslinya.
+
+        Isi percakapan, jadi levelnya sama dengan statistik: minimal admin.
+      parameters:
+        - name: helpful
+          in: query
+          description: Kosongkan untuk menampilkan keduanya.
+          schema: { type: boolean }
+        - name: sejak
+          in: query
+          schema: { type: string, format: date }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Umpan balik
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FeedbackPage' }
+              example:
+                items:
+                  - id: 7d1e4b2a-9c3f-4e58-b0a7-1f2e3d4c5b6a
+                    message_id: 9c3e1a44-6b2d-4f51-8a70-2d9b5c1e7f03
+                    helpful: false
+                    catatan: Jawabannya tidak menyebut biaya cetaknya
+                    created_at: '2026-09-09T14:25:03Z'
+                    pertanyaan: Berapa biaya legalisir ijazah?
+                    jawaban: Legalisir ijazah diurus di Biro Administrasi Akademik [Panduan Akademik 2025, hal. 12].
+                    kind: answer
+                    top_score: 0.62
+                total: 18
+                jumlah_positif: 124
+                jumlah_negatif: 18
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
 
   /api/admin/test-query:
     post:
@@ -854,6 +1050,90 @@ paths:
         '401': { $ref: '#/components/responses/TidakBerwenang' }
         '403': { $ref: '#/components/responses/Terlarang' }
         '422': { $ref: '#/components/responses/ValidationError' }
+
+  /api/admin/config:
+    get:
+      tags: [admin-operasional]
+      summary: Setelan retrieval dan chunking yang berlaku
+      operationId: get_runtime_config
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Parameter FR-1/FR-2/FR-3 yang dipakai layanan saat ini (`nilai`), beserta
+        nilai `.env` server sebagai pembandingnya (`nilai_env`) dan daftar
+        parameter yang sedang ditimpa dari dashboard (`diubah`).
+
+        Nama model dan endpoint ikut dikirim sebagai keterangan saja -- mengganti
+        model embedding menuntut re-index seluruh dokumen, jadi ia tetap hanya
+        lewat `.env`. Kunci API tidak pernah dikirim; hanya `api_key_terisi`.
+      responses:
+        '200':
+          description: Konfigurasi
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RuntimeConfig' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+
+    patch:
+      tags: [admin-operasional]
+      summary: Ubah setelan retrieval dan chunking
+      operationId: update_runtime_config
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Hanya field yang dikirim yang diubah, dan perubahannya berlaku pada
+        permintaan berikutnya tanpa restart. Nilai yang sama persis dengan
+        `.env` -- atau `null` -- menghapus penimpaannya; itulah cara
+        "kembalikan ke nilai server" untuk satu parameter.
+
+        Yang divalidasi adalah keadaan setelah perubahan, bukan hanya isi
+        permintaan: `chunk_overlap` yang sah sendirian tetap ditolak bila
+        melanggar `chunk_size` yang sudah tersimpan.
+
+        `chunk_size` dan `chunk_overlap` hanya mengenai dokumen yang diproses
+        setelahnya; dokumen lama baru ikut berubah bila diunggah ulang.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RuntimeConfigUpdate' }
+      responses:
+        '200':
+          description: Konfigurasi setelah perubahan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RuntimeConfig' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '422':
+          description: Nilai di luar batas, atau kombinasinya tidak sah
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+    delete:
+      tags: [admin-operasional]
+      summary: Kembalikan seluruh setelan ke nilai .env
+      operationId: reset_runtime_config
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Menghapus seluruh penimpaan sekaligus. Jalan keluar saat penyetelan
+        membuat jawaban makin buruk dan tidak jelas lagi nilai mana yang diubah.
+        Mengembalikan konfigurasi sesudahnya, bukan 204, supaya dashboard tidak
+        perlu memuat ulang.
+      responses:
+        '200':
+          description: Konfigurasi setelah dikembalikan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RuntimeConfig' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
 
   /api/admin/me:
     get:
@@ -1287,7 +1567,16 @@ components:
         document_id: { type: string, format: uuid }
         file_path:
           type: string
-          description: Lintasan internal. Untuk ditampilkan, bukan untuk diakses langsung.
+          description: |
+            Lintasan internal. Untuk ditampilkan, bukan untuk diakses langsung.
+            Kosong bila sumbernya entri tanya jawab, yang memang tak berberkas.
+        jenis:
+          $ref: '#/components/schemas/JenisDokumen'
+          default: pdf
+          description: |
+            `tanya_jawab` berarti tidak ada PDF yang bisa dibuka dan nomor
+            halamannya tidak berarti apa-apa: tampilkan kartunya tanpa tautan
+            dan tanpa "hal. N".
 
     ContactOut:
       type: object
@@ -1458,6 +1747,14 @@ components:
         document_id: { type: string, format: uuid }
         jumlah_halaman: { type: integer, minimum: 1 }
         jumlah_chunk: { type: integer, minimum: 1 }
+        peringatan:
+          type: array
+          items: { type: string }
+          description: |
+            Catatan mutu dokumen yang baru diunggah -- mis. teks yang terbaca
+            sangat sedikit karena isinya didominasi tangkapan layar. Bukan
+            galat: unggahan tetap berhasil. Tiap entri berupa kalimat siap
+            tampil untuk admin.
 
     Chunk:
       type: object
@@ -1467,6 +1764,82 @@ components:
         konten: { type: string }
         halaman: { type: integer, minimum: 1 }
         urutan: { type: integer, minimum: 0 }
+
+    JenisDokumen:
+      type: string
+      enum: [pdf, tanya_jawab]
+      description: |
+        Asal isi sebuah sumber. `pdf`: berkas resmi yang diunggah admin, punya
+        berkas yang dapat dibuka dan nomor halaman yang berarti. `tanya_jawab`:
+        diketik admin di dashboard, tanpa berkas -- kartu sumbernya tidak boleh
+        dibuat sebagai tautan.
+
+    FaqEntry:
+      type: object
+      required: [id, pertanyaan, jawaban, unit, updated_at, is_active, jumlah_chunk, stale]
+      properties:
+        id: { type: string, format: uuid }
+        pertanyaan:
+          type: string
+          description: Sekaligus judul sumber pada kartu sitasi yang dilihat mahasiswa.
+        jawaban: { type: string }
+        unit: { type: string }
+        valid_until:
+          type: [string, 'null']
+          format: date
+          description: |
+            null berarti berlaku tanpa batas. Lewat tanggal ini, entri berhenti
+            terambil retrieval secara otomatis (FR-2).
+        updated_at: { type: string, format: date-time }
+        is_active: { type: boolean }
+        jumlah_chunk:
+          type: integer
+          minimum: 0
+          description: |
+            Jawaban pendek menjadi satu potongan; jawaban panjang dipecah, dan
+            setiap potongan tetap membawa pertanyaannya.
+        stale:
+          type: boolean
+          description: |
+            Sama dengan dokumen: lebih dari 6 bulan tidak diperbarui, atau sudah
+            lewat masa berlaku.
+        uploaded_by:
+          type: [string, 'null']
+          description: Email admin yang terakhir menyimpannya.
+
+    FaqPage:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/FaqEntry' }
+        total:
+          type: integer
+          minimum: 0
+          description: Jumlah entri yang cocok dengan filter, untuk paginasi.
+
+    FaqEntryCreate:
+      type: object
+      required: [pertanyaan, jawaban, unit]
+      properties:
+        pertanyaan: { type: string, minLength: 5, maxLength: 500 }
+        jawaban: { type: string, minLength: 10, maxLength: 5000 }
+        unit: { type: string, minLength: 2, maxLength: 200 }
+        valid_until: { type: [string, 'null'], format: date }
+
+    FaqEntryUpdate:
+      type: object
+      description: Hanya field yang dikirim yang diubah.
+      properties:
+        pertanyaan: { type: string, minLength: 5, maxLength: 500 }
+        jawaban: { type: string, minLength: 10, maxLength: 5000 }
+        unit: { type: string, minLength: 2, maxLength: 200 }
+        valid_until:
+          type: [string, 'null']
+          format: date
+          description: Kirim null untuk menjadikan entri berlaku tanpa batas.
+        is_active: { type: boolean }
 
     UnansweredUpdate:
       type: object
@@ -1498,6 +1871,58 @@ components:
         terakhir_ditanyakan: { type: string, format: date-time }
         resolved: { type: boolean }
 
+    FeedbackItem:
+      type: object
+      required: [id, message_id, helpful, created_at, jawaban]
+      description: Satu penilaian FE-5 beserta pasangan pertanyaan-jawaban yang dinilai.
+      properties:
+        id: { type: string, format: uuid }
+        message_id:
+          type: string
+          format: uuid
+          description: Baris `messages` yang dinilai, selalu jawaban chatbot.
+        helpful: { type: boolean }
+        created_at: { type: string, format: date-time }
+        jawaban: { type: string, description: Isi jawaban chatbot apa adanya. }
+        catatan:
+          type: [string, 'null']
+          description: |
+            Isian bebas mahasiswa. FE-5 satu klik tanpa modal, jadi sebagian
+            besar umpan balik tidak memilikinya.
+        pertanyaan:
+          type: [string, 'null']
+          description: |
+            Pesan mahasiswa terakhir sebelum jawaban ini. Null bila pesannya
+            sudah terhapus dari log. Pertanyaan sensitif (FR-7) berisi penanda
+            tetap, bukan kalimat aslinya.
+        kind:
+          type: [string, 'null']
+          description: |
+            `messages.meta.kind` apa adanya. Sengaja bukan enum tertutup: nilai
+            baru di backend tidak boleh membuat halaman ini gagal memuat.
+        top_score:
+          type: [number, 'null']
+          description: Skor mentah tertinggi saat jawaban itu dibuat.
+
+    FeedbackPage:
+      type: object
+      required: [items, total, jumlah_positif, jumlah_negatif]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/FeedbackItem' }
+        total:
+          type: integer
+          minimum: 0
+          description: Jumlah baris yang cocok dengan seluruh filter, untuk penomoran halaman.
+        jumlah_positif: { type: integer, minimum: 0 }
+        jumlah_negatif:
+          type: integer
+          minimum: 0
+          description: |
+            Keduanya dihitung mengabaikan filter `helpful`, sehingga jumlah pada
+            kedua tab tetap terlihat saat salah satunya sedang dipilih.
+
     RetrievedChunk:
       type: object
       required: [chunk_id, judul, halaman, konten, rrf_score, raw_scores, ranks]
@@ -1506,6 +1931,9 @@ components:
         chunk_id: { type: string, format: uuid }
         document_id: { type: [string, 'null'], format: uuid }
         judul: { type: string }
+        jenis:
+          $ref: '#/components/schemas/JenisDokumen'
+          default: pdf
         halaman: { type: integer }
         konten: { type: string }
         rrf_score:
@@ -1699,6 +2127,94 @@ components:
           description: |
             Email admin yang menyalakan, atau `konfigurasi server` bila
             dinyalakan lewat `KILL_SWITCH_ENABLED`.
+
+    # --- Konfigurasi runtime ------------------------------------------------
+    RuntimeConfigValues:
+      type: object
+      required:
+        [retrieval_candidates, retrieval_top_n, rrf_k, rrf_weight_vector,
+         rrf_weight_fulltext, vector_threshold, lexical_threshold, chunk_size,
+         chunk_overlap]
+      description: |
+        Parameter yang dapat disetel dari dashboard. Namanya sengaja sama persis
+        dengan variabel di `.env` dan field `app.config.Settings`.
+      properties:
+        retrieval_candidates:
+          type: integer
+          description: Kandidat per sumber sebelum fusi (FR-2).
+        retrieval_top_n:
+          type: integer
+          description: Potongan yang masuk konteks LLM setelah RRF.
+        rrf_k:
+          type: integer
+          description: Konstanta peredam RRF; makin besar, makin rata pengaruh peringkat.
+        rrf_weight_vector:
+          type: number
+          description: Bobot pencarian vektor saat fusi. 0 mematikan sumber ini.
+        rrf_weight_fulltext:
+          type: number
+          description: Bobot pencarian kata saat fusi. 0 mematikan sumber ini.
+        vector_threshold:
+          type: number
+          description: Kemiripan vektor minimum sebelum LLM dipanggil (FR-3).
+        lexical_threshold:
+          type: number
+          description: Skor `ts_rank` minimum sebelum LLM dipanggil (FR-3).
+        chunk_size:
+          type: integer
+          description: Pagar atas panjang satu potongan, dalam token (FR-1).
+        chunk_overlap:
+          type: integer
+          description: Tumpang tindih antar potongan saat satu bagian harus dipecah.
+
+    RuntimeConfigUpdate:
+      type: object
+      additionalProperties: false
+      description: |
+        Hanya field yang dikirim yang diubah; `null` mengembalikan field itu ke
+        nilai `.env`. Batas di sini adalah pagar kewarasan; aturan antar-field
+        diperiksa terhadap hasil gabungannya.
+      properties:
+        retrieval_candidates: { type: [integer, 'null'], minimum: 1, maximum: 100 }
+        retrieval_top_n: { type: [integer, 'null'], minimum: 1, maximum: 50 }
+        rrf_k: { type: [integer, 'null'], minimum: 1, maximum: 1000 }
+        rrf_weight_vector: { type: [number, 'null'], minimum: 0, maximum: 5 }
+        rrf_weight_fulltext: { type: [number, 'null'], minimum: 0, maximum: 5 }
+        vector_threshold: { type: [number, 'null'], minimum: 0, maximum: 1 }
+        lexical_threshold: { type: [number, 'null'], minimum: 0, maximum: 1 }
+        chunk_size: { type: [integer, 'null'], minimum: 200, maximum: 4000 }
+        chunk_overlap: { type: [integer, 'null'], minimum: 0, maximum: 1000 }
+
+    RuntimeConfig:
+      type: object
+      required: [nilai, nilai_env, diubah, chat_model, embed_model, api_key_terisi]
+      properties:
+        nilai:
+          allOf: [{ $ref: '#/components/schemas/RuntimeConfigValues' }]
+          description: Yang dipakai layanan saat ini.
+        nilai_env:
+          allOf: [{ $ref: '#/components/schemas/RuntimeConfigValues' }]
+          description: Yang tertulis di `.env` server.
+        diubah:
+          type: array
+          items: { type: string }
+          description: Nama parameter yang sedang ditimpa dari dashboard.
+        chat_model: { type: string }
+        embed_model: { type: string }
+        base_url:
+          type: [string, 'null']
+          description: Endpoint OpenAI-compatible; kosong berarti OpenAI resmi.
+        api_key_terisi:
+          type: boolean
+          description: Kuncinya sendiri tidak pernah dikirim ke peramban.
+        diperbarui_at: { type: [string, 'null'], format: date-time }
+        diperbarui_oleh: { type: [string, 'null'] }
+        peringatan:
+          type: [string, 'null']
+          description: |
+            Terisi bila nilai tersimpan tidak dapat dipakai (mis. `.env` berubah
+            sehingga kombinasinya melanggar aturan) dan layanan sementara
+            kembali ke `.env`.
 
     # --- Akun dan level akses ----------------------------------------------
     AdminRole:
