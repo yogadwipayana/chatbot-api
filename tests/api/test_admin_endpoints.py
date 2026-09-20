@@ -94,7 +94,7 @@ class TestLogin:
         assert cek.status_code == 200
 
     def test_email_tidak_peka_huruf_besar(self, login_client):
-        assert self.masuk(login_client, email="Admin@Kampus.AC.ID").status_code == 200
+        assert self.masuk(login_client, email="Admin@Instiki.AC.ID").status_code == 200
 
     def test_pesan_gagal_tidak_membedakan_penyebab(self, login_client):
         """Tidak boleh bisa dipakai memetakan email mana yang punya akun admin."""

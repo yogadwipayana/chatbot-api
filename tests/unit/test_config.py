@@ -195,11 +195,11 @@ class TestPenyimpananObjek:
 
     def test_base_url_publik_tanpa_skema_ditolak(self):
         with pytest.raises(ValidationError, match="http://"):
-            settings(**self.KREDENSIAL, s3_public_base_url="dokumen.kampus.ac.id")
+            settings(**self.KREDENSIAL, s3_public_base_url="dokumen.instiki.ac.id")
 
     def test_garis_miring_akhir_base_url_dirapikan(self):
-        s = settings(**self.KREDENSIAL, s3_public_base_url="https://dokumen.kampus.ac.id/")
-        assert s.s3_public_base_url == "https://dokumen.kampus.ac.id"
+        s = settings(**self.KREDENSIAL, s3_public_base_url="https://dokumen.instiki.ac.id/")
+        assert s.s3_public_base_url == "https://dokumen.instiki.ac.id"
 
     def test_presign_melebihi_batas_sigv4_ditolak(self):
         """SigV4 membatasi presigned URL maksimal 7 hari."""
@@ -241,11 +241,11 @@ class TestPenyimpananObjek:
             settings(
                 **self.KREDENSIAL,
                 s3_endpoint_url=self.R2_ENDPOINT,
-                s3_public_base_url="https://dokumen.kampus.ac.id",
+                s3_public_base_url="https://dokumen.instiki.ac.id",
                 s3_presign_ttl_seconds=300,
             )
         )
-        assert dibangun.public_base_url == "https://dokumen.kampus.ac.id"
+        assert dibangun.public_base_url == "https://dokumen.instiki.ac.id"
         assert dibangun.presign_ttl == 300
         assert dibangun.client.meta.config.request_checksum_calculation == "when_required"
 

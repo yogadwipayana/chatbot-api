@@ -275,7 +275,7 @@ class Admin(Base):
             name="ck_admins_staf_unit",
         ),
         # Login dan pencarian akun memakai lower(email); tanpa index unik ini
-        # "Admin@kampus.ac.id" dan "admin@kampus.ac.id" bisa menjadi dua akun.
+        # "Admin@instiki.ac.id" dan "admin@instiki.ac.id" bisa menjadi dua akun.
         Index("ix_admins_email_lower", text("lower(email)"), unique=True),
     )
 

@@ -42,7 +42,7 @@ CRISIS_CONTACTS: tuple[SupportContact, ...] = (
     SupportContact(
         unit="Unit Bimbingan & Konseling Kampus",
         jam_layanan="Senin-Jumat, 08.00-15.00",
-        kontak="konseling@kampus.ac.id",
+        kontak="konseling@instiki.ac.id",
     ),
 )
 
@@ -50,7 +50,7 @@ DISTRESS_CONTACTS: tuple[SupportContact, ...] = (
     SupportContact(
         unit="Unit Bimbingan & Konseling Kampus",
         jam_layanan="Senin-Jumat, 08.00-15.00",
-        kontak="konseling@kampus.ac.id",
+        kontak="konseling@instiki.ac.id",
     ),
     SupportContact(
         unit="Dosen Wali",

@@ -45,8 +45,8 @@ class TestKataSandi:
 
 class TestToken:
     def test_bolak_balik(self):
-        token = create_access_token("admin@kampus.ac.id", SECRET)
-        assert decode_access_token(token, SECRET)["sub"] == "admin@kampus.ac.id"
+        token = create_access_token("admin@instiki.ac.id", SECRET)
+        assert decode_access_token(token, SECRET)["sub"] == "admin@instiki.ac.id"
 
     def test_role_ikut_terbawa(self):
         token = create_access_token("a@b.c", SECRET, role="superadmin")
@@ -113,8 +113,8 @@ class TestKillSwitch:
 
     def test_pelaku_tercatat_dan_dibersihkan(self):
         switch = KillSwitch()
-        switch.engage("insiden", by="admin@kampus.ac.id")
-        assert switch.engaged_by == "admin@kampus.ac.id"
+        switch.engage("insiden", by="admin@instiki.ac.id")
+        assert switch.engaged_by == "admin@instiki.ac.id"
         switch.release()
         assert switch.engaged_by is None
 
@@ -123,7 +123,7 @@ class TestKillSwitch:
         switch = KillSwitch()
         switch.engage("insiden")
         awal = switch.engaged_at
-        switch.engage("insiden: jawaban UKT keliru", by="admin@kampus.ac.id")
+        switch.engage("insiden: jawaban UKT keliru", by="admin@instiki.ac.id")
         assert switch.engaged_at == awal
         assert switch.reason == "insiden: jawaban UKT keliru"
 

@@ -263,7 +263,7 @@ migrasi, **dan** tetap dideklarasikan di `models.py` — tanpa deklarasi itu,
 `DROP INDEX`.
 
 **`ix_admins_email_lower`.** Login dan pencarian akun memakai `lower(email)`.
-Tanpa indeks unik ini, `Admin@kampus.ac.id` dan `admin@kampus.ac.id` bisa menjadi
+Tanpa indeks unik ini, `Admin@instiki.ac.id` dan `admin@instiki.ac.id` bisa menjadi
 dua akun berbeda.
 
 ---

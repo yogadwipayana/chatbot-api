@@ -34,7 +34,7 @@ class Akun:
 
 
 def pelaku(role: AdminRole = SUPER, unit: str | None = None, id_: uuid.UUID | None = None):
-    return CurrentAdmin(id=id_ or uuid.uuid4(), email="x@kampus.ac.id", role=role, unit=unit)
+    return CurrentAdmin(id=id_ or uuid.uuid4(), email="x@instiki.ac.id", role=role, unit=unit)
 
 
 class TestLevel:

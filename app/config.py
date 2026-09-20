@@ -128,7 +128,7 @@ class Settings(BaseSettings):
     AWS S3 asli dan memang menginginkan checksum penuh."""
 
     s3_public_base_url: str | None = None
-    """Domain publik bucket, bila ada -- mis. `https://dokumen.kampus.ac.id`
+    """Domain publik bucket, bila ada -- mis. `https://dokumen.instiki.ac.id`
     atau URL r2.dev. Diisi berarti PDF disajikan lewat URL publik yang stabil
     dan dapat di-cache. Dikosongkan berarti memakai presigned URL."""
 
@@ -165,7 +165,7 @@ class Settings(BaseSettings):
     # --- Dashboard admin (AD-1..AD-6) --------------------------------
     cors_origins: str = ""
     """Asal peramban yang boleh memanggil API, dipisah koma, mis.
-    `https://admin.kampus.ac.id,https://portal.kampus.ac.id`.
+    `https://admin.instiki.ac.id,https://portal.instiki.ac.id`.
 
     Wajib diisi begitu dashboard/portal memakai domain yang berbeda dari API
     (mis. admin.* dan sads.* memanggil api.*): peramban menolak respons yang

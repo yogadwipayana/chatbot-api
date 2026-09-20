@@ -81,14 +81,14 @@ info:
     itu juga. Token yang terbit sebelum kata sandi terakhir diganti ditolak.
   contact:
     name: Biro Administrasi Akademik
-    email: akademik@kampus.ac.id
+    email: akademik@instiki.ac.id
   license:
     name: Internal kampus
 
 servers:
   - url: http://localhost:8000
     description: Pengembangan lokal
-  - url: https://chatbot.kampus.ac.id
+  - url: https://chatbot.instiki.ac.id
     description: Produksi (di balik Caddy)
 
 tags:
@@ -1502,10 +1502,10 @@ components:
         contacts:
           - unit: Biro Administrasi Akademik
             jam_layanan: Senin-Jumat, 08.00-15.00
-            kontak: akademik@kampus.ac.id
+            kontak: akademik@instiki.ac.id
           - unit: Biro Keuangan
             jam_layanan: Senin-Jumat, 08.00-14.00
-            kontak: keuangan@kampus.ac.id
+            kontak: keuangan@instiki.ac.id
         escalated: true
         top_score: 0.77
 
@@ -1517,12 +1517,12 @@ components:
         text: |-
           Maaf, saya tidak menemukan informasi ini di dokumen resmi yang saya miliki. Supaya Anda tidak mendapat jawaban yang keliru, silakan tanyakan langsung ke:
 
-          - Biro Administrasi Akademik (Senin-Jumat, 08.00-15.00): akademik@kampus.ac.id
+          - Biro Administrasi Akademik (Senin-Jumat, 08.00-15.00): akademik@instiki.ac.id
         citations: []
         contacts:
           - unit: Biro Administrasi Akademik
             jam_layanan: Senin-Jumat, 08.00-15.00
-            kontak: akademik@kampus.ac.id
+            kontak: akademik@instiki.ac.id
         escalated: true
         top_score: 0.11
 
@@ -1534,13 +1534,13 @@ components:
         text: |-
           Terima kasih sudah menyampaikan ini. Yang Anda rasakan wajar dan Anda tidak sendirian. Saya tidak bisa membantu urusan seperti ini lewat dokumen administrasi, tetapi ada orang yang siap mendengarkan:
 
-          - Unit Bimbingan & Konseling Kampus (Senin-Jumat, 08.00-15.00): konseling@kampus.ac.id
+          - Unit Bimbingan & Konseling Kampus (Senin-Jumat, 08.00-15.00): konseling@instiki.ac.id
           - Dosen Wali (Sesuai jadwal bimbingan): Hubungi melalui program studi
         citations: []
         contacts:
           - unit: Unit Bimbingan & Konseling Kampus
             jam_layanan: Senin-Jumat, 08.00-15.00
-            kontak: konseling@kampus.ac.id
+            kontak: konseling@instiki.ac.id
           - unit: Dosen Wali
             jam_layanan: Sesuai jadwal bimbingan
             kontak: Hubungi melalui program studi

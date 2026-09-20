@@ -356,9 +356,9 @@ sandi sementara yang ditampilkan sekali. Superadmin pertama -- atau pemulihan
 bila semua superadmin terkunci -- dibuat dari server:
 
 ```bash
-python -m scripts.create_admin admin@kampus.ac.id --role superadmin   # kata sandi acak, tampil sekali
-python -m scripts.create_admin keuangan@kampus.ac.id --role staf --unit "Biro Keuangan"
-python -m scripts.create_admin admin@kampus.ac.id --reset             # sandi baru + aktifkan kembali
+python -m scripts.create_admin admin@instiki.ac.id --role superadmin   # kata sandi acak, tampil sekali
+python -m scripts.create_admin keuangan@instiki.ac.id --role staf --unit "Biro Keuangan"
+python -m scripts.create_admin admin@instiki.ac.id --reset             # sandi baru + aktifkan kembali
 ```
 
 Data contoh untuk pengembangan: dokumen fiktif yang diproses lewat pipeline

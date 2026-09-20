@@ -57,7 +57,7 @@ REFUSAL_TEMPLATE = (
 DEFAULT_FALLBACK_CONTACT = risk_module.UnitContact(
     unit="Biro Administrasi Akademik",
     jam_layanan="Senin-Jumat, 08.00-15.00",
-    kontak="akademik@kampus.ac.id",
+    kontak="akademik@instiki.ac.id",
 )
 
 SUPPORT_TEMPLATE = (

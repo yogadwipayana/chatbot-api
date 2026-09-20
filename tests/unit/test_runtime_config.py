@@ -27,7 +27,7 @@ from app.schemas.admin import RuntimeConfigUpdate, RuntimeConfigValues
 
 def simpan(**nilai: str) -> dict[str, NilaiTersimpan]:
     waktu = datetime.now(UTC)
-    return {k: NilaiTersimpan(v, waktu, "admin@kampus.ac.id") for k, v in nilai.items()}
+    return {k: NilaiTersimpan(v, waktu, "admin@instiki.ac.id") for k, v in nilai.items()}
 
 
 @pytest.fixture

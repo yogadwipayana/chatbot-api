@@ -222,7 +222,7 @@ class TestKelolaAkun:
         r = client.post(
             "/api/admin/users",
             json={
-                "email": "Dosen.Baru@Kampus.ac.id",
+                "email": "Dosen.Baru@Instiki.ac.id",
                 "role": "staf",
                 "unit": "Fakultas Teknik",
                 "nama": "Dosen Baru",
@@ -231,12 +231,12 @@ class TestKelolaAkun:
         )
         assert r.status_code == 201, r.text
         data = r.json()
-        assert data["user"]["email"] == "dosen.baru@kampus.ac.id"
+        assert data["user"]["email"] == "dosen.baru@instiki.ac.id"
         assert len(data["password_sementara"]) >= 16
 
         masuk = client.post(
             "/api/admin/login",
-            json={"email": "dosen.baru@kampus.ac.id", "password": data["password_sementara"]},
+            json={"email": "dosen.baru@instiki.ac.id", "password": data["password_sementara"]},
         )
         assert masuk.status_code == 200
         me = client.get("/api/admin/me", headers=bearer(masuk)).json()
@@ -245,7 +245,7 @@ class TestKelolaAkun:
     def test_staf_tanpa_unit_ditolak(self, client, admin_headers):
         r = client.post(
             "/api/admin/users",
-            json={"email": "baru@kampus.ac.id", "role": "staf", "unit": "   "},
+            json={"email": "baru@instiki.ac.id", "role": "staf", "unit": "   "},
             headers=admin_headers,
         )
         assert r.status_code == 409
@@ -254,7 +254,7 @@ class TestKelolaAkun:
     def test_email_ganda_tidak_peka_huruf_besar_ditolak(self, client, admin_headers):
         r = client.post(
             "/api/admin/users",
-            json={"email": "ADMIN@kampus.ac.id", "role": "admin"},
+            json={"email": "ADMIN@instiki.ac.id", "role": "admin"},
             headers=admin_headers,
         )
         assert r.status_code == 409

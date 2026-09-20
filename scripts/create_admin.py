@@ -1,8 +1,8 @@
 """Buat atau atur ulang akun dashboard dari server (AD-1).
 
-    python -m scripts.create_admin admin@kampus.ac.id --role superadmin
-    python -m scripts.create_admin keuangan@kampus.ac.id --role staf --unit "Biro Keuangan"
-    python -m scripts.create_admin admin@kampus.ac.id --reset
+    python -m scripts.create_admin admin@instiki.ac.id --role superadmin
+    python -m scripts.create_admin keuangan@instiki.ac.id --role staf --unit "Biro Keuangan"
+    python -m scripts.create_admin admin@instiki.ac.id --reset
 
 Dipakai untuk akun superadmin PERTAMA, atau untuk memulihkan akses bila semua
 superadmin terkunci. Akun lain sebaiknya dibuat lewat menu Admin di dashboard

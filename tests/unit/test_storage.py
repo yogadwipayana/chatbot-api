@@ -240,10 +240,10 @@ class TestUrlPublikDanPresigned:
             bucket="d",
             access_key_id="a",
             secret_access_key="s",
-            public_base_url="https://dokumen.kampus.ac.id",
+            public_base_url="https://dokumen.instiki.ac.id",
         )
         assert s3.url_for("documents/abc.pdf") == (
-            "https://dokumen.kampus.ac.id/documents/abc.pdf"
+            "https://dokumen.instiki.ac.id/documents/abc.pdf"
         )
 
     def test_garis_miring_akhir_pada_base_url_tidak_menggandakan(self):
@@ -253,7 +253,7 @@ class TestUrlPublikDanPresigned:
             bucket="d",
             access_key_id="a",
             secret_access_key="s",
-            public_base_url="https://dokumen.kampus.ac.id/",
+            public_base_url="https://dokumen.instiki.ac.id/",
         )
         assert "//documents" not in s3.url_for("documents/abc.pdf")
 
@@ -264,6 +264,6 @@ class TestUrlPublikDanPresigned:
             bucket="d",
             access_key_id="a",
             secret_access_key="s",
-            public_base_url="https://dokumen.kampus.ac.id",
+            public_base_url="https://dokumen.instiki.ac.id",
         )
         assert " " not in s3.url_for("documents/ada spasi.pdf")

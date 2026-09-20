@@ -85,27 +85,27 @@ DEFAULT_CONTACTS: dict[RiskTopic, UnitContact] = {
     RiskTopic.DEADLINE: UnitContact(
         unit="Biro Administrasi Akademik",
         jam_layanan="Senin-Jumat, 08.00-15.00",
-        kontak="akademik@kampus.ac.id",
+        kontak="akademik@instiki.ac.id",
     ),
     RiskTopic.SYARAT_KELULUSAN: UnitContact(
         unit="Biro Administrasi Akademik",
         jam_layanan="Senin-Jumat, 08.00-15.00",
-        kontak="akademik@kampus.ac.id",
+        kontak="akademik@instiki.ac.id",
     ),
     RiskTopic.PEMBAYARAN: UnitContact(
         unit="Biro Keuangan",
         jam_layanan="Senin-Jumat, 08.00-14.00",
-        kontak="keuangan@kampus.ac.id",
+        kontak="keuangan@instiki.ac.id",
     ),
     RiskTopic.SANKSI: UnitContact(
         unit="Bagian Kemahasiswaan",
         jam_layanan="Senin-Jumat, 08.00-15.00",
-        kontak="kemahasiswaan@kampus.ac.id",
+        kontak="kemahasiswaan@instiki.ac.id",
     ),
     RiskTopic.DROP_OUT: UnitContact(
         unit="Dosen Wali / Bagian Kemahasiswaan",
         jam_layanan="Senin-Jumat, 08.00-15.00",
-        kontak="kemahasiswaan@kampus.ac.id",
+        kontak="kemahasiswaan@instiki.ac.id",
     ),
 }
 

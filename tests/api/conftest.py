@@ -43,10 +43,10 @@ from tests.fixtures.fakes import (
 
 SANDI = "kata-sandi-admin-yang-panjang"
 
-ADMIN_EMAIL = "admin@kampus.ac.id"
+ADMIN_EMAIL = "admin@instiki.ac.id"
 """Superadmin: test lama yang tidak peduli level memakai akun ini."""
-ADMIN_BIASA_EMAIL = "admin.biasa@kampus.ac.id"
-STAF_EMAIL = "staf.keuangan@kampus.ac.id"
+ADMIN_BIASA_EMAIL = "admin.biasa@instiki.ac.id"
+STAF_EMAIL = "staf.keuangan@instiki.ac.id"
 STAF_UNIT = "Biro Keuangan"
 
 EMAIL_PER_LEVEL = {

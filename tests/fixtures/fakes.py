@@ -268,7 +268,7 @@ class FakeRuntimeConfigStore:
 
     def __init__(self, awal: dict[str, str] | None = None) -> None:
         self.values: dict[str, NilaiTersimpan] = {
-            k: NilaiTersimpan(v, datetime.now(UTC), "seed@kampus.ac.id")
+            k: NilaiTersimpan(v, datetime.now(UTC), "seed@instiki.ac.id")
             for k, v in (awal or {}).items()
         }
 

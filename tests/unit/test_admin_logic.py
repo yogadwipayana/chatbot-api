@@ -21,7 +21,7 @@ from app.schemas.admin import (
 
 class TestUnitAkun:
     def test_spasi_berlebih_dirapikan_huruf_besar_dibiarkan(self):
-        akun = AdminUserCreate(email="a@kampus.ac.id", role="staf", unit="  Biro   Keuangan ")
+        akun = AdminUserCreate(email="a@instiki.ac.id", role="staf", unit="  Biro   Keuangan ")
         assert akun.unit == "Biro Keuangan"
 
     @pytest.mark.parametrize("unit", ["", "   "])
