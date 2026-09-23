@@ -34,9 +34,11 @@ from app.deps import (
     SessionDep,
     SettingsDep,
     StorageDep,
+    UnitDirectoryDep,
     get_embeddings,
     pastikan_unit,
     require_admin,
+    unit_terdaftar,
 )
 from app.ingestion.loader import ScannedPdfError, UnreadablePdfError
 from app.ingestion.pipeline import EmptyDocumentError, ingest_document
@@ -109,9 +111,12 @@ async def upload_document(
     settings: SettingsDep,
     session: SessionDep,
     storage: StorageDep,
+    units: UnitDirectoryDep,
     file: Annotated[UploadFile, File(description="Berkas PDF.")],
     judul: Annotated[str, Form(min_length=3, max_length=500)],
-    unit: Annotated[str, Form(min_length=2, max_length=200)],
+    unit: Annotated[
+        str, Form(min_length=2, max_length=200, description="Nama dari `GET /api/units`.")
+    ],
     tahun_berlaku: Annotated[int | None, Form(ge=2000, le=2100)] = None,
     valid_until: Annotated[date | None, Form()] = None,
     embeddings: Any = Depends(get_embeddings),
@@ -122,7 +127,8 @@ async def upload_document(
     non-teknis (PRD §9). Galat layanan luar (penyimpanan, API AI) menjadi 502
     dengan saran mencoba lagi; rinciannya hanya masuk log server.
     """
-    judul, unit = judul.strip(), unit.strip()
+    judul = judul.strip()
+    unit = await unit_terdaftar(units, unit)
     if not admin.can_manage_unit(unit):
         # Diperiksa sebelum berkas dibaca: tidak ada gunanya memproses PDF
         # puluhan megabita yang toh akan ditolak.
@@ -132,10 +138,6 @@ async def upload_document(
         )
     if len(judul) < 3:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Judul minimal 3 karakter.")
-    if len(unit) < 2:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT, "Nama unit minimal 2 karakter."
-        )
 
     batas = settings.max_upload_mb * 1024 * 1024
     nama = nama_berkas_aman(file.filename)
@@ -203,17 +205,23 @@ async def get_document(
     return Document.model_validate(await _dokumen_milik(session, admin, document_id))
 
 
-@router.patch("/{document_id}", response_model=Document, responses={404: {"model": Error}})
+@router.patch(
+    "/{document_id}",
+    response_model=Document,
+    responses={404: {"model": Error}, 422: {"model": Error}},
+)
 async def update_document(
     document_id: uuid.UUID,
     payload: DocumentUpdate,
     admin: CurrentAdminDep,
     session: SessionDep,
+    units: UnitDirectoryDep,
 ) -> Document:
     """Menonaktifkan dokumen TIDAK menghapus chunk-nya, sehingga dapat dikembalikan."""
     await _dokumen_milik(session, admin, document_id)
     changes = payload.model_dump(exclude_unset=True)
     if "unit" in changes:
+        changes["unit"] = await unit_terdaftar(units, changes["unit"])
         # Staf juga tidak boleh "memindahkan" dokumennya ke unit lain.
         pastikan_unit(admin, changes["unit"], apa=APA)
     row = await repo.update_document(session, document_id, changes)

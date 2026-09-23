@@ -17,11 +17,13 @@ from app.db.models import JenisDokumen
 from app.deps import (
     SessionDep,
     SettingsDep,
+    UnitDirectoryDep,
     build_llm_call,
     build_retriever,
     build_rewrite_call,
     get_chat_logger,
     guard_kill_switch,
+    unit_terdaftar,
 )
 from app.observability.chatlog import ChatLogEntry
 from app.observability.tracing import (
@@ -54,16 +56,18 @@ SSE_HEADERS = {
 }
 
 
-@router.post("/chat", response_model=ChatResponse)
+@router.post("/chat", response_model=ChatResponse, responses={422: {"model": Error}})
 async def chat(
     payload: ChatRequest,
     settings: SettingsDep,
+    units: UnitDirectoryDep,
     retriever: Any = Depends(build_retriever),
     llm_call: Any = Depends(build_llm_call),
     rewrite_call: Any = Depends(build_rewrite_call),
     chat_logger: Any = Depends(get_chat_logger),
 ) -> ChatResponse:
     """Jawaban sekali kirim. Dipakai kotak uji coba admin (AD-6) dan test."""
+    unit = await unit_terdaftar(units, payload.unit) if payload.unit else None
     mulai = time.perf_counter()
     run_id = id_giliran()
     tandai_sesi(payload.session_id, llm_call, rewrite_call)
@@ -77,20 +81,22 @@ async def chat(
             rewrite_call=rewrite_call,
             history=[Turn(t.role, t.konten) for t in payload.history],
             policy=policy_from(settings),
+            unit=unit,
         )
         akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
 
     response = to_response(outcome)
     response.message_id = await catat(
-        chat_logger, payload, outcome, mulai, llm_call, retriever, run_id
+        chat_logger, payload, outcome, mulai, llm_call, retriever, run_id, unit=unit
     )
     return response
 
 
-@router.post("/chat/stream")
+@router.post("/chat/stream", responses={422: {"model": Error}})
 async def chat_stream(
     payload: ChatRequest,
     settings: SettingsDep,
+    units: UnitDirectoryDep,
     retriever: Any = Depends(build_retriever),
     llm_call: Any = Depends(build_llm_call),
     rewrite_call: Any = Depends(build_rewrite_call),
@@ -101,6 +107,7 @@ async def chat_stream(
     # status 200 terkirim, sehingga klien hanya melihat aliran yang terputus
     # alih-alih 422 yang jelas.
     sanitize_question(payload.question)
+    unit = await unit_terdaftar(units, payload.unit) if payload.unit else None
     mulai = time.perf_counter()
     run_id = id_giliran()
     tandai_sesi(payload.session_id, llm_call, rewrite_call)
@@ -130,12 +137,20 @@ async def chat_stream(
                         policy=policy_from(settings),
                         on_token=lambda teks: antrean.put(("token", {"text": teks})),
                         on_stage=lambda stage: antrean.put(("status", {"stage": stage})),
+                        unit=unit,
                     )
                     akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
 
                 response = to_response(outcome)
                 response.message_id = await catat(
-                    chat_logger, payload, outcome, mulai, llm_call, retriever, run_id
+                    chat_logger,
+                    payload,
+                    outcome,
+                    mulai,
+                    llm_call,
+                    retriever,
+                    run_id,
+                    unit=unit,
                 )
                 return response
             finally:
@@ -274,6 +289,8 @@ async def catat(
     llm_call: Any,
     retriever: Any = None,
     run_id: str | None = None,
+    *,
+    unit: str | None = None,
 ) -> str | None:
     """Catat putaran ini (FR-8). None bila pencatatan gagal; jawaban tetap terkirim.
 
@@ -293,6 +310,7 @@ async def catat(
             model=getattr(llm_call, "model", None),
             usage=getattr(llm_call, "usage", None),
             langsmith_run_id=run_id,
+            unit=unit,
             # `getattr` berlapis, sama seperti `llm_call` di atas: test menyuntikkan
             # retriever palsu tanpa alat ukur, dan pencatatan tidak boleh menuntut
             # jenis retriever tertentu.

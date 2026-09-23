@@ -393,3 +393,57 @@ class TestPotonganJawaban:
         )
         assert hasil.kind is OutcomeKind.REFUSAL
         assert tahap == []
+
+
+class TestPilihanUnit:
+    """Unit yang dipilih mahasiswa di menu chatbot mempersempit retrieval."""
+
+    async def test_tanpa_pilihan_mencari_di_semua_unit(self, strong_retriever, llm):
+        await run_pipeline(
+            "kapan KRS", retriever=strong_retriever, llm_call=llm, policy=POLICY
+        )
+        assert strong_retriever.units == [None]
+
+    async def test_unit_diteruskan_ke_retriever(self, strong_retriever, llm):
+        await run_pipeline(
+            "kapan KRS",
+            retriever=strong_retriever,
+            llm_call=llm,
+            policy=POLICY,
+            unit="BAAK",
+        )
+        assert strong_retriever.units == ["BAAK"]
+
+    async def test_penolakan_menyebut_unit_pilihan(self, weak_retriever, llm):
+        """Mahasiswa yang salah memilih unit harus tahu bahwa pilihannya yang
+        membatasi, bukan menyimpulkan informasinya memang tidak ada."""
+        hasil = await run_pipeline(
+            "cara bayar UKT",
+            retriever=weak_retriever,
+            llm_call=llm,
+            policy=POLICY,
+            unit="Prodi",
+        )
+        assert hasil.kind is OutcomeKind.REFUSAL
+        assert "unit Prodi" in hasil.text
+        assert "semua unit" in hasil.text
+
+    async def test_penolakan_tanpa_pilihan_tidak_menyebut_unit(self, weak_retriever, llm):
+        hasil = await run_pipeline(
+            "cara bayar UKT", retriever=weak_retriever, llm_call=llm, policy=POLICY
+        )
+        assert "semua unit" not in hasil.text
+
+    async def test_pertanyaan_sensitif_tetap_mendahului_filter_unit(
+        self, strong_retriever, llm
+    ):
+        """FR-7 berhenti sebelum retrieval, apa pun unit yang dipilih."""
+        hasil = await run_pipeline(
+            "saya stres dan ingin mengakhiri hidup",
+            retriever=strong_retriever,
+            llm_call=llm,
+            policy=POLICY,
+            unit="Keuangan",
+        )
+        assert hasil.kind is OutcomeKind.SUPPORT
+        assert strong_retriever.units == []

@@ -21,6 +21,7 @@ from app.deps import (
     get_runtime_config_store,
     get_session,
     get_storage,
+    get_unit_directory,
 )
 from app.main import create_app
 from app.security.auth import create_access_token
@@ -37,6 +38,7 @@ from tests.fixtures.fakes import (
     FakeEmbeddings,
     FakeRetriever,
     FakeRuntimeConfigStore,
+    FakeUnitDirectory,
     RecordingLLM,
     RecordingRewriter,
 )
@@ -47,7 +49,7 @@ ADMIN_EMAIL = "admin@instiki.ac.id"
 """Superadmin: test lama yang tidak peduli level memakai akun ini."""
 ADMIN_BIASA_EMAIL = "admin.biasa@instiki.ac.id"
 STAF_EMAIL = "staf.keuangan@instiki.ac.id"
-STAF_UNIT = "Biro Keuangan"
+STAF_UNIT = "Keuangan"
 
 EMAIL_PER_LEVEL = {
     AdminRole.STAF: STAF_EMAIL,
@@ -89,6 +91,11 @@ def runtime_config() -> FakeRuntimeConfigStore:
 
 
 @pytest.fixture
+def units() -> FakeUnitDirectory:
+    return FakeUnitDirectory()
+
+
+@pytest.fixture
 def accounts() -> FakeAccountStore:
     """Satu akun untuk setiap level, semuanya dengan kata sandi `SANDI`."""
     store = FakeAccountStore()
@@ -107,12 +114,19 @@ def make_client(
     login_limiter,
     accounts,
     runtime_config,
+    units,
 ):
-    """Bangun TestClient dengan retriever yang hasilnya ditentukan test."""
+    """Bangun TestClient dengan retriever yang hasilnya ditentukan test.
 
-    def factory(documents, *, session=None) -> TestClient:
+    `retriever` boleh diisi untuk memeriksa apa yang diterima retriever (mis.
+    unit pilihan mahasiswa); tanpa itu dibuat baru dari `documents`.
+    """
+
+    def factory(documents, *, session=None, retriever=None) -> TestClient:
         app = create_app()
-        app.dependency_overrides[build_retriever] = lambda: FakeRetriever(documents)
+        app.dependency_overrides[build_retriever] = lambda: (
+            retriever if retriever is not None else FakeRetriever(documents)
+        )
         app.dependency_overrides[build_llm_call] = lambda: api_llm
         app.dependency_overrides[build_rewrite_call] = lambda: api_rewriter
         app.dependency_overrides[get_kill_switch] = lambda: kill_switch
@@ -123,6 +137,7 @@ def make_client(
         app.dependency_overrides[get_runtime_config_store] = lambda: runtime_config
         app.dependency_overrides[get_embeddings] = lambda: FakeEmbeddings()
         app.dependency_overrides[get_storage] = lambda: None
+        app.dependency_overrides[get_unit_directory] = lambda: units
         return TestClient(app)
 
     return factory

@@ -48,6 +48,10 @@ class ChatLogEntry:
     """Akar trace giliran ini: penulisan ulang query, retrieval, dan penyusunan
     jawaban berada di bawahnya. None saat tracing mati -- tidak ada trace yang
     dikirim, jadi tidak ada yang bisa dirujuk."""
+    unit: str | None = None
+    """Unit yang dipilih mahasiswa di menu chatbot; None = semua unit. Tanpa
+    ini, penolakan akibat salah pilih unit tidak dapat dibedakan dari dokumen
+    yang memang belum ada."""
     embed_dipanggil: bool = False
     """False untuk FR-7 dan smalltalk: keduanya berhenti sebelum retrieval,
     sehingga pertanyaannya tidak pernah di-embed sama sekali."""
@@ -85,6 +89,7 @@ def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
         "output_tokens": output_tokens,
         "biaya_usd": biaya,
         "rewritten_query": outcome.rewritten_query,
+        "unit": entry.unit,
         # Biaya meng-embed pertanyaan mahasiswa. Dipisah dari `biaya_usd`, bukan
         # dijumlahkan ke dalamnya: `biaya_usd` sudah berarti "biaya LLM" di
         # seluruh baris lama dan di `app/admin/stats.py`, dan mengubah artinya

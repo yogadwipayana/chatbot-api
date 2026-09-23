@@ -69,7 +69,7 @@ class DokumenContoh:
 DOKUMEN = (
     DokumenContoh(
         judul="Panduan Akademik 2026 (Contoh)",
-        unit="Biro Administrasi Akademik",
+        unit="BAAK",
         tahun_berlaku=2026,
         valid_until=date(2027, 8, 31),
         halaman=(
@@ -115,7 +115,7 @@ DOKUMEN = (
     ),
     DokumenContoh(
         judul="Ketentuan Pembayaran UKT 2026 (Contoh)",
-        unit="Biro Keuangan",
+        unit="Keuangan",
         tahun_berlaku=2026,
         valid_until=date(2027, 1, 31),
         halaman=(
@@ -139,7 +139,7 @@ DOKUMEN = (
     ),
     DokumenContoh(
         judul="Kalender Akademik 2024/2025 (Contoh)",
-        unit="Biro Administrasi Akademik",
+        unit="BAAK",
         tahun_berlaku=2024,
         valid_until=date(2025, 8, 31),
         halaman=(
@@ -154,7 +154,7 @@ DOKUMEN = (
     ),
     DokumenContoh(
         judul="Tata Tertib Mahasiswa (Contoh)",
-        unit="Bagian Kemahasiswaan",
+        unit="Kemahasiswaan",
         tahun_berlaku=2025,
         valid_until=None,
         usang_bulan=8,

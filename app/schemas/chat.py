@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.db.models import JenisDokumen
 from app.rag.chain import OutcomeKind
@@ -19,6 +19,30 @@ class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     session_id: str = Field(min_length=8, max_length=128)
     history: list[TurnIn] = Field(default_factory=list)
+    unit: str | None = Field(default=None, max_length=200)
+    """`nama` dari `GET /api/units`: retrieval hanya mencari di dokumen unit itu.
+    Kosong berarti semua unit. Nama yang tidak terdaftar ditolak 422."""
+
+    @field_validator("unit")
+    @classmethod
+    def _kosong_berarti_semua(cls, v: str | None) -> str | None:
+        return v if v and v.strip() else None
+
+
+class UnitOut(BaseModel):
+    """Satu pilihan di menu unit chatbot."""
+
+    nama: str
+    """Dikirim kembali apa adanya sebagai `unit` pada `POST /api/chat`."""
+    deskripsi: str | None = None
+
+
+class FaqQuestion(BaseModel):
+    """Satu pertanyaan siap klik di menu topik chatbot."""
+
+    pertanyaan: str
+    """Dikirim apa adanya sebagai `question` pada `POST /api/chat`, bersama
+    unit topiknya."""
 
 
 class CitationOut(BaseModel):

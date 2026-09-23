@@ -63,3 +63,20 @@ class TestDipakaiDiQueryRetrieval:
         klausa = active_document_clause("d")
         assert klausa in str(retriever_module.VECTOR_SQL)
         assert klausa in str(retriever_module.FULLTEXT_SQL)
+
+
+class TestFilterUnit:
+    def test_kedua_query_memakai_klausa_unit_yang_sama(self):
+        """Sama alasannya dengan predikat dokumen aktif: dua salinan yang berbeda
+        membiarkan dokumen unit lain bocor lewat salah satu jalur."""
+        klausa = retriever_module._UNIT
+        assert klausa in str(retriever_module.VECTOR_SQL)
+        assert klausa in str(retriever_module.FULLTEXT_SQL)
+
+    def test_null_berarti_semua_unit(self):
+        assert "IS NULL OR d.unit =" in retriever_module._UNIT
+
+    def test_parameter_diberi_tipe_eksplisit(self):
+        """asyncpg tidak dapat menebak tipe parameter yang hanya muncul di
+        `IS NULL`; tanpa CAST query gagal saat unit dikirim sebagai None."""
+        assert retriever_module._UNIT.count("CAST(:unit AS text)") == 2

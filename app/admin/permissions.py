@@ -47,9 +47,9 @@ ROLE_LABELS: dict[AdminRole, str] = {
 def normalize_unit(unit: str | None) -> str:
     """Bentuk pembanding nama unit: huruf kecil, spasi dirapikan.
 
-    Nama unit diketik bebas, baik saat mengunggah dokumen maupun saat membuat
-    akun. Tanpa normalisasi, "Biro Keuangan" dan "biro  keuangan" dianggap unit
-    berbeda dan staf kehilangan akses ke dokumennya sendiri.
+    Sejak ada tabel `units`, yang tersimpan selalu ejaan resmi. Normalisasi ini
+    tetap dipakai untuk mencocokkan ketikan admin ("keuangan") dengan ejaan
+    resmi ("Keuangan") -- lihat `app.units.cocokkan`.
     """
     return " ".join((unit or "").split()).casefold()
 

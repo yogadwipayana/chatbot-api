@@ -66,6 +66,43 @@ def _uuid_pk() -> Mapped[uuid.UUID]:
     return mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
 
+def _fk_unit() -> ForeignKey:
+    """Rujukan ke `units.nama`.
+
+    ON UPDATE CASCADE: mengganti nama unit cukup satu UPDATE di `units`, dan
+    seluruh dokumen serta akun staf ikut. Penghapusan unit yang masih dipakai
+    ditolak (bawaan NO ACTION) -- nonaktifkan lewat `is_active` saja.
+    """
+    return ForeignKey("units.nama", onupdate="CASCADE")
+
+
+class Unit(Base):
+    """Unit layanan kampus: satu-satunya daftar nama unit yang sah.
+
+    Mahasiswa memilih salah satunya di menu chatbot, dan retrieval hanya mencari
+    di dokumen unit itu. Filter tersebut hanya bisa dipercaya bila setiap dokumen
+    memakai nama yang persis sama -- dulu unit diketik bebas, dan "Bagian
+    Keuangan" tidak akan pernah cocok dengan pilihan "Keuangan".
+
+    Nama sengaja menjadi kunci utama, bukan kode terpisah: nilai yang tersimpan
+    di `documents.unit` tetap nama yang tampil di dashboard, sehingga kontrak
+    API admin tidak berubah.
+    """
+
+    __tablename__ = "units"
+
+    nama: Mapped[str] = mapped_column(String(200), primary_key=True)
+    deskripsi: Mapped[str | None] = mapped_column(String(500))
+    """Kepanjangan atau cakupan layanan, untuk teks bantu di menu chatbot."""
+    urutan: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    """Urutan tampil di menu; kecil lebih dulu."""
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true(), nullable=False
+    )
+    """False = disembunyikan dari menu dan tidak dapat dipilih untuk dokumen
+    baru. Dokumen lamanya tetap ada."""
+
+
 class Document(Base):
     __tablename__ = "documents"
 
@@ -73,7 +110,7 @@ class Document(Base):
     judul: Mapped[str] = mapped_column(String(500), nullable=False)
     """Untuk entri tanya jawab: pertanyaannya sendiri. Judul inilah yang muncul
     sebagai sumber pada sitasi yang dilihat mahasiswa (FE-2)."""
-    unit: Mapped[str] = mapped_column(String(200), nullable=False)
+    unit: Mapped[str] = mapped_column(String(200), _fk_unit(), nullable=False)
     jenis: Mapped[str] = mapped_column(
         String(20),
         default=JenisDokumen.PDF,
@@ -108,6 +145,7 @@ class Document(Base):
 
     __table_args__ = (
         Index("ix_documents_aktif", "is_active", "valid_until"),
+        Index("ix_documents_unit", "unit"),
         CheckConstraint(
             "jenis IN ('pdf', 'tanya_jawab')",
             name="ck_documents_jenis",
@@ -256,7 +294,7 @@ class Admin(Base):
     )
     """`staf`, `admin`, atau `superadmin`."""
     nama: Mapped[str | None] = mapped_column(String(200))
-    unit: Mapped[str | None] = mapped_column(String(200))
+    unit: Mapped[str | None] = mapped_column(String(200), _fk_unit())
     """Wajib untuk staf/dosen: membatasi dokumen yang dapat dikelola."""
     is_active: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default=true(), nullable=False

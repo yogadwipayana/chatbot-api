@@ -94,6 +94,8 @@ servers:
 tags:
   - name: chat
     description: Endpoint mahasiswa. Tanpa login, dibatasi laju, tunduk pada kill switch.
+  - name: unit
+    description: Daftar unit layanan untuk menu chatbot dan isian unit di dashboard.
   - name: dokumen
     description: Akses berkas PDF sumber, untuk verifikasi sitasi (FE-2).
   - name: sistem
@@ -156,6 +158,12 @@ paths:
                       konten: Kapan pengisian KRS dibuka?
                     - role: assistant
                       konten: Pengisian KRS dibuka 1-7 Agustus 2025.
+              dengan_unit:
+                summary: Dibatasi pada unit yang dipilih mahasiswa di menu
+                value:
+                  question: Bagaimana cara membayar UKT lewat virtual account?
+                  session_id: 5f2c9a1b-7e04-4d3a-9c88-1a2b3c4d5e6f
+                  unit: Keuangan
       responses:
         '200':
           description: |
@@ -327,6 +335,85 @@ paths:
                 - teks: Bagaimana cara mengajukan cuti kuliah?
                 - teks: Apa saja syarat wisuda?
                 - teks: Bagaimana cara minta surat keterangan aktif kuliah?
+
+  /api/units:
+    get:
+      tags: [unit]
+      summary: Daftar unit layanan
+      operationId: list_units
+      x-status: implemented
+      description: |
+        Isi menu pilihan unit di chatbot. `nama` dikirim kembali apa adanya
+        sebagai `unit` pada `POST /api/chat` dan `/api/chat/stream`.
+
+        Hanya unit aktif, dalam urutan tampil yang diatur di tabel `units`.
+        Dashboard admin memakai daftar yang sama: dokumen, entri tanya jawab,
+        dan akun staf hanya dapat diberi salah satu unit ini.
+
+        Tidak tunduk pada kill switch, supaya dashboard admin tetap berfungsi
+        saat layanan chat dimatikan.
+      responses:
+        '200':
+          description: Unit aktif
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UnitOut'
+              example:
+                - nama: BAAK
+                  deskripsi: null
+                - nama: FO
+                  deskripsi: Front Office
+                - nama: Keuangan
+                  deskripsi: null
+
+  /api/faq/questions:
+    get:
+      tags: [unit]
+      summary: Pertanyaan siap klik untuk satu topik
+      operationId: list_faq_questions
+      x-status: implemented
+      description: |
+        Isi menu topik chatbot: setelah mahasiswa memilih unit, tampilkan
+        pertanyaan ini sebagai tombol. Mengklik satu tombol mengirim teksnya
+        sebagai `question` pada `/api/chat/stream`, bersama `unit` yang sama.
+
+        Asalnya entri tanya jawab yang diketik admin, bukan saran karangan, dan
+        hanya entri yang sedang berlaku (aktif dan belum lewat `valid_until`) --
+        persis yang terambil retrieval. Setiap pertanyaan di sini karena itu
+        pasti punya jawaban. Topik yang belum punya entri mengembalikan daftar
+        kosong.
+
+        Terbaru lebih dulu. Tidak tunduk pada kill switch, sama seperti
+        `GET /api/units`.
+      parameters:
+        - name: unit
+          in: query
+          required: false
+          description: |
+            `nama` dari `GET /api/units`, tanpa peduli huruf besar. Kosong =
+            semua unit. Nama yang tidak terdaftar dijawab 422.
+          schema: { type: [string, 'null'], maxLength: 200 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 20, default: 6 }
+      responses:
+        '200':
+          description: Pertanyaan, terbaru lebih dulu
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FaqQuestion'
+              example:
+                - pertanyaan: Bagaimana cara membayar UKT lewat virtual account?
+                - pertanyaan: Kapan batas akhir pembayaran UKT semester ganjil?
+        '422':
+          $ref: '#/components/responses/ValidationError'
 
   /api/documents/{document_id}/file:
     get:
@@ -1606,6 +1693,21 @@ components:
             penulisan ulang query (FR-4); mengirim lebih banyak tidak menambah
             ketepatan tetapi menaikkan biaya.
           items: { $ref: '#/components/schemas/TurnIn' }
+        unit:
+          type: [string, 'null']
+          maxLength: 200
+          description: |
+            `nama` dari `GET /api/units`. Retrieval -- vektor maupun fulltext --
+            hanya mencari di dokumen unit ini. Kosongkan atau kirim null untuk
+            mencari di semua unit.
+
+            Dicocokkan tanpa peduli huruf besar dan spasi berlebih. Nama yang
+            tidak terdaftar, atau unit yang sudah dinonaktifkan, dijawab 422;
+            muat ulang daftar unit bila itu terjadi.
+
+            Bila tidak ada dokumen unit ini yang cukup relevan, balasannya
+            penolakan biasa (`kind: refusal`) yang menyebut unit tersebut dan
+            menyarankan memilih unit lain atau semua unit.
 
     CitationOut:
       type: object
@@ -1638,6 +1740,29 @@ components:
         unit: { type: string }
         jam_layanan: { type: string }
         kontak: { type: string }
+
+    UnitOut:
+      type: object
+      required: [nama]
+      description: Satu pilihan di menu unit chatbot.
+      properties:
+        nama:
+          type: string
+          description: Dikirim kembali apa adanya sebagai `unit` pada `POST /api/chat`.
+        deskripsi:
+          type: [string, 'null']
+          description: Kepanjangan atau cakupan layanan, untuk teks bantu di menu.
+
+    FaqQuestion:
+      type: object
+      required: [pertanyaan]
+      description: Satu pertanyaan siap klik di menu topik chatbot.
+      properties:
+        pertanyaan:
+          type: string
+          description: |
+            Dikirim apa adanya sebagai `question` pada `POST /api/chat`, bersama
+            unit topiknya.
 
     ChatResponse:
       type: object
@@ -1781,7 +1906,13 @@ components:
       properties:
         file: { type: string, format: binary, description: Berkas PDF. }
         judul: { type: string, minLength: 3, maxLength: 500 }
-        unit: { type: string, minLength: 2, maxLength: 200 }
+        unit:
+          type: string
+          minLength: 2
+          maxLength: 200
+          description: |
+            Salah satu `nama` dari `GET /api/units`, tanpa peduli huruf besar.
+            Yang tersimpan selalu ejaan resmi; nama lain dijawab 422.
         tahun_berlaku: { type: [integer, 'null'], minimum: 2000, maximum: 2100 }
         valid_until: { type: [string, 'null'], format: date }
 
@@ -1790,7 +1921,13 @@ components:
       description: Hanya field yang dikirim yang diubah.
       properties:
         judul: { type: string, minLength: 3, maxLength: 500 }
-        unit: { type: string, minLength: 2, maxLength: 200 }
+        unit:
+          type: string
+          minLength: 2
+          maxLength: 200
+          description: |
+            Salah satu `nama` dari `GET /api/units`, tanpa peduli huruf besar.
+            Yang tersimpan selalu ejaan resmi; nama lain dijawab 422.
         tahun_berlaku: { type: [integer, 'null'], minimum: 2000, maximum: 2100 }
         valid_until:
           type: [string, 'null']
@@ -1883,7 +2020,13 @@ components:
       properties:
         pertanyaan: { type: string, minLength: 5, maxLength: 500 }
         jawaban: { type: string, minLength: 10, maxLength: 5000 }
-        unit: { type: string, minLength: 2, maxLength: 200 }
+        unit:
+          type: string
+          minLength: 2
+          maxLength: 200
+          description: |
+            Salah satu `nama` dari `GET /api/units`, tanpa peduli huruf besar.
+            Yang tersimpan selalu ejaan resmi; nama lain dijawab 422.
         valid_until: { type: [string, 'null'], format: date }
 
     FaqEntryUpdate:
@@ -1892,7 +2035,13 @@ components:
       properties:
         pertanyaan: { type: string, minLength: 5, maxLength: 500 }
         jawaban: { type: string, minLength: 10, maxLength: 5000 }
-        unit: { type: string, minLength: 2, maxLength: 200 }
+        unit:
+          type: string
+          minLength: 2
+          maxLength: 200
+          description: |
+            Salah satu `nama` dari `GET /api/units`, tanpa peduli huruf besar.
+            Yang tersimpan selalu ejaan resmi; nama lain dijawab 422.
         valid_until:
           type: [string, 'null']
           format: date
@@ -2025,6 +2174,12 @@ components:
           type: [number, 'null']
           minimum: 0
           maximum: 1
+        unit:
+          type: [string, 'null']
+          maxLength: 200
+          description: |
+            Sama dengan `ChatRequest.unit`: uji apa yang dilihat mahasiswa yang
+            memilih unit ini di menu chatbot.
 
     ThresholdValues:
       type: object
@@ -2368,7 +2523,9 @@ components:
         unit:
           type: [string, 'null']
           maxLength: 200
-          description: Wajib bila `role` bernilai `staf`.
+          description: |
+            Wajib bila `role` bernilai `staf`. Salah satu `nama` dari
+            `GET /api/units`; nama lain dijawab 422.
 
     AdminUserUpdate:
       type: object
@@ -2376,7 +2533,10 @@ components:
       properties:
         nama: { type: [string, 'null'], maxLength: 200 }
         role: { $ref: '#/components/schemas/AdminRole' }
-        unit: { type: [string, 'null'], maxLength: 200 }
+        unit:
+          type: [string, 'null']
+          maxLength: 200
+          description: Salah satu `nama` dari `GET /api/units`; nama lain dijawab 422.
         is_active: { type: boolean }
 
     AdminUserCreated:

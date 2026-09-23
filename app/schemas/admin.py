@@ -241,6 +241,9 @@ class FeedbackPage(BaseModel):
 class TestQueryRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     vector_threshold: float | None = Field(default=None, ge=0, le=1)
+    unit: str | None = Field(default=None, max_length=200)
+    """Sama dengan `ChatRequest.unit`: uji apa yang dilihat mahasiswa yang
+    memilih unit ini di menu chatbot."""
 
 
 class RetrievedChunk(BaseModel):

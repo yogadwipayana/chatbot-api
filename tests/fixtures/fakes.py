@@ -18,6 +18,7 @@ import bcrypt
 from app.admin.accounts import EDITABLE_FIELDS, Account, DuplicateEmailError
 from app.admin.permissions import ROLE_LEVEL, AdminRole
 from app.admin.runtime_config import NilaiTersimpan
+from app.units import UnitInfo, cocokkan
 
 
 @dataclass
@@ -63,14 +64,16 @@ def make_document(
 
 
 class FakeRetriever:
-    """Mengembalikan dokumen yang sudah ditentukan, mencatat query yang masuk."""
+    """Mengembalikan dokumen yang sudah ditentukan, mencatat query dan unit yang masuk."""
 
     def __init__(self, documents: Sequence[StubDocument] | None = None) -> None:
         self.documents = list(documents or [])
         self.queries: list[str] = []
+        self.units: list[str | None] = []
 
-    async def ainvoke(self, query: str) -> list[StubDocument]:
+    async def ainvoke(self, query: str, *, unit: str | None = None) -> list[StubDocument]:
         self.queries.append(query)
+        self.units.append(unit)
         return list(self.documents)
 
 
@@ -284,3 +287,38 @@ class FakeRuntimeConfigStore:
 
     async def clear(self) -> None:
         self.values.clear()
+
+
+UNIT_RESMI = (
+    "BAAK",
+    "FO",
+    "Keuangan",
+    "Kemahasiswaan",
+    "Prodi",
+    "Fakultas",
+    "PLK",
+    "UPS",
+    "Akademik",
+)
+"""Sama dengan isi awal migrasi 0009."""
+
+
+class FakeUnitDirectory:
+    """Pengganti `SqlUnitDirectory`: daftar unit di memori, aturan cocok yang sama."""
+
+    def __init__(self, nama: Sequence[str] = UNIT_RESMI) -> None:
+        self.units = [UnitInfo(n) for n in nama]
+        self.faq: dict[str, list[str]] = {}
+        """unit -> pertanyaan entri tanya jawab, terbaru lebih dulu."""
+        self.diminta: list[tuple[str | None, int]] = []
+
+    async def list(self) -> list[UnitInfo]:
+        return list(self.units)
+
+    async def pertanyaan(self, unit: str | None, limit: int) -> list[str]:
+        self.diminta.append((unit, limit))
+        semua = self.faq.get(unit, []) if unit else [p for ps in self.faq.values() for p in ps]
+        return semua[:limit]
+
+    async def resolve(self, nama: str | None) -> str | None:
+        return cocokkan(self.units, nama)

@@ -66,6 +66,33 @@ SettingsDep = Annotated[Settings, Depends(get_effective_settings)]
 """Setelan yang benar-benar berlaku: `.env` + penimpaan dari dashboard."""
 
 
+def get_unit_directory(session: SessionDep) -> Any:
+    """Daftar unit resmi (`app.units`). Di-override di test."""
+    from app.units import SqlUnitDirectory
+
+    return SqlUnitDirectory(session)
+
+
+UnitDirectoryDep = Annotated[Any, Depends(get_unit_directory)]
+
+
+async def unit_terdaftar(units: Any, nama: str) -> str:
+    """Nama resmi unit untuk `nama`; 422 bila tidak ada unit aktif yang cocok.
+
+    Pesannya menyebut seluruh pilihan yang sah. Admin yang mengetik "Biro
+    Keuangan" perlu tahu bahwa yang dimaksud adalah "Keuangan", bukan sekadar
+    diberi tahu bahwa isiannya salah.
+    """
+    resmi = await units.resolve(nama)
+    if resmi is None:
+        pilihan = ", ".join(u.nama for u in await units.list())
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"Unit '{nama}' tidak terdaftar. Pilih salah satu: {pilihan}.",
+        )
+    return resmi
+
+
 def pastikan_unit(admin: CurrentAdmin, unit: str | None, *, apa: str) -> None:
     """403 bila staf/dosen menyentuh isi milik unit lain.
 

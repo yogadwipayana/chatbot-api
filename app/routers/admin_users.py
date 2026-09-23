@@ -18,7 +18,13 @@ from app.admin.permissions import (
     check_account_delete,
     normalize_unit,
 )
-from app.deps import AccountStoreDep, CurrentAdminDep, require_role
+from app.deps import (
+    AccountStoreDep,
+    CurrentAdminDep,
+    UnitDirectoryDep,
+    require_role,
+    unit_terdaftar,
+)
 from app.schemas.admin import (
     AdminUser,
     AdminUserCreate,
@@ -79,10 +85,13 @@ async def list_users(store: AccountStoreDep) -> list[AdminUser]:
     "",
     status_code=status.HTTP_201_CREATED,
     response_model=AdminUserCreated,
-    responses={409: {"model": Error}},
+    responses={409: {"model": Error}, 422: {"model": Error}},
 )
 async def create_user(
-    payload: AdminUserCreate, actor: CurrentAdminDep, store: AccountStoreDep
+    payload: AdminUserCreate,
+    actor: CurrentAdminDep,
+    store: AccountStoreDep,
+    units: UnitDirectoryDep,
 ) -> AdminUserCreated:
     """Buat akun dengan kata sandi sementara yang ditampilkan SEKALI.
 
@@ -90,7 +99,7 @@ async def create_user(
     sendiri. Superadmin tidak pernah memilih kata sandi orang lain, sehingga
     tidak ada yang mengetahui kata sandi akhir selain pemiliknya.
     """
-    unit = payload.unit or None
+    unit = await unit_terdaftar(units, payload.unit) if payload.unit else None
     if payload.role is AdminRole.STAF and not normalize_unit(unit):
         raise _konflik(STAF_NEEDS_UNIT)
 
@@ -116,13 +125,14 @@ async def create_user(
 @router.patch(
     "/{user_id}",
     response_model=AdminUser,
-    responses={404: {"model": Error}, 409: {"model": Error}},
+    responses={404: {"model": Error}, 409: {"model": Error}, 422: {"model": Error}},
 )
 async def update_user(
     user_id: uuid.UUID,
     payload: AdminUserUpdate,
     actor: CurrentAdminDep,
     store: AccountStoreDep,
+    units: UnitDirectoryDep,
 ) -> AdminUser:
     """Ubah nama, level, unit, atau status aktif. Berlaku pada permintaan berikutnya."""
     target = await _target(store, user_id)
@@ -130,6 +140,8 @@ async def update_user(
     for kolom in ("nama", "unit"):
         if kolom in changes:
             changes[kolom] = changes[kolom] or None
+    if changes.get("unit"):
+        changes["unit"] = await unit_terdaftar(units, changes["unit"])
 
     alasan = check_account_change(
         actor, target, changes, await store.count_active_superadmins()

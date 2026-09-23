@@ -1,7 +1,7 @@
 """Buat atau atur ulang akun dashboard dari server (AD-1).
 
     python -m scripts.create_admin admin@instiki.ac.id --role superadmin
-    python -m scripts.create_admin keuangan@instiki.ac.id --role staf --unit "Biro Keuangan"
+    python -m scripts.create_admin keuangan@instiki.ac.id --role staf --unit Keuangan
     python -m scripts.create_admin admin@instiki.ac.id --reset
 
 Dipakai untuk akun superadmin PERTAMA, atau untuk memulihkan akses bila semua
@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.admin.permissions import AdminRole, normalize_unit
 from app.config import get_settings
 from app.security.auth import hash_password
+from app.units import SqlUnitDirectory
 
 
 async def jalankan(args: argparse.Namespace, email: str) -> int:
@@ -54,6 +55,14 @@ async def jalankan(args: argparse.Namespace, email: str) -> int:
             if role == AdminRole.STAF and not normalize_unit(unit):
                 print("Level staf wajib disertai --unit.")
                 return 1
+            if unit:
+                units = SqlUnitDirectory(conn)
+                resmi = await units.resolve(unit)
+                if resmi is None:
+                    pilihan = ", ".join(u.nama for u in await units.list())
+                    print(f"Unit '{unit}' tidak terdaftar. Pilih salah satu: {pilihan}.")
+                    return 1
+                unit = resmi
 
             password_hash = hash_password(sandi)
             if ada:
@@ -101,7 +110,9 @@ def main() -> int:
     parser.add_argument(
         "--role", choices=[r.value for r in AdminRole], default=None, help="default: admin"
     )
-    parser.add_argument("--unit", default=None, help="wajib untuk --role staf")
+    parser.add_argument(
+        "--unit", default=None, help="wajib untuk --role staf; nama dari tabel units"
+    )
     parser.add_argument("--nama", default=None)
     parser.add_argument(
         "--reset", action="store_true", help="kata sandi baru, aktifkan kembali akun"

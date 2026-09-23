@@ -224,7 +224,7 @@ class TestKelolaAkun:
             json={
                 "email": "Dosen.Baru@Instiki.ac.id",
                 "role": "staf",
-                "unit": "Fakultas Teknik",
+                "unit": "Fakultas",
                 "nama": "Dosen Baru",
             },
             headers=admin_headers,
@@ -240,7 +240,7 @@ class TestKelolaAkun:
         )
         assert masuk.status_code == 200
         me = client.get("/api/admin/me", headers=bearer(masuk)).json()
-        assert (me["role"], me["unit"]) == ("staf", "Fakultas Teknik")
+        assert (me["role"], me["unit"]) == ("staf", "Fakultas")
 
     def test_staf_tanpa_unit_ditolak(self, client, admin_headers):
         r = client.post(
@@ -285,10 +285,10 @@ class TestKelolaAkun:
             client.patch(url, json={"role": "staf"}, headers=admin_headers).status_code == 409
         )
         r = client.patch(
-            url, json={"role": "staf", "unit": "Bagian Kemahasiswaan"}, headers=admin_headers
+            url, json={"role": "staf", "unit": "Kemahasiswaan"}, headers=admin_headers
         )
         assert r.status_code == 200
-        assert (r.json()["role"], r.json()["unit"]) == ("staf", "Bagian Kemahasiswaan")
+        assert (r.json()["role"], r.json()["unit"]) == ("staf", "Kemahasiswaan")
 
     def test_menonaktifkan_akun_lain_mengakhiri_sesinya(
         self, client, accounts, admin_headers, headers_for
@@ -359,7 +359,7 @@ class TestDokumenStaf:
             "/api/admin/documents",
             headers=headers_for(STAF_EMAIL),
             files={"file": ("panduan.pdf", b"%PDF-1.4 isi", "application/pdf")},
-            data={"judul": "Panduan Akademik", "unit": "Biro Administrasi Akademik"},
+            data={"judul": "Panduan Akademik", "unit": "BAAK"},
         )
         assert r.status_code == 403
         assert STAF_UNIT in r.json()["detail"]
@@ -376,7 +376,7 @@ class TestTanyaJawabStaf:
     def test_menambah_untuk_unit_lain_ditolak(self, client, headers_for):
         r = client.post(
             "/api/admin/faq",
-            json={**self.ENTRI, "unit": "Biro Administrasi Akademik"},
+            json={**self.ENTRI, "unit": "BAAK"},
             headers=headers_for(STAF_EMAIL),
         )
         assert r.status_code == 403

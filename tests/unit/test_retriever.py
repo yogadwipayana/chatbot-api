@@ -21,6 +21,7 @@ import pytest
 
 from app.rag.retriever import (
     FULLTEXT_SQL,
+    ITERATIVE_SCAN_SQL,
     VECTOR_SQL,
     PostgresHybridRetriever,
     vector_literal,
@@ -55,7 +56,7 @@ class SesiPalsu:
         self.sibuk = False
         self.panggilan: list[tuple] = []
 
-    async def execute(self, sql, params):
+    async def execute(self, sql, params=None):
         if self.sibuk:
             raise RuntimeError("cannot perform operation: another operation is in progress")
         self.sibuk = True
@@ -161,6 +162,49 @@ class TestParameterQuery:
     async def test_jumlah_kandidat_diteruskan(self, pabrik):
         await retriever_dengan(pabrik, candidates=7).ainvoke("pengisian KRS")
         assert all(p["limit"] == 7 for s in pabrik.sesi for _, p in s.panggilan)
+
+
+class TestFilterUnit:
+    def panggilan(self, pabrik, sql) -> list[dict]:
+        return [p for s in pabrik.sesi for q, p in s.panggilan if q is sql]
+
+    async def test_tanpa_unit_kedua_query_menerima_null(self, pabrik):
+        """NULL = semua unit; parameter tetap dikirim karena SQL-nya menyebutnya."""
+        await retriever_dengan(pabrik).ainvoke("pengisian KRS")
+        assert self.panggilan(pabrik, VECTOR_SQL)[0]["unit"] is None
+        assert self.panggilan(pabrik, FULLTEXT_SQL)[0]["unit"] is None
+
+    async def test_unit_diteruskan_ke_kedua_query(self, pabrik):
+        """Keduanya, bukan hanya vektor: chunk unit lain yang lolos lewat
+        fulltext tetap akan menjawab pertanyaan dengan dokumen yang salah."""
+        await retriever_dengan(pabrik).ainvoke("pengisian KRS", unit="BAAK")
+        assert self.panggilan(pabrik, VECTOR_SQL)[0]["unit"] == "BAAK"
+        assert self.panggilan(pabrik, FULLTEXT_SQL)[0]["unit"] == "BAAK"
+
+    async def test_iterative_scan_mendahului_query_vektor_di_sesi_yang_sama(self, pabrik):
+        """SET LOCAL hanya berlaku di transaksinya sendiri: dikirim di sesi lain,
+        query vektor tetap memakai scan biasa yang membuang kandidat."""
+        await retriever_dengan(pabrik).ainvoke("pengisian KRS", unit="BAAK")
+        sesi_vektor = next(
+            s for s in pabrik.sesi if any(q is VECTOR_SQL for q, _ in s.panggilan)
+        )
+        assert [q for q, _ in sesi_vektor.panggilan] == [ITERATIVE_SCAN_SQL, VECTOR_SQL]
+
+    async def test_iterative_scan_hanya_saat_difilter(self, pabrik):
+        await retriever_dengan(pabrik).ainvoke("pengisian KRS")
+        assert not any(q is ITERATIVE_SCAN_SQL for s in pabrik.sesi for q, _ in s.panggilan)
+
+    async def test_fulltext_tanpa_iterative_scan(self, pabrik):
+        await retriever_dengan(pabrik).ainvoke("pengisian KRS", unit="BAAK")
+        sesi_fulltext = next(
+            s for s in pabrik.sesi if any(q is FULLTEXT_SQL for q, _ in s.panggilan)
+        )
+        assert [q for q, _ in sesi_fulltext.panggilan] == [FULLTEXT_SQL]
+
+    async def test_iterative_scan_urutan_ketat(self):
+        """RRF memakai peringkat; `relaxed_order` boleh mengacak urutan jarak."""
+        assert "strict_order" in str(ITERATIVE_SCAN_SQL)
+        assert "SET LOCAL" in str(ITERATIVE_SCAN_SQL)
 
 
 class TestParalel:

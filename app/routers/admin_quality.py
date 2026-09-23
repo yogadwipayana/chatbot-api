@@ -18,10 +18,12 @@ from app.deps import (
     BaseSettingsDep,
     SessionDep,
     SettingsDep,
+    UnitDirectoryDep,
     build_llm_call,
     build_retriever,
     require_admin,
     require_role,
+    unit_terdaftar,
 )
 from app.observability.tracing import akhiri_jejak, id_giliran, jejak_giliran
 from app.rag.chain import run_pipeline
@@ -127,10 +129,13 @@ async def list_feedback(
     )
 
 
-@router.post("/test-query", response_model=TestQueryResponse)
+@router.post(
+    "/test-query", response_model=TestQueryResponse, responses={422: {"model": Error}}
+)
 async def admin_test_query(
     payload: TestQueryRequest,
     settings: SettingsDep,
+    units: UnitDirectoryDep,
     retriever: Any = Depends(build_retriever),
     llm_call: Any = Depends(build_llm_call),
 ) -> TestQueryResponse:
@@ -149,13 +154,19 @@ async def admin_test_query(
         lexical_threshold=settings.lexical_threshold,
     )
 
+    unit = await unit_terdaftar(units, payload.unit) if payload.unit else None
+
     mulai = time.perf_counter()
     run_id = id_giliran()
     async with jejak_giliran(
         run_id=run_id, pertanyaan=payload.question, nama="uji_coba_admin"
     ) as akar:
         outcome = await run_pipeline(
-            payload.question, retriever=retriever, llm_call=llm_call, policy=policy
+            payload.question,
+            retriever=retriever,
+            llm_call=llm_call,
+            policy=policy,
+            unit=unit,
         )
         akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
     latency_ms = round((time.perf_counter() - mulai) * 1000)

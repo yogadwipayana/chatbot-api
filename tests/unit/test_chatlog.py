@@ -51,6 +51,15 @@ class TestMeta:
         outcome = await run_pipeline("kapan KRS?", retriever=strong_retriever, llm_call=llm)
         assert build_meta(entri(outcome, model=CHAT_MODEL))["biaya_usd"] is None
 
+    async def test_unit_pilihan_mahasiswa_tercatat(self, weak_retriever, llm):
+        """Membedakan penolakan karena salah pilih unit dari dokumen yang memang
+        belum ada -- dua masalah dengan perbaikan yang berbeda."""
+        outcome = await run_pipeline(
+            "kapan KRS?", retriever=weak_retriever, llm_call=llm, unit="Prodi"
+        )
+        assert build_meta(entri(outcome, unit="Prodi"))["unit"] == "Prodi"
+        assert build_meta(entri(outcome))["unit"] is None
+
     async def test_penolakan_tidak_berbiaya_dan_tanpa_model(self, weak_retriever, llm):
         outcome = await run_pipeline("kapan KRS?", retriever=weak_retriever, llm_call=llm)
         meta = build_meta(entri(outcome, model=CHAT_MODEL, usage=USAGE))

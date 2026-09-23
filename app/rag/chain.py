@@ -54,6 +54,14 @@ REFUSAL_TEMPLATE = (
     "\n\n{contacts}"
 )
 
+REFUSAL_UNIT_HINT = (
+    "\n\nPencarian tadi hanya di dokumen unit {unit}. Bila pertanyaan Anda "
+    "ditangani unit lain, pilih unit tersebut atau semua unit lalu tanyakan lagi."
+)
+"""Tanpa ini, mahasiswa yang salah memilih unit hanya melihat "tidak menemukan"
+dan menyimpulkan informasinya memang tidak ada -- padahal yang membatasi adalah
+pilihannya sendiri."""
+
 DEFAULT_FALLBACK_CONTACT = risk_module.UnitContact(
     unit="Biro Administrasi Akademik",
     jam_layanan="Senin-Jumat, 08.00-15.00",
@@ -82,12 +90,13 @@ async def run_pipeline(
     policy: ThresholdPolicy | None = None,
     on_token: Callable[[str], Awaitable[None]] | None = None,
     on_stage: Callable[[str], Awaitable[None]] | None = None,
+    unit: str | None = None,
 ) -> PipelineOutcome:
     """Jalankan satu putaran tanya-jawab.
 
     Args:
         question: pertanyaan mentah dari mahasiswa.
-        retriever: apa pun yang punya `ainvoke(str) -> list[Document]`.
+        retriever: apa pun yang punya `ainvoke(str, *, unit) -> list[Document]`.
         llm_call: (pertanyaan_terbungkus, dokumen) -> teks jawaban.
         history: riwayat percakapan; kosong berarti pesan pertama (FR-4).
         rewrite_call: (pertanyaan, riwayat_terformat) -> pertanyaan mandiri.
@@ -97,6 +106,8 @@ async def run_pipeline(
         on_stage: dipanggil saat tahap yang terlihat mahasiswa berganti, supaya
             indikator FE-1 tidak tertinggal di "mencari dokumen" sepanjang LLM
             menyusun kalimat pertamanya.
+        unit: nama resmi unit pilihan mahasiswa; retrieval hanya mencari di
+            dokumen unit itu. None berarti semua unit.
 
     `llm_call` dan `rewrite_call` disuntikkan agar test dapat membuktikan
     kapan LLM dipanggil dan kapan tidak, tanpa memanggil API sungguhan.
@@ -138,7 +149,7 @@ async def run_pipeline(
             search_query = rewritten
 
     # FR-2
-    documents = await retriever.ainvoke(search_query)
+    documents = await retriever.ainvoke(search_query, unit=unit)
 
     # FR-3 -- LLM tidak dipanggil bila ditolak.
     hits = _hits_from_documents(documents)
@@ -149,9 +160,12 @@ async def run_pipeline(
         # "deadline pembayaran UKT" menyangkut akademik DAN keuangan sekaligus,
         # dan mahasiswa yang ditolak tidak boleh dikirim ke loket yang salah.
         contacts = assessment.contacts or (DEFAULT_FALLBACK_CONTACT,)
+        text = REFUSAL_TEMPLATE.format(contacts=render_contacts(contacts))
+        if unit is not None:
+            text += REFUSAL_UNIT_HINT.format(unit=unit)
         return PipelineOutcome(
             kind=OutcomeKind.REFUSAL,
-            text=REFUSAL_TEMPLATE.format(contacts=render_contacts(contacts)),
+            text=text,
             documents=tuple(documents),
             decision=decision,
             risk=assessment,

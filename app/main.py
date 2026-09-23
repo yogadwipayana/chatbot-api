@@ -22,6 +22,7 @@ from app.routers import (
     chat,
     documents,
     health,
+    units,
 )
 from app.security.killswitch import KillSwitch, get_kill_switch
 from app.security.sanitize import InvalidQuestion
@@ -82,6 +83,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(InvalidQuestion, invalid_question_handler)
     app.include_router(health.router)
     app.include_router(chat.router)
+    app.include_router(units.router)
     app.include_router(documents.router)
     app.include_router(admin_auth.router)
     app.include_router(admin_documents.router)

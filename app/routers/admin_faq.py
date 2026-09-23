@@ -20,9 +20,11 @@ from app.deps import (
     CurrentAdminDep,
     SessionDep,
     SettingsDep,
+    UnitDirectoryDep,
     get_embeddings,
     pastikan_unit,
     require_admin,
+    unit_terdaftar,
 )
 from app.routers.common import terjemahkan_galat_ai
 from app.schemas.admin import FaqEntry, FaqEntryCreate, FaqEntryUpdate, FaqPage
@@ -79,16 +81,18 @@ async def create_faq(
     admin: CurrentAdminDep,
     session: SessionDep,
     settings: SettingsDep,
+    units: UnitDirectoryDep,
     embeddings: Any = Depends(get_embeddings),
 ) -> FaqEntry:
     """Simpan entri baru. Embedding dihitung saat itu juga, seperti unggah dokumen."""
-    pastikan_unit(admin, payload.unit, apa=APA)
+    unit = await unit_terdaftar(units, payload.unit)
+    pastikan_unit(admin, unit, apa=APA)
     with terjemahkan_galat_ai(APA):
         row = await repo.create_entry(
             session,
             pertanyaan=payload.pertanyaan,
             jawaban=payload.jawaban,
-            unit=payload.unit,
+            unit=unit,
             valid_until=payload.valid_until,
             uploaded_by=admin.email,
             embeddings=embeddings,
@@ -101,7 +105,7 @@ async def create_faq(
 @router.patch(
     "/{entry_id}",
     response_model=FaqEntry,
-    responses={404: {"model": Error}, 502: {"model": Error}},
+    responses={404: {"model": Error}, 422: {"model": Error}, 502: {"model": Error}},
 )
 async def update_faq(
     entry_id: uuid.UUID,
@@ -109,12 +113,14 @@ async def update_faq(
     admin: CurrentAdminDep,
     session: SessionDep,
     settings: SettingsDep,
+    units: UnitDirectoryDep,
     embeddings: Any = Depends(get_embeddings),
 ) -> FaqEntry:
     """Mengubah pertanyaan atau jawaban langsung mengindeks ulang entri ini."""
     await _entri_milik(session, admin, entry_id)
     changes = payload.model_dump(exclude_unset=True)
     if "unit" in changes:
+        changes["unit"] = await unit_terdaftar(units, changes["unit"])
         # Staf juga tidak boleh memindahkan entrinya ke unit lain.
         pastikan_unit(admin, changes["unit"], apa=APA)
 

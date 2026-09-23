@@ -10,6 +10,10 @@ Alur: vector search (top 20) dan fulltext search (top 20) dijalankan paralel,
 masing-masing di sesi database sendiri, digabung dengan RRF, dipotong menjadi
 top 5. Skor mentah tiap sumber ikut dibawa di `Document.metadata` agar tahap
 threshold dapat membacanya.
+
+Mahasiswa yang memilih unit di menu chatbot mempersempit KEDUA pencarian ke
+dokumen unit itu, lewat WHERE yang sama -- bukan disaring setelah hasilnya
+kembali, yang bisa menyisakan nol kandidat padahal unit itu punya jawabannya.
 """
 
 from __future__ import annotations
@@ -39,6 +43,21 @@ dan catat dampaknya pada evaluasi."""
 
 _ACTIVE = active_document_clause("d")
 
+_UNIT = "(CAST(:unit AS text) IS NULL OR d.unit = CAST(:unit AS text))"
+"""NULL = semua unit. Satu SQL untuk kedua kasus, bukan dua varian query yang
+bisa menyimpang. CAST wajib: asyncpg tidak dapat menebak tipe parameter yang
+hanya muncul di `IS NULL`."""
+
+ITERATIVE_SCAN_SQL = text("SET LOCAL hnsw.iterative_scan = strict_order")
+"""pgvector >= 0.8. HNSW menyaring SETELAH index dipindai, dan `hnsw.ef_search`
+bawaannya 40: bila satu unit hanya ~1/9 isi indeks, rata-rata cuma 4-5 dari 40
+kandidat yang lolos filter -- jauh di bawah `candidates`. Iterative scan terus
+memindai index sampai LIMIT terpenuhi.
+
+`strict_order`, bukan `relaxed_order`: RRF memakai peringkat, jadi urutan
+jarak harus tepat. LOCAL: berlaku sampai transaksi sesi ini selesai, tidak ikut
+terbawa ke koneksi pool berikutnya."""
+
 VECTOR_SQL = text(
     f"""
     SELECT c.id::text AS chunk_id,
@@ -52,6 +71,7 @@ VECTOR_SQL = text(
     FROM chunks c
     JOIN documents d ON d.id = c.document_id
     WHERE {_ACTIVE}
+      AND {_UNIT}
     ORDER BY c.embedding <=> (:query_embedding)::vector
     LIMIT :limit
     """
@@ -71,6 +91,7 @@ FULLTEXT_SQL = text(
     JOIN documents d ON d.id = c.document_id
     WHERE c.tsv @@ websearch_to_tsquery('{FTS_CONFIG}', :query)
       AND {_ACTIVE}
+      AND {_UNIT}
     ORDER BY score DESC
     LIMIT :limit
     """
@@ -121,12 +142,15 @@ class PostgresHybridRetriever(BaseRetriever):
         query: str,
         *,
         run_manager: AsyncCallbackManagerForRetrieverRun | None = None,
+        unit: str | None = None,
     ) -> list[Document]:
+        """`unit`: nama resmi dari tabel `units` (lihat `app.units`), atau None
+        untuk semua unit. Diteruskan lewat `ainvoke(query, unit=...)`."""
         embedding = await self.embed_query(query)
 
         vector_rows, fulltext_rows = await asyncio.gather(
-            self._vector_search(embedding),
-            self._fulltext_search(query),
+            self._vector_search(embedding, unit),
+            self._fulltext_search(query, unit),
         )
 
         fused = reciprocal_rank_fusion(
@@ -171,25 +195,45 @@ class PostgresHybridRetriever(BaseRetriever):
         query: str,
         *,
         run_manager: CallbackManagerForRetrieverRun | None = None,
+        unit: str | None = None,
     ) -> list[Document]:
+        # `unit` harus ada juga di sini: LangChain hanya meneruskan argumen
+        # tambahan `ainvoke` bila tanda tangan metode SINKRON ini memintanya.
         raise NotImplementedError(
             "Retriever ini hanya mendukung mode async; pakai `ainvoke`. "
             "Jalur sinkron sengaja tidak disediakan agar dua pencarian tetap paralel."
         )
 
-    async def _vector_search(self, embedding: Sequence[float]) -> list[dict[str, Any]]:
+    async def _vector_search(
+        self, embedding: Sequence[float], unit: str | None = None
+    ) -> list[dict[str, Any]]:
         return await self._jalankan(
             VECTOR_SQL,
-            {"query_embedding": vector_literal(embedding), "limit": self.candidates},
+            {
+                "query_embedding": vector_literal(embedding),
+                "limit": self.candidates,
+                "unit": unit,
+            },
+            # Hanya saat difilter: tanpa filter unit, jalur ini tetap persis
+            # seperti sebelum menu unit ada.
+            persiapan=(ITERATIVE_SCAN_SQL,) if unit is not None else (),
         )
 
-    async def _fulltext_search(self, query: str) -> list[dict[str, Any]]:
+    async def _fulltext_search(
+        self, query: str, unit: str | None = None
+    ) -> list[dict[str, Any]]:
+        # Tanpa iterative scan: index GIN mencocokkan secara pasti, dan filter
+        # unit di atasnya tidak pernah membuang kandidat yang sah.
         return await self._jalankan(
             FULLTEXT_SQL,
-            {"query": query, "limit": self.candidates},
+            {"query": query, "limit": self.candidates, "unit": unit},
         )
 
-    async def _jalankan(self, sql: Any, params: dict[str, Any]) -> list[dict[str, Any]]:
+    async def _jalankan(
+        self, sql: Any, params: dict[str, Any], *, persiapan: Sequence[Any] = ()
+    ) -> list[dict[str, Any]]:
         async with self.session_factory() as session:
+            for perintah in persiapan:
+                await session.execute(perintah)
             result = await session.execute(sql, params)
             return [dict(row) for row in result.mappings()]
