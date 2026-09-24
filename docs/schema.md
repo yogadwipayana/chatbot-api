@@ -25,11 +25,20 @@ erDiagram
     messages ||--o{ feedback : "1..N (CASCADE)"
     messages ||--o| unanswered : "0..1 (SET NULL)"
     documents ||--o{ usage_log : "0..N (SET NULL)"
+    units ||--o{ documents : "1..N (ON UPDATE CASCADE)"
+    units |o--o{ admins : "0..N (ON UPDATE CASCADE)"
+
+    units {
+        varchar  nama PK "200 — nama resmi yang tampil di menu"
+        varchar  deskripsi "500 — teks bantu menu chatbot"
+        int      urutan "NOT NULL, default 0 — urutan tampil"
+        boolean  is_active "NOT NULL, default true"
+    }
 
     documents {
         uuid     id PK
         varchar  judul "500, NOT NULL — pertanyaan bila jenis=tanya_jawab"
-        varchar  unit "200, NOT NULL"
+        varchar  unit FK "200, NOT NULL → units.nama"
         varchar  jenis "20, NOT NULL, default 'pdf'"
         varchar  file_path "1000, NULL untuk tanya_jawab"
         varchar  nama_file "255, nama asli unggahan PDF"
@@ -115,7 +124,7 @@ erDiagram
         varchar  password_hash "255, NOT NULL"
         varchar  role "50, NOT NULL — staf/admin/superadmin"
         varchar  nama "200"
-        varchar  unit "200, wajib untuk staf"
+        varchar  unit FK "200 → units.nama, wajib untuk staf"
         boolean  is_active "NOT NULL, default true"
         timestamptz password_changed_at "pembatal token lama"
         timestamptz last_login_at
@@ -123,23 +132,31 @@ erDiagram
     }
 ```
 
-`runtime_config` juga berdiri sendiri: satu baris per parameter `.env` yang
+`runtime_config` berdiri sendiri tanpa relasi: satu baris per parameter `.env` yang
 ditimpa dari dashboard, dan **hanya** parameter yang benar-benar ditimpa. Tidak
 ada barisnya berarti "ikut `.env`" -- lihat `app/admin/runtime_config.py`.
 
-`admins` sengaja berdiri sendiri tanpa relasi. Jejak admin pada dokumen disimpan
-sebagai teks di `documents.uploaded_by`, bukan foreign key: menghapus akun tidak
-boleh menghapus atau membuat NULL riwayat dokumen yang pernah diunggahnya.
+`admins` hanya berelasi ke `units`. Jejak admin pada dokumen disimpan sebagai
+teks di `documents.uploaded_by`, bukan foreign key: menghapus akun tidak boleh
+menghapus atau membuat NULL riwayat dokumen yang pernah diunggahnya.
 
-### Tiga kelompok tabel
+Dua CHECK constraint di `admins` menegakkan level akses di database:
+
+```sql
+CONSTRAINT ck_admins_role      CHECK (role IN ('staf', 'admin', 'superadmin'))
+CONSTRAINT ck_admins_staf_unit CHECK (role <> 'staf' OR (unit IS NOT NULL AND btrim(unit) <> ''))
+```
+
+### Kelompok tabel
 
 | Kelompok | Tabel | Ditulis oleh | Dibaca oleh |
 |---|---|---|---|
 | **Pengetahuan** | `documents`, `chunks` | `app/ingestion/`, `app/admin/faq.py` | retrieval FR-2 |
+| **Referensi** | `units` | migrasi `0009` / SQL manual — belum ada API untuk mengubahnya | `app/units.py`: menu chatbot, validasi setiap isian unit, filter retrieval |
 | **Log** | `conversations`, `messages`, `feedback`, `unanswered` | `app/observability/chatlog.py`, `app/routers/chat.py` | dashboard AD-4, AD-5 |
 | **Akun** | `admins` | `app/admin/accounts.py`, `scripts/create_admin.py` | auth AD-1 |
 | **Setelan** | `runtime_config` | `app/routers/admin_config.py` | `get_effective_settings` di setiap permintaan |
-| **Biaya** | `usage_log` | `app/ingestion/`, `app/admin/faq.py` | biaya AD-5 |
+| **Biaya** | `usage_log` | belum ada (lihat status di bawah) | biaya AD-5 |
 
 ---
 
@@ -194,6 +211,49 @@ retrieval. Penyaringan terjadi di dalam `WHERE` SQL, bukan setelah hasil kembali
 
 ---
 
+## `units` — daftar tetap unit layanan
+
+Mahasiswa memilih unit di menu chatbot, lalu retrieval hanya mencari di dokumen
+unit itu. Filter tersebut hanya dapat dipercaya bila setiap dokumen memakai nama
+yang **persis** sama — selama `documents.unit` diketik bebas, dokumen berlabel
+"Bagian Keuangan" tidak pernah terambil untuk pilihan "Keuangan", dan mahasiswa
+menerima penolakan padahal jawabannya ada. Karena itu `documents.unit` dan
+`admins.unit` kini foreign key ke `units.nama`.
+
+**Nama sebagai kunci utama, bukan kode terpisah.** Nilai yang tersimpan di
+`documents.unit` tetap nama yang tampil di dashboard, sehingga kontrak API admin
+tidak berubah. `ON UPDATE CASCADE` membuat penggantian nama cukup satu `UPDATE`
+di `units`; dokumen dan akun staf ikut.
+
+**Unit tidak dihapus, tetapi dinonaktifkan.** `ON DELETE` memakai bawaan
+`NO ACTION`: menghapus unit yang masih dipakai ditolak database. `is_active =
+false` menyembunyikannya dari menu (`GET /api/units`) dan dari pilihan untuk
+dokumen baru; dokumen lamanya tetap ada.
+
+**Normalisasi di pintu masuk, perbandingan persis di retrieval.** Setiap isian
+unit (unggah dokumen, entri tanya jawab, akun, chat, uji coba) melewati
+`deps.unit_terdaftar` → `app/units.py::cocokkan`, yang mencocokkan lewat
+`permissions.normalize_unit` dan mengembalikan ejaan resmi — `" keuangan "`
+menjadi `Keuangan`, nama tak dikenal ditolak 422. Filter retrieval sendiri
+membandingkan persis:
+
+```sql
+(CAST(:unit AS text) IS NULL OR d.unit = CAST(:unit AS text))   -- NULL = semua unit
+```
+
+Satu SQL untuk kedua kasus, bukan dua varian query yang bisa menyimpang. `CAST`
+wajib: asyncpg tidak dapat menebak tipe parameter yang hanya muncul di `IS NULL`.
+
+**Memecah `chunks` per unit sempat dipertimbangkan dan ditolak.** Pertanyaan
+lintas unit (cuti akademik menyangkut BAAK dan Keuangan) menjadi `UNION`, indeks
+HNSW dan GIN berlipat sembilan, dan memindah unit sebuah dokumen berarti
+memindah seluruh chunk-nya antar-tabel.
+
+Isi awal (migrasi `0009`, dalam urutan menu): BAAK, FO (Front Office), Keuangan,
+Kemahasiswaan, Prodi, Fakultas, PLK, UPS (Unit Pelayanan Sertifikasi), Akademik.
+
+---
+
 ## `chunks` — vektor dan full-text di baris yang sama
 
 Satu baris = satu potongan teks siap di-embed. Ditulis lewat SQL langsung
@@ -242,6 +302,7 @@ diam-diam mematikan separuh retrieval hibrida.
 | Indeks | Tabel | Definisi | Untuk |
 |---|---|---|---|
 | `ix_documents_aktif` | `documents` | `(is_active, valid_until)` | filter dokumen aktif FR-2 |
+| `ix_documents_unit` | `documents` | `(unit)` | filter unit retrieval, daftar dokumen staf |
 | `ix_chunks_document_id` | `chunks` | `(document_id)` | JOIN retrieval, hitung chunk per dokumen |
 | `ix_chunks_tsv` | `chunks` | **GIN** `(tsv)` | full-text search |
 | `ix_chunks_embedding_hnsw` | `chunks` | **HNSW** `(embedding vector_cosine_ops)` | vector search |
@@ -251,6 +312,10 @@ diam-diam mematikan separuh retrieval hibrida.
 | `ix_feedback_message_id` | `feedback` | `(message_id)` | agregasi kepuasan, JOIN daftar umpan balik |
 | `ix_unanswered_created_at` | `unanswered` | `(created_at)` | filter `sejak` AD-4 |
 | `ix_admins_email_lower` | `admins` | **UNIQUE** `(lower(email))` | login tidak peka huruf besar |
+| `ix_usage_log_created_at` | `usage_log` | `(created_at)` | rentang bulan halaman Biaya AD-5 |
+
+`ix_documents_unit` dibuat terpisah karena foreign key di Postgres **tidak**
+otomatis ber-indeks; tanpa itu filter unit menjadi sequential scan.
 
 Dua indeks yang mudah rusak tanpa terasa:
 
@@ -261,6 +326,16 @@ tetapi berubah menjadi sequential scan. Indeks ini dibuat lewat SQL mentah di
 migrasi, **dan** tetap dideklarasikan di `models.py` — tanpa deklarasi itu,
 `alembic revision --autogenerate` akan menganggapnya indeks liar dan menghasilkan
 `DROP INDEX`.
+
+**HNSW + filter unit — butuh iterative scan.** HNSW menyaring *setelah* indeks
+dipindai, dan `hnsw.ef_search` bawaannya 40: bila satu unit hanya ~1/9 isi
+indeks, rata-rata cuma 4–5 dari 40 kandidat yang lolos filter. Karena itu
+pencarian vektor yang difilter unit menjalankan
+`SET LOCAL hnsw.iterative_scan = strict_order` lebih dulu
+(`retriever.ITERATIVE_SCAN_SQL`). Pencarian tanpa filter unit tidak menyentuhnya.
+
+> **Prasyarat rilis:** `hnsw.iterative_scan` ada sejak **pgvector 0.8**. Periksa
+> dengan `SELECT extversion FROM pg_extension WHERE extname = 'vector';`.
 
 **`ix_admins_email_lower`.** Login dan pencarian akun memakai `lower(email)`.
 Tanpa indeks unik ini, `Admin@instiki.ac.id` dan `admin@instiki.ac.id` bisa menjadi
@@ -277,6 +352,8 @@ dua akun berbeda.
 | `feedback.message_id` → `messages.id` | `CASCADE` | Umpan balik tanpa pesan tidak dapat ditafsirkan |
 | `unanswered.message_id` → `messages.id` | **`SET NULL`** | Log percakapan boleh dibersihkan, sinyal perbaikan AD-4 tidak ikut hilang |
 | `usage_log.document_id` → `documents.id` | **`SET NULL`** | Menghapus dokumen tidak boleh mengecilkan laporan biaya bulan yang sudah lewat |
+| `documents.unit` → `units.nama` | **`NO ACTION`**, `ON UPDATE CASCADE` | Unit yang masih dipakai tidak boleh hilang — nonaktifkan lewat `is_active` |
+| `admins.unit` → `units.nama` | **`NO ACTION`**, `ON UPDATE CASCADE` | Sama; `unit` NULL tetap sah untuk admin/superadmin |
 
 `unanswered` sengaja berbeda. Ia bukan turunan log, melainkan daftar pekerjaan
 admin — retensi log tidak boleh mengosongkannya.
@@ -299,6 +376,7 @@ Hanya diisi pada baris `role = 'assistant'`.
 | `input_tokens` / `output_tokens` | int \| null | Dari `usage_metadata` LangChain |
 | `biaya_usd` | float \| null | `null` bila tarif modelnya tidak dikenal |
 | `rewritten_query` | string \| null | Hasil penulisan ulang query (FR-4) |
+| `unit` | string \| null | Unit pilihan mahasiswa di menu; `null` = semua unit. Membedakan penolakan akibat salah pilih unit dari dokumen yang memang belum ada |
 | `embed_dipanggil` | bool | `false` untuk FR-7 dan smalltalk — keduanya berhenti sebelum retrieval |
 | `embed_model` | string \| null | Model yang **diminta**, bukan yang dilaporkan gateway |
 | `embed_tokens` | int \| null | `usage.prompt_tokens`; `null` bila endpoint tidak melaporkannya |
@@ -453,6 +531,7 @@ pertanyaan hari sebelumnya.
 | `0006_nama_file_asli` | `nama_file` untuk nama tab browser dan nama unduhan PDF |
 | `0007_konfigurasi_runtime` | `runtime_config` — parameter `.env` yang dapat ditimpa dari dashboard |
 | `0008_buku_biaya_pemakaian` | `usage_log` — biaya embedding yang tidak punya baris pesan untuk ditumpangi |
+| `0009_tabel_unit` | `units` + isi awal; nilai `unit` lama dipetakan ke nama resmi; FK dari `documents`/`admins`; `ix_documents_unit` |
 
 Catatan per migrasi:
 
@@ -462,6 +541,14 @@ Catatan per migrasi:
 - **0005 downgrade menghapus data.** Baris `tanya_jawab` tidak punya berkas, jadi
   tidak ada cara mengubahnya menjadi dokumen PDF yang sah — baris beserta
   chunk-nya dihapus.
+- **0009 gagal, bukan menebak, untuk nilai unit tak dikenal.** Nilai lama
+  dipetakan lewat `ALIAS` di berkas migrasi ("Bagian Keuangan" → `Keuangan`).
+  Nilai yang tidak cocok membuat migrasi berhenti dengan daftar nilainya —
+  perbaiki dengan `UPDATE documents/admins SET unit = ...` atau tambahkan ke
+  `ALIAS`, lalu jalankan ulang. Dokumen yang diam-diam masuk unit yang salah
+  justru hilang dari menu unit yang benar.
+- **0009 downgrade tidak mengembalikan nama lama.** Pemetaan ke nama resmi
+  tetap berlaku; nilai aslinya tidak disimpan di mana pun.
 
 ```bash
 alembic upgrade head          # terapkan
