@@ -26,9 +26,9 @@ UUID_CONTOH = "3f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8"
 
 
 def konkret(path: str) -> str:
-    for parameter in ("{document_id}", "{unanswered_id}", "{user_id}"):
+    for parameter in ("{document_id}", "{turn_id}", "{unanswered_id}", "{user_id}"):
         path = path.replace(parameter, UUID_CONTOH)
-    return path
+    return path.replace("{nama}", "Keuangan")
 
 
 def operasi_terlindungi():

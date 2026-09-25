@@ -30,7 +30,7 @@ info:
   description: |
     API chatbot RAG untuk pertanyaan administrasi akademik mahasiswa.
 
-    ## Empat jenis balasan
+    ## Lima jenis balasan
 
     Endpoint chat selalu mengembalikan 200 dengan `kind` yang menentukan cara
     frontend menampilkannya. `answer`, `refusal`, dan `support` WAJIB terlihat
@@ -42,6 +42,7 @@ info:
     | `refusal` | Retrieval terlalu lemah, LLM tidak dipanggil (FR-3) | Visual berbeda + kontak (FE-4) |
     | `support` | Pertanyaan bernuansa tekanan mental (FR-7) | Nada empatik + kontak konseling |
     | `smalltalk` | Sapaan atau basa-basi; retrieval dan LLM dilewati | Bubble biasa, tanpa sitasi dan tanpa tombol umpan balik |
+    | `rejected` | Dihentikan gerbang JEV: nonsense, upaya manipulasi, atau di luar topik kampus | Bubble biasa, tanpa sitasi dan tanpa tombol umpan balik |
 
     Hanya `answer` yang membawa sitasi. Menampilkan kartu sitasi di layar
     penolakan memberi kesan keliru bahwa jawabannya bersumber; menampilkannya
@@ -50,6 +51,10 @@ info:
     `smalltalk` ada supaya mahasiswa yang mengetik "hai" tidak dibalas
     penolakan berisi alamat loket biro, dan supaya sapaan tidak masuk daftar
     pertanyaan tak terjawab (AD-4).
+
+    `rejected` hanya muncul bila gerbang JEV dinyalakan (`JEV_ENABLED=true`).
+    Sama seperti `smalltalk`, ia tidak masuk AD-4: pesan acak atau upaya
+    injeksi bukan celah dokumen yang perlu ditambal admin.
 
     ## Sitasi dan verifikasi (FE-2)
 
@@ -110,8 +115,12 @@ tags:
     description: Pertanyaan tak terjawab dan uji coba retrieval (AD-4, AD-6).
   - name: admin-operasional
     description: Statistik dan kill switch (AD-5, FR-9).
+  - name: admin-log
+    description: Log aplikasi dan performa per node pipeline chat, dari SQLite (`logs.md`).
   - name: admin-pengguna
     description: Kelola akun dashboard dan level aksesnya (khusus superadmin).
+  - name: admin-unit
+    description: Kelola daftar unit layanan (khusus superadmin).
 
 paths:
   # ===========================================================================
@@ -1140,6 +1149,129 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /api/admin/logs/summary:
+    get:
+      tags: [admin-log]
+      summary: Ringkasan performa pipeline chat
+      operationId: log_summary
+      x-status: implemented
+      x-min-role: admin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Dibaca dari SQLite log (`LOG_DB_PATH`), bukan Postgres. KPI giliran, p50/p95
+        durasi per node LangGraph, distribusi titik keluar, dan tren per jam (UTC).
+        Untuk role admin, log `app.audit` tidak ikut dihitung di `log_error`.
+      parameters:
+        - $ref: '#/components/parameters/RentangLog'
+      responses:
+        '200':
+          description: Ringkasan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LogSummary' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '422':
+          description: Parameter tidak sah
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/logs/turns:
+    get:
+      tags: [admin-log]
+      summary: Daftar giliran chat
+      operationId: list_turns
+      x-status: implemented
+      x-min-role: admin
+      security: [{ bearerAuth: [] }]
+      description: Terbaru lebih dulu. Tanpa teks pertanyaan/jawaban; buka lewat `message_id`.
+      parameters:
+        - $ref: '#/components/parameters/RentangLog'
+        - { name: hasil, in: query, schema: { type: string } }
+        - name: status
+          in: query
+          schema: { type: string, enum: [ok, error, dibatalkan] }
+        - { name: unit, in: query, schema: { type: string } }
+        - { name: node_terakhir, in: query, schema: { type: string } }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Satu halaman giliran
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TurnPage' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '422':
+          description: Parameter tidak sah
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/admin/logs/turns/{turn_id}:
+    get:
+      tags: [admin-log]
+      summary: Detail satu giliran chat
+      operationId: get_turn
+      x-status: implemented
+      x-min-role: admin
+      security: [{ bearerAuth: [] }]
+      description: Node yang berjalan beserta durasi dan detailnya, plus log selama giliran itu.
+      parameters:
+        - { name: turn_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Detail giliran
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TurnDetail' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+
+  /api/admin/logs/app:
+    get:
+      tags: [admin-log]
+      summary: Log aplikasi
+      operationId: list_app_logs
+      x-status: implemented
+      x-min-role: admin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Log Python logger `app.*`. Log `app.audit` hanya untuk superadmin; role admin
+        yang memfilter `logger=app.audit` mendapat daftar kosong, bukan 403.
+      parameters:
+        - $ref: '#/components/parameters/RentangLog'
+        - name: level
+          in: query
+          description: Level minimum.
+          schema: { type: string, enum: [DEBUG, INFO, WARNING, ERROR, CRITICAL], default: INFO }
+        - name: logger
+          in: query
+          description: Nama logger; turunannya ikut, mis. `app.rag`.
+          schema: { type: string }
+        - name: q
+          in: query
+          description: Cari di isi pesan.
+          schema: { type: string, maxLength: 200 }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Satu halaman log
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppLogPage' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '422':
+          description: Parameter tidak sah
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /api/admin/kill-switch:
     get:
       tags: [admin-operasional]
@@ -1470,6 +1602,99 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /api/admin/units:
+    get:
+      tags: [admin-unit]
+      summary: Daftar semua unit layanan
+      operationId: list_admin_units
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Termasuk unit nonaktif, dalam urutan menu, beserta jumlah dokumen dan
+        akun yang memakainya. Untuk isian unit gunakan `GET /api/units`, yang
+        hanya memuat unit aktif.
+      responses:
+        '200':
+          description: Semua unit
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AdminUnit' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+
+    post:
+      tags: [admin-unit]
+      summary: Tambah unit layanan
+      operationId: create_unit
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Unit baru langsung aktif: tampil di menu chatbot dan dapat dipilih untuk
+        dokumen, entri tanya jawab, dan akun staf. `urutan` kosong = paling akhir.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminUnitCreate' }
+      responses:
+        '201':
+          description: Unit dibuat
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminUnit' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '409':
+          description: Nama sama dengan unit lain (huruf besar-kecil dan spasi tidak dibedakan)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /api/admin/units/{nama}:
+    patch:
+      tags: [admin-unit]
+      summary: Ubah nama, deskripsi, urutan, atau status aktif unit
+      operationId: update_unit
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Nama baru ikut tersimpan di setiap dokumen dan akun unit itu
+        (`ON UPDATE CASCADE`). Unit tidak dapat dihapus; menonaktifkannya
+        menyembunyikan unit dari menu chatbot dan dari pilihan isian baru,
+        sementara dokumen dan akunnya tetap ada.
+      parameters:
+        - name: nama
+          in: path
+          required: true
+          description: Ejaan resmi, persis seperti di `GET /api/admin/units`.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminUnitUpdate' }
+      responses:
+        '200':
+          description: Tersimpan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminUnit' }
+        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '403': { $ref: '#/components/responses/Terlarang' }
+        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '409':
+          description: Nama baru sama dengan unit lain
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
 # =============================================================================
 components:
   securitySchemes:
@@ -1500,6 +1725,12 @@ components:
       name: offset
       in: query
       schema: { type: integer, minimum: 0, default: 0 }
+
+    RentangLog:
+      name: range
+      in: query
+      description: Rentang waktu. 7 hari adalah batas atas karena masa simpan log.
+      schema: { type: string, enum: [24h, 7d], default: 24h }
 
   responses:
     ValidationError:
@@ -1652,10 +1883,11 @@ components:
     # --- Chat --------------------------------------------------------------
     OutcomeKind:
       type: string
-      enum: [answer, refusal, support, smalltalk]
+      enum: [answer, refusal, support, smalltalk, rejected]
       description: |
         Menentukan cara frontend menampilkan balasan. Hanya `answer` yang
-        membawa sitasi; `refusal`, `support`, dan `smalltalk` tidak pernah.
+        membawa sitasi; `refusal`, `support`, `smalltalk`, dan `rejected`
+        tidak pernah.
 
     TurnIn:
       type: object
@@ -2244,7 +2476,7 @@ components:
 
     KindBreakdown:
       type: object
-      required: [answer, refusal, support, smalltalk]
+      required: [answer, refusal, support, smalltalk, rejected]
       description: Jumlah balasan per `kind` dalam rentang.
       properties:
         answer: { type: integer, minimum: 0 }
@@ -2256,6 +2488,10 @@ components:
           description: |
             Sapaan dan basa-basi. Bukan pertanyaan administrasi -- jangan
             disandingkan dengan `answer` seolah keduanya setara.
+        rejected:
+          type: integer
+          minimum: 0
+          description: Dihentikan gerbang JEV (nonsense, manipulasi, di luar topik).
 
     Stats:
       type: object
@@ -2375,6 +2611,146 @@ components:
         biaya_harian:
           type: array
           items: { $ref: '#/components/schemas/DailyCost' }
+
+    LogSummary:
+      type: object
+      required: [sejak, sampai, jumlah_giliran, p50_total_ms, p95_total_ms, giliran_error, rasio_error, diblokir_jev, rasio_diblokir_jev, log_error, per_node, titik_keluar, per_jam]
+      properties:
+        sejak: { type: string }
+        sampai: { type: string }
+        jumlah_giliran: { type: integer, minimum: 0 }
+        p50_total_ms: { type: [number, 'null'] }
+        p95_total_ms: { type: [number, 'null'] }
+        giliran_error: { type: integer, minimum: 0 }
+        rasio_error: { type: number, minimum: 0 }
+        diblokir_jev: { type: integer, minimum: 0 }
+        rasio_diblokir_jev: { type: number, minimum: 0 }
+        log_error: { type: integer, minimum: 0, description: 'Log ERROR ke atas. Untuk role admin, log audit tidak dihitung.' }
+        per_node:
+          type: array
+          items: { $ref: '#/components/schemas/NodeStat' }
+        titik_keluar:
+          type: array
+          items: { $ref: '#/components/schemas/ExitPoint' }
+        per_jam:
+          type: array
+          items: { $ref: '#/components/schemas/HourlyLogStat' }
+
+    NodeStat:
+      type: object
+      required: [node, jumlah, p50_ms, p95_ms, error]
+      properties:
+        node: { type: string }
+        jumlah: { type: integer, minimum: 0 }
+        p50_ms: { type: [number, 'null'] }
+        p95_ms: { type: [number, 'null'] }
+        error: { type: integer, minimum: 0 }
+
+    ExitPoint:
+      type: object
+      required: [node, jumlah]
+      properties:
+        node: { type: string, description: 'Node terakhir yang berjalan, yaitu tempat giliran berhenti.' }
+        jumlah: { type: integer, minimum: 0 }
+
+    HourlyLogStat:
+      type: object
+      required: [jam, giliran, p95_total_ms, giliran_error, log_error]
+      properties:
+        jam: { type: string, description: 'Awal jam, UTC, mis. `2026-09-25T03:00:00Z`.' }
+        giliran: { type: integer, minimum: 0 }
+        p95_total_ms: { type: [number, 'null'] }
+        giliran_error: { type: integer, minimum: 0 }
+        log_error: { type: integer, minimum: 0 }
+
+    TurnOut:
+      type: object
+      required: [turn_id, waktu, endpoint, session_id, message_id, unit, hasil, node_terakhir, total_ms, ttft_ms, status, langsmith_run_id]
+      properties:
+        turn_id: { type: string }
+        waktu: { type: string }
+        endpoint: { type: string, enum: [chat, chat_stream] }
+        session_id: { type: [string, 'null'] }
+        message_id: { type: [string, 'null'], description: 'Tautan ke `messages` di Postgres; teks percakapan hanya ada di sana.' }
+        unit: { type: [string, 'null'] }
+        hasil: { type: [string, 'null'] }
+        node_terakhir: { type: [string, 'null'] }
+        total_ms: { type: [integer, 'null'] }
+        ttft_ms: { type: [integer, 'null'], description: 'Waktu sampai token pertama; hanya untuk chat_stream yang memanggil LLM.' }
+        status: { type: string, enum: [ok, error, dibatalkan] }
+        langsmith_run_id: { type: [string, 'null'] }
+
+    TurnPage:
+      type: object
+      required: [total, items]
+      properties:
+        total: { type: integer, minimum: 0 }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/TurnOut' }
+
+    NodeRunOut:
+      type: object
+      required: [node, urutan, mulai, durasi_ms, status, error_tipe, error_pesan, detail]
+      properties:
+        node: { type: string }
+        urutan: { type: integer }
+        mulai: { type: string }
+        durasi_ms: { type: number }
+        status: { type: string, enum: [ok, error] }
+        error_tipe: { type: [string, 'null'] }
+        error_pesan: { type: [string, 'null'] }
+        detail: { type: object, additionalProperties: true }
+
+    AppLogOut:
+      type: object
+      required: [id, waktu, level, logger, pesan, lokasi, traceback, turn_id]
+      properties:
+        id: { type: integer }
+        waktu: { type: string }
+        level: { type: string }
+        logger: { type: string }
+        pesan: { type: string }
+        lokasi: { type: [string, 'null'] }
+        traceback: { type: [string, 'null'] }
+        turn_id: { type: [string, 'null'] }
+
+    TurnDetail:
+      type: object
+      required: [turn_id, waktu, endpoint, session_id, message_id, unit, hasil, node_terakhir, total_ms, ttft_ms, status, langsmith_run_id, nodes, logs]
+      description: TurnOut ditambah node dan log giliran itu.
+      properties:
+        turn_id: { type: string }
+        waktu: { type: string }
+        endpoint: { type: string, enum: [chat, chat_stream] }
+        session_id: { type: [string, 'null'] }
+        message_id: { type: [string, 'null'], description: 'Tautan ke `messages` di Postgres; teks percakapan hanya ada di sana.' }
+        unit: { type: [string, 'null'] }
+        hasil: { type: [string, 'null'] }
+        node_terakhir: { type: [string, 'null'] }
+        total_ms: { type: [integer, 'null'] }
+        ttft_ms: { type: [integer, 'null'], description: 'Waktu sampai token pertama; hanya untuk chat_stream yang memanggil LLM.' }
+        status: { type: string, enum: [ok, error, dibatalkan] }
+        langsmith_run_id: { type: [string, 'null'] }
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/NodeRunOut' }
+        logs:
+          type: array
+          description: Log yang muncul selama giliran ini berjalan.
+          items: { $ref: '#/components/schemas/AppLogOut' }
+
+    AppLogPage:
+      type: object
+      required: [total, items, loggers]
+      properties:
+        total: { type: integer, minimum: 0 }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AppLogOut' }
+        loggers:
+          type: array
+          items: { type: string }
 
     KillSwitchRequest:
       type: object
@@ -2553,6 +2929,49 @@ components:
       required: [password_sementara]
       properties:
         password_sementara: { type: string }
+
+    AdminUnit:
+      type: object
+      required: [nama, urutan, is_active, jumlah_dokumen, jumlah_akun]
+      description: Satu unit layanan, termasuk yang nonaktif.
+      properties:
+        nama:
+          type: string
+          description: Kunci utama; nilai yang tersimpan di `documents.unit` dan `admins.unit`.
+        deskripsi:
+          type: [string, 'null']
+          description: Teks bantu di menu chatbot.
+        urutan: { type: integer, description: Urutan tampil di menu; kecil lebih dulu. }
+        is_active:
+          type: boolean
+          description: false = tersembunyi dari menu chatbot dan pilihan isian baru.
+        jumlah_dokumen: { type: integer }
+        jumlah_akun: { type: integer }
+
+    AdminUnitCreate:
+      type: object
+      required: [nama]
+      properties:
+        nama:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Spasi berlebih dirapikan; tidak boleh memuat `/`.
+        deskripsi: { type: [string, 'null'], maxLength: 500 }
+        urutan:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 10000
+          description: Kosong = diletakkan paling akhir.
+
+    AdminUnitUpdate:
+      type: object
+      description: Hanya field yang dikirim yang diubah. Field tak dikenal ditolak.
+      properties:
+        nama: { type: string, minLength: 1, maxLength: 200 }
+        deskripsi: { type: [string, 'null'], maxLength: 500 }
+        urutan: { type: integer, minimum: 0, maximum: 10000 }
+        is_active: { type: boolean }
 
     PasswordChange:
       type: object

@@ -458,3 +458,40 @@ class TestFeedback:
             },
         )
         assert r.status_code == 422
+
+
+class TestGerbangJev:
+    """`kind: rejected` -- tanpa sitasi, tanpa retrieval, dan tidak masuk AD-4."""
+
+    @pytest.fixture
+    def gated_client(self, make_client, strong_documents):
+        from app.rag.gate import GateLabel, GateVerdict
+        from tests.fixtures.fakes import FakeRetriever
+
+        async def gate(question, history=()):
+            return GateVerdict(GateLabel.NONSENSE, 0.97, blocked=True, cost_usd=0.00002)
+
+        self.retriever = FakeRetriever(strong_documents)
+        return make_client(strong_documents, retriever=self.retriever, gate=gate)
+
+    def test_dibalas_rejected_tanpa_sitasi(self, gated_client, payload, api_llm):
+        body = gated_client.post("/api/chat", json={**payload, "question": "asdf qwer"}).json()
+        assert body["kind"] == OutcomeKind.REJECTED
+        assert body["citations"] == []
+        assert body["contacts"] == []
+        assert self.retriever.queries == []
+        assert not api_llm.called
+
+    def test_label_dan_biaya_gerbang_tercatat(self, gated_client, payload, chat_logger):
+        from app.observability.chatlog import build_meta
+
+        gated_client.post("/api/chat", json={**payload, "question": "asdf qwer"})
+        meta = build_meta(chat_logger.entries[-1])
+        assert meta["kind"] == "rejected"
+        assert meta["gate_label"] == "nonsense"
+        assert meta["gate_biaya_usd"] == 0.00002
+        assert meta["embed_dipanggil"] is False
+
+    def test_stream_juga_rejected(self, gated_client, payload):
+        resp = gated_client.post("/api/chat/stream", json={**payload, "question": "asdf"})
+        assert pesan_akhir(resp)["kind"] == "rejected"

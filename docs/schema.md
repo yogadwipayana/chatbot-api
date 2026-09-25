@@ -152,7 +152,7 @@ CONSTRAINT ck_admins_staf_unit CHECK (role <> 'staf' OR (unit IS NOT NULL AND bt
 | Kelompok | Tabel | Ditulis oleh | Dibaca oleh |
 |---|---|---|---|
 | **Pengetahuan** | `documents`, `chunks` | `app/ingestion/`, `app/admin/faq.py` | retrieval FR-2 |
-| **Referensi** | `units` | migrasi `0009` / SQL manual — belum ada API untuk mengubahnya | `app/units.py`: menu chatbot, validasi setiap isian unit, filter retrieval |
+| **Referensi** | `units` | migrasi `0009` (isi awal), `app/routers/admin_units.py` (halaman Unit, superadmin) | `app/units.py`: menu chatbot, validasi setiap isian unit, filter retrieval |
 | **Log** | `conversations`, `messages`, `feedback`, `unanswered` | `app/observability/chatlog.py`, `app/routers/chat.py` | dashboard AD-4, AD-5 |
 | **Akun** | `admins` | `app/admin/accounts.py`, `scripts/create_admin.py` | auth AD-1 |
 | **Setelan** | `runtime_config` | `app/routers/admin_config.py` | `get_effective_settings` di setiap permintaan |
@@ -224,6 +224,11 @@ menerima penolakan padahal jawabannya ada. Karena itu `documents.unit` dan
 `documents.unit` tetap nama yang tampil di dashboard, sehingga kontrak API admin
 tidak berubah. `ON UPDATE CASCADE` membuat penggantian nama cukup satu `UPDATE`
 di `units`; dokumen dan akun staf ikut.
+
+**Dikelola dari dashboard.** Superadmin menambah, mengganti nama, mengatur
+urutan, dan menonaktifkan unit lewat `/api/admin/units` (halaman Unit).
+Nama yang hanya berbeda huruf besar atau spasi dari unit lain ditolak 409 —
+`cocokkan` hanya akan pernah menemukan salah satunya.
 
 **Unit tidak dihapus, tetapi dinonaktifkan.** `ON DELETE` memakai bawaan
 `NO ACTION`: menghapus unit yang masih dipakai ditolak database. `is_active =

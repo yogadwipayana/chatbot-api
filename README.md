@@ -70,6 +70,27 @@ ternyata tidak pernah dikirim.
   daripada `LANGSMITH_TRACING`, sehingga sisa variabel dari proyek lain bisa
   menyalakan tracing yang sudah dimatikan, atau sebaliknya.
 
+## Log aplikasi — SQLite (`logs.md`)
+
+Log Python logger `app.*` dan metrik per giliran chat ditulis ke SQLite di
+`LOG_DB_PATH` (default `log/app.db`, relatif terhadap direktori kerja), terpisah
+dari Postgres. Dibaca halaman Log dashboard lewat `/api/admin/logs/*`.
+
+- **Tiga tabel:** `turns` (satu baris per giliran: hasil, titik keluar, durasi
+  total, TTFT), `node_runs` (satu baris per node LangGraph: durasi, status,
+  detail), `app_logs` (log `app.*` beserta traceback dan `turn_id`).
+- **Tanpa teks pertanyaan maupun jawaban.** Teks hanya di Postgres, ditautkan
+  lewat `message_id`.
+- **Masa simpan `LOG_RETENTION_DAYS`** (default 7 hari): baris lama dihapus saat
+  start dan setiap jam. `LOG_LEVEL` (default `INFO`) berlaku untuk konsol dan SQLite.
+- **Tidak memblokir permintaan:** baris masuk antrean dan ditulis satu thread
+  latar belakang. Gagal menulis log tidak menggagalkan jawaban.
+- **Log `app.audit` hanya untuk superadmin**, disaring di query API.
+- **Docker:** mount direktori log sebagai volume (mis. `-v pandu-log:/app/log`),
+  karena filesystem container hilang setiap redeploy. Dengan pm2 tidak perlu apa-apa.
+- Kotak uji coba admin (`/api/admin/test-query`) tidak ikut tercatat; hanya
+  `/api/chat` dan `/api/chat/stream`.
+
 ## Penyimpanan dokumen PDF
 
 Dua backend, dipilih lewat `STORAGE_BACKEND`:
@@ -182,18 +203,22 @@ python -m scripts.export_openapi -o /tmp/live.yaml
 |---|---|---|
 | `app/rag/fusion.py` | Reciprocal Rank Fusion | FR-2 |
 | `app/rag/retriever.py` | `PostgresHybridRetriever` — vector + FTS paralel | FR-2 |
+| `app/rag/reranker.py` | Reranker setelah RRF (API `/rerank` atau cross-encoder lokal) | FR-2 |
+| `app/rag/local_embeddings.py` | Embedding lokal multilingual-e5 (awalan + padding) | FR-1, FR-2 |
 | `app/rag/filters.py` | Predikat dokumen aktif, satu definisi untuk semua query | FR-2 |
 | `app/rag/threshold.py` | Ambang penolakan, dievaluasi sebelum LLM | FR-3 |
 | `app/rag/rewriter.py` | Penulisan ulang query | FR-4 |
 | `app/rag/prompts.py` | Instruksi wajib + penyusunan konteks | FR-5 |
 | `app/rag/risk.py` | Topik berisiko tinggi + kontak unit | FR-6 |
 | `app/rag/sensitive.py` | Pertanyaan sensitif → konseling | FR-7 |
-| `app/rag/chain.py` | Orkestrasi alur, termasuk jalan keluar lebih awal | §7 |
+| `app/rag/gate.py` | Gerbang semantik JEV: nonsense / malicious / di luar topik | — |
+| `app/rag/graph.py` | Graf LangGraph: urutan node dan jalan keluar lebih awal | §7 |
+| `app/rag/chain.py` | Bentuk hasil + titik masuk `run_pipeline` | §7 |
 | `app/ingestion/` | Loader, chunker, embedder, pipeline | FR-1 |
 | `app/storage/` | Penyimpanan objek: disk lokal / S3 / R2 | FR-1, FE-2 |
 | `app/observability/` | LangSmith + estimasi biaya | FR-8 |
 | `app/security/` | Sanitasi, rate limit, kill switch, auth | FR-9, AD-1 |
-| `eval/` | Recall@k, MRR, kalibrasi ambang | §3, §14 |
+| `eval/` | Recall@k, MRR, kalibrasi ambang, RAGAS | §3, §14 |
 
 Modul `fusion`, `threshold`, `risk`, `sensitive`, `citations`, `filters`, dan
 `eval/metrics` sengaja **tanpa impor pihak ketiga**. Ini bagian yang PRD §6
@@ -217,6 +242,13 @@ sebelum ada query ke database.
 **3. Penolakan menampilkan semua unit terkait, bukan hanya yang pertama.**
 "Deadline pembayaran UKT" menyangkut akademik dan keuangan sekaligus; mahasiswa
 yang ditolak tidak boleh dikirim ke loket yang salah.
+
+**4. Gerbang JEV fail-open dan berada setelah FR-7.**
+Galat, timeout, atau keyakinan di bawah ambang berarti pesan diteruskan ke
+retrieval — pertanyaan akademik yang salah diblokir hilang tanpa jejak di AD-4,
+sedangkan pesan buruk yang lolos masih dihadang FR-3 dan delimiter FR-5.
+FR-7 dan sapaan berbasis aturan berjalan lebih dulu: gratis, dapat diaudit, dan
+tidak bergantung pada model luar. Urutannya dijaga `tests/unit/test_graph.py`.
 
 ## Yang masih placeholder
 
@@ -292,7 +324,40 @@ python -m eval.run_eval --dataset eval/data/eval_set.jsonl --k 5
 
 Membandingkan baseline vector-only melawan hybrid + RRF lewat jalur SQL yang
 sama persis (baseline = bobot fulltext nol), sehingga yang terukur benar-benar
-hanya efek fusi. Exit code 1 bila Recall@5 belum mencapai 0.85.
+hanya efek fusi. Bila `RERANK_PROVIDER` menyala, baris ketiga hybrid + RRF +
+rerank ikut dihitung. Exit code 1 bila Recall@5 belum mencapai 0.85.
+
+## Evaluasi generasi — RAGAS
+
+Dua tahap, karena ragas 0.4 belum cocok dengan langchain-community yang dipin
+di sini (masih meng-import modul VertexAI yang sudah dihapus):
+
+```bash
+# 1. Jalankan PANDU (alur produksi apa adanya) dan simpan hasilnya
+python -m eval.run_generation --dataset eval/data/generation_set.jsonl
+
+# 2. Nilai di environment ragas tersendiri
+cd eval/ragas
+uv run python run_ragas.py ../hasil/generation-<waktu>.jsonl [--judge-model ...]
+```
+
+Format set evaluasi ada di `eval/data/generation_set.example.jsonl`; kolom
+`reference` wajib divalidasi staf akademik. Metrik: faithfulness, answer
+relevancy, context precision, context recall. Hanya jawaban (`kind: answer`)
+yang dinilai; tingkat dijawab dilaporkan terpisah.
+
+## Model tambahan (opsional)
+
+| Fitur | Setelan | Catatan |
+|---|---|---|
+| Reranker | `RERANK_PROVIDER=api\|local`, `RERANK_MODEL` | `local` butuh `uv sync --extra local` (torch) |
+| Ambang reranker | `RERANK_THRESHOLD` | Menggantikan ambang vector/leksikal bila skor reranker ada; kalibrasi dulu |
+| Gerbang JEV | `JEV_ENABLED=true` | Dikirim ke `<BASE_URL>/systemone` dengan `API_KEY`, model `openrouter/typesafe/jev-1.13` |
+| Embedding lokal | `EMBED_PROVIDER=local`, `EMBED_MODEL=intfloat/multilingual-e5-small` | Wajib re-index dan kalibrasi ulang ambang sesudahnya; panduan lengkap di [`docs/e5.md`](docs/e5.md) |
+
+Vektor e5-small (384 dimensi) diisi nol sampai 1024 — cosine similarity tidak
+berubah, jadi kolom dan index tidak perlu dimigrasi. Diagram alur terbaru:
+`python -m app.rag.graph` (Mermaid).
 
 ## Dashboard admin
 
@@ -335,7 +400,7 @@ seolah-olah front-end tidak pernah memanggil.
 |---|---|
 | `staf` (Staf/Dosen) | Kelola dokumen dan tanya jawab **unitnya sendiri**, uji coba jawaban, lihat pertanyaan tak terjawab |
 | `admin` | + dokumen dan tanya jawab semua unit, tandai pertanyaan selesai, statistik, umpan balik mahasiswa |
-| `superadmin` | + kill switch, konfigurasi retrieval dan chunking, kelola akun (`/api/admin/users`) |
+| `superadmin` | + kill switch, konfigurasi retrieval dan chunking, kelola akun (`/api/admin/users`) dan unit (`/api/admin/units`) |
 
 Aturannya ada di `app/admin/permissions.py` (tanpa impor pihak ketiga). Setiap
 operasi admin di `api.yaml` mencatat `x-min-role`, dan

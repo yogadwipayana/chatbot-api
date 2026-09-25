@@ -10,14 +10,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import Settings, get_settings
+from app.observability.applog import hentikan_log, mulai_log
 from app.observability.tracing import configure_tracing
 from app.routers import (
     admin_auth,
     admin_config,
     admin_documents,
     admin_faq,
+    admin_logs,
     admin_ops,
     admin_quality,
+    admin_units,
     admin_users,
     chat,
     documents,
@@ -33,13 +36,20 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    # Paling awal: tanpa ini logger `app.*` belum punya handler, dan baris INFO
+    # di bawah hilang sebelum sempat tercatat ke mana pun.
+    mulai_log(settings)
     aktif = configure_tracing(settings)
     # Dicatat saat start, bukan hanya dibaca lewat /health: tracing yang mati
     # tidak menimbulkan galat apa pun, dan tanpa satu baris di log start tidak
     # ada momen lain yang memaksa siapa pun menyadarinya (FR-8).
     logger.info("Tracing LangSmith %s", "aktif" if aktif else "mati")
     apply_initial_kill_switch(settings, get_kill_switch())
-    yield
+    try:
+        yield
+    finally:
+        # Tulis sisa antrean log sebelum proses keluar.
+        hentikan_log()
 
 
 def apply_initial_kill_switch(settings: Settings, switch: KillSwitch) -> None:
@@ -90,8 +100,10 @@ def create_app() -> FastAPI:
     app.include_router(admin_faq.router)
     app.include_router(admin_quality.router)
     app.include_router(admin_ops.router)
+    app.include_router(admin_logs.router)
     app.include_router(admin_config.router)
     app.include_router(admin_users.router)
+    app.include_router(admin_units.router)
     return app
 
 

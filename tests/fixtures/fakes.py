@@ -18,7 +18,16 @@ import bcrypt
 from app.admin.accounts import EDITABLE_FIELDS, Account, DuplicateEmailError
 from app.admin.permissions import ROLE_LEVEL, AdminRole
 from app.admin.runtime_config import NilaiTersimpan
-from app.units import UnitInfo, cocokkan
+from app.units import (
+    EDITABLE_FIELDS as UNIT_EDITABLE_FIELDS,
+)
+from app.units import (
+    DuplicateUnitError,
+    UnitInfo,
+    UnitRecord,
+    bentrok,
+    cocokkan,
+)
 
 
 @dataclass
@@ -154,6 +163,19 @@ class FakeChatLogger:
     async def log(self, entry) -> str | None:
         self.entries.append(entry)
         return None if self.fail else self.message_id
+
+
+class FakeLogSink:
+    """Pengganti `LogWriter`: baris log SQLite ditampung di memori."""
+
+    def __init__(self) -> None:
+        self.rows: list[tuple[str, dict[str, Any]]] = []
+
+    def kirim(self, jenis: str, data: dict[str, Any]) -> None:
+        self.rows.append((jenis, data))
+
+    def of(self, jenis: str) -> list[dict[str, Any]]:
+        return [data for j, data in self.rows if j == jenis]
 
 
 class FakeAccountStore:
@@ -303,14 +325,24 @@ UNIT_RESMI = (
 """Sama dengan isi awal migrasi 0009."""
 
 
+def _urutan(unit: UnitRecord) -> tuple[int, str]:
+    return (unit.urutan, unit.nama)
+
+
 class FakeUnitDirectory:
     """Pengganti `SqlUnitDirectory`: daftar unit di memori, aturan cocok yang sama."""
 
     def __init__(self, nama: Sequence[str] = UNIT_RESMI) -> None:
-        self.units = [UnitInfo(n) for n in nama]
+        self.records = [UnitRecord(n, None, i, True) for i, n in enumerate(nama, start=1)]
         self.faq: dict[str, list[str]] = {}
         """unit -> pertanyaan entri tanya jawab, terbaru lebih dulu."""
         self.diminta: list[tuple[str | None, int]] = []
+
+    @property
+    def units(self) -> list[UnitInfo]:
+        """Unit aktif, dalam urutan menu -- seperti `SqlUnitDirectory.list`."""
+        aktif = [u for u in sorted(self.records, key=_urutan) if u.is_active]
+        return [UnitInfo(u.nama, u.deskripsi) for u in aktif]
 
     async def list(self) -> list[UnitInfo]:
         return list(self.units)
@@ -322,3 +354,31 @@ class FakeUnitDirectory:
 
     async def resolve(self, nama: str | None) -> str | None:
         return cocokkan(self.units, nama)
+
+    async def semua(self) -> list[UnitRecord]:
+        return sorted(self.records, key=_urutan)
+
+    async def ambil(self, nama: str) -> UnitRecord | None:
+        return next((u for u in self.records if u.nama == nama), None)
+
+    async def buat(
+        self, *, nama: str, deskripsi: str | None, urutan: int | None
+    ) -> UnitRecord:
+        if bentrok(self.records, nama):
+            raise DuplicateUnitError(nama)
+        if urutan is None:
+            urutan = max((u.urutan for u in self.records), default=0) + 1
+        unit = UnitRecord(nama, deskripsi, urutan, True)
+        self.records.append(unit)
+        return unit
+
+    async def ubah(self, nama: str, changes: dict[str, Any]) -> UnitRecord | None:
+        lama = await self.ambil(nama)
+        if lama is None:
+            return None
+        baru = changes.get("nama", nama)
+        if baru != nama and bentrok(self.records, baru, kecuali=nama):
+            raise DuplicateUnitError(baru)
+        unit = replace(lama, **{k: v for k, v in changes.items() if k in UNIT_EDITABLE_FIELDS})
+        self.records[self.records.index(lama)] = unit
+        return unit

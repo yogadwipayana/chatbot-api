@@ -1,0 +1,17 @@
+[project]
+name = "pandu-ragas"
+version = "0.1.0"
+description = "Penilaian RAGAS atas hasil eval/run_generation.py"
+requires-python = ">=3.11"
+# Environment terpisah dari api/: ragas 0.4 masih meng-import
+# `langchain_community.chat_models.vertexai`, yang sudah dihapus dari
+# langchain-community 0.4 yang dipin api/pyproject.toml.
+dependencies = [
+    "ragas>=0.4,<0.5",
+    "langchain-openai>=0.3,<2",
+    "langchain-community>=0.3,<0.4",
+    "python-dotenv>=1.0,<2",
+]
+
+[tool.uv]
+package = false

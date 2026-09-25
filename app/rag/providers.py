@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from functools import lru_cache
+from typing import Any, ClassVar
 
 from app.config import Settings
 from app.db.models import EMBEDDING_DIM
@@ -63,12 +64,25 @@ def build_embeddings(settings: Settings) -> Any:
 
     Peringatan (PRD §10): mengganti model embedding setelah ingestion berarti
     re-index seluruh dokumen. Uji kualitas bahasa Indonesia dulu.
+
+    `EMBED_PROVIDER=local` memuat EMBED_MODEL lewat sentence-transformers di
+    server ini (`app.rag.local_embeddings`), tanpa BASE_URL maupun API_KEY.
     """
+    if settings.embed_provider == "local":
+        from app.rag.local_embeddings import LocalEmbeddings
+
+        return LocalEmbeddings(settings.embed_model, EMBEDDING_DIM)
+
     from langchain_openai import OpenAIEmbeddings
 
+    from app.rag.local_embeddings import pakai_awalan_e5
+
+    e5 = pakai_awalan_e5(settings.embed_model)
     kwargs: dict[str, Any] = {
         "model": settings.embed_model,
-        "dimensions": EMBEDDING_DIM,
+        # e5 berdimensi tetap dan tidak mengenal `dimensions` (fitur Matryoshka
+        # text-embedding-3); vektornya diisi nol sampai kolom oleh `E5ApiEmbeddings`.
+        "dimensions": None if e5 else EMBEDDING_DIM,
         "api_key": _kunci(settings),
         "default_headers": dict(_HEADERS),
     }
@@ -81,7 +95,56 @@ def build_embeddings(settings: Settings) -> Any:
         # Yang hilang hanya pemecahan otomatis teks di atas batas konteks --
         # chunk kita ~700 token (FR-1), jauh di bawah batas itu.
         kwargs["check_embedding_ctx_length"] = False
+    if e5:
+        return _e5_api_class()(**kwargs)
     return OpenAIEmbeddings(**kwargs)
+
+
+@lru_cache(maxsize=1)
+def _e5_api_class() -> type:
+    """Kelas dibuat saat dibutuhkan, supaya langchain-openai tetap diimpor malas."""
+    from langchain_openai import OpenAIEmbeddings
+
+    from app.rag.local_embeddings import PASSAGE_PREFIX, QUERY_PREFIX, pad
+
+    class E5ApiEmbeddings(OpenAIEmbeddings):
+        """multilingual-e5 lewat endpoint OpenAI-compatible (`EMBED_PROVIDER=api`).
+
+        Dua hal yang dilakukan `LocalEmbeddings` untuk e5 lokal, diulang di sini
+        karena endpoint-nya hanya menerima teks dan mengembalikan vektor apa adanya:
+
+        - awalan `query: ` / `passage: `. Tanpa itu mutu retrieval e5 turun tanpa
+          pesan galat, dan endpoint tidak memasangnya sendiri;
+        - isi nol sampai `EMBEDDING_DIM` (384 untuk e5-small). Cosine similarity
+          tidak berubah, jadi kolom `chunks.embedding` tidak perlu dimigrasi.
+
+        `aembed_query` bawaan meneruskan ke `aembed_documents`, yang di sini
+        memasang awalan passage -- karena itu keduanya ditimpa terpisah.
+        """
+
+        awalan_e5: ClassVar[bool] = True
+
+        def embed_documents(self, texts, chunk_size=None, **kwargs):  # type: ignore[override]
+            vektor = super().embed_documents(
+                [PASSAGE_PREFIX + t for t in texts], chunk_size, **kwargs
+            )
+            return [pad(v, EMBEDDING_DIM) for v in vektor]
+
+        async def aembed_documents(self, texts, chunk_size=None, **kwargs):  # type: ignore[override]
+            vektor = await super().aembed_documents(
+                [PASSAGE_PREFIX + t for t in texts], chunk_size, **kwargs
+            )
+            return [pad(v, EMBEDDING_DIM) for v in vektor]
+
+        def embed_query(self, text, **kwargs):  # type: ignore[override]
+            vektor = super().embed_documents([QUERY_PREFIX + text], **kwargs)[0]
+            return pad(vektor, EMBEDDING_DIM)
+
+        async def aembed_query(self, text, **kwargs):  # type: ignore[override]
+            vektor = (await super().aembed_documents([QUERY_PREFIX + text], **kwargs))[0]
+            return pad(vektor, EMBEDDING_DIM)
+
+    return E5ApiEmbeddings
 
 
 @dataclass(frozen=True)
@@ -108,8 +171,15 @@ class EmbedResult:
     boleh dijumlahkan begitu saja."""
 
 
-async def embed_with_usage(embeddings: Any, texts: Sequence[str]) -> EmbedResult:
+async def embed_with_usage(
+    embeddings: Any, texts: Sequence[str], *, sebagai_query: bool = False
+) -> EmbedResult:
     """Embed `texts` dalam SATU panggilan, sekalian membaca laporan pemakaiannya.
+
+    `sebagai_query=True` untuk pertanyaan mahasiswa. Embedding API tidak
+    membedakan keduanya, tetapi model e5 lokal memberi awalan berbeda untuk
+    query dan dokumen -- memperlakukan pertanyaan sebagai dokumen diam-diam
+    menurunkan mutu retrieval.
 
     `aembed_documents`/`aembed_query` hanya mengembalikan vektor: antarmuka
     `Embeddings` LangChain tidak punya kanal usage seperti `usage_metadata` milik
@@ -122,6 +192,15 @@ async def embed_with_usage(embeddings: Any, texts: Sequence[str]) -> EmbedResult
     dikembalikan hanya mewakili batch terakhir. Pemanggil yang mengatur ukuran
     batch -- lihat `app.ingestion.embedder.BATCH_SIZE`.
     """
+    if getattr(embeddings, "lokal", False):
+        # Model di server sendiri: tidak ada tagihan, jadi biayanya nol -- bukan
+        # None, yang di AD-5 berarti "berbiaya tetapi tidak terhitung".
+        if sebagai_query:
+            vektor = [await embeddings.aembed_query(t) for t in texts]
+        else:
+            vektor = await embeddings.aembed_documents(list(texts))
+        return EmbedResult(vektor, None, 0.0, embeddings.model, None)
+
     if getattr(embeddings, "check_embedding_ctx_length", True):
         # Jalur "len-safe" langchain-openai men-tokenisasi dengan tiktoken lalu
         # mengirim token ID, dan memecah sendiri teks yang melebihi batas konteks.
@@ -135,13 +214,26 @@ async def embed_with_usage(embeddings: Any, texts: Sequence[str]) -> EmbedResult
     params: dict[str, Any] = {"model": embeddings.model}
     if embeddings.dimensions is not None:
         params["dimensions"] = embeddings.dimensions
+    e5 = getattr(embeddings, "awalan_e5", False)
+    if e5:
+        # Klien dipanggil langsung, melewati `E5ApiEmbeddings.aembed_*`: awalan
+        # dan padding-nya harus dipasang di sini juga.
+        from app.rag.local_embeddings import PASSAGE_PREFIX, QUERY_PREFIX
+
+        awalan = QUERY_PREFIX if sebagai_query else PASSAGE_PREFIX
+        texts = [awalan + t for t in texts]
     response = await embeddings.async_client.create(input=list(texts), **params)
     if not isinstance(response, dict):
         response = response.model_dump()
 
     usage = response.get("usage") or {}
+    vektor = [r["embedding"] for r in response["data"]]
+    if e5:
+        from app.rag.local_embeddings import pad
+
+        vektor = [pad(v, EMBEDDING_DIM) for v in vektor]
     return EmbedResult(
-        vectors=[r["embedding"] for r in response["data"]],
+        vectors=vektor,
         tokens=_bilangan(usage.get("prompt_tokens", usage.get("total_tokens")), int),
         biaya_usd=_bilangan(usage.get("cost"), float),
         model=response.get("model") or None,

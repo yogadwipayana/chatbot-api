@@ -14,3 +14,8 @@ storage/documents/*
 !storage/documents/.gitkeep
 eval/data/eval_set.jsonl
 eval/data/negatives.txt
+eval/data/generation_set.jsonl
+# Keluaran eval/run_generation.py dan eval/ragas/run_ragas.py
+eval/hasil/
+# Log aplikasi SQLite (LOG_DB_PATH)
+log/

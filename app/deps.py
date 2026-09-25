@@ -179,7 +179,7 @@ class EmbedQuery:
     async def __call__(self, text: str) -> list[float]:
         from app.rag.providers import embed_with_usage
 
-        hasil = await embed_with_usage(self._embeddings, [text])
+        hasil = await embed_with_usage(self._embeddings, [text], sebagai_query=True)
         self.panggilan += 1
         self._catat(hasil)
         return hasil.vectors[0]
@@ -191,9 +191,10 @@ class EmbedQuery:
             self.model_dilaporkan = hasil.model
         if hasil.is_byok is not None:
             self.is_byok = hasil.is_byok
-        if hasil.tokens is None:
+        if hasil.tokens is None and hasil.biaya_usd is None:
             return
-        self.tokens = (self.tokens or 0) + hasil.tokens
+        if hasil.tokens is not None:
+            self.tokens = (self.tokens or 0) + hasil.tokens
 
         biaya, sumber = biaya_embedding(self.model, hasil.tokens, hasil.biaya_usd)
         if biaya is None:
@@ -215,6 +216,7 @@ def build_retriever(settings: SettingsDep) -> Any:
     """
     from app.db.session import SessionLocal
     from app.rag.providers import build_embeddings
+    from app.rag.reranker import build_reranker
     from app.rag.retriever import PostgresHybridRetriever
 
     embeddings = build_embeddings(settings)
@@ -226,7 +228,16 @@ def build_retriever(settings: SettingsDep) -> Any:
         rrf_k=settings.rrf_k,
         weight_vector=settings.rrf_weight_vector,
         weight_fulltext=settings.rrf_weight_fulltext,
+        reranker=build_reranker(settings),
+        rerank_candidates=settings.rerank_candidates,
     )
+
+
+def build_gate_call(settings: SettingsDep) -> Any:
+    """Gerbang JEV, atau None bila JEV_ENABLED=false. Di-override di test."""
+    from app.rag.gate import build_gate
+
+    return build_gate(settings)
 
 
 class LLMCall:
@@ -250,9 +261,7 @@ class LLMCall:
     def _config(self) -> dict[str, Any]:
         run_id = id_run()
         self.run_id = str(run_id)
-        return konfigurasi_run(
-            "generate_answer", run_id=run_id, session_id=self.session_id
-        )
+        return konfigurasi_run("generate_answer", run_id=run_id, session_id=self.session_id)
 
     async def __call__(self, wrapped_question: str, documents) -> str:
         from app.rag.prompts import answer_prompt, format_context
@@ -317,9 +326,7 @@ class RewriteCall:
         chain = rewrite_prompt() | build_llm(self.settings, streaming=False)
         result = await chain.ainvoke(
             {"question": question, "history": history},
-            config=konfigurasi_run(
-                "rewrite_query", run_id=run_id, session_id=self.session_id
-            ),
+            config=konfigurasi_run("rewrite_query", run_id=run_id, session_id=self.session_id),
         )
         return str(result.content)
 
@@ -342,6 +349,24 @@ def get_chat_logger() -> Any:
     from app.observability.chatlog import ChatLogger
 
     return ChatLogger(SessionLocal)
+
+
+def get_log_sink() -> Any:
+    """Penulis log SQLite yang dinyalakan lifespan, atau None.
+
+    None -- mis. di test yang tidak menjalankan lifespan -- berarti giliran chat
+    tidak dicatat ke SQLite; jawabannya tidak terpengaruh.
+    """
+    from app.observability.applog import writer_aktif
+
+    return writer_aktif()
+
+
+def get_log_store(settings: BaseSettingsDep) -> Any:
+    """Pembaca SQLite log untuk endpoint `/api/admin/logs/*`. Di-override di test."""
+    from app.observability.logstore import LogStore
+
+    return LogStore(settings.log_db_path)
 
 
 _bearer = HTTPBearer(

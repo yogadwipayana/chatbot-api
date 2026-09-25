@@ -12,18 +12,22 @@ from fastapi.testclient import TestClient
 from app.admin.permissions import AdminRole
 from app.config import get_settings
 from app.deps import (
+    build_gate_call,
     build_llm_call,
     build_retriever,
     build_rewrite_call,
     get_account_store,
     get_chat_logger,
     get_embeddings,
+    get_log_sink,
+    get_log_store,
     get_runtime_config_store,
     get_session,
     get_storage,
     get_unit_directory,
 )
 from app.main import create_app
+from app.observability.logstore import LogStore
 from app.security.auth import create_access_token
 from app.security.killswitch import KillSwitch, get_kill_switch
 from app.security.ratelimit import (
@@ -36,6 +40,7 @@ from tests.fixtures.fakes import (
     FakeAccountStore,
     FakeChatLogger,
     FakeEmbeddings,
+    FakeLogSink,
     FakeRetriever,
     FakeRuntimeConfigStore,
     FakeUnitDirectory,
@@ -79,6 +84,17 @@ def chat_logger() -> FakeChatLogger:
 
 
 @pytest.fixture
+def log_sink() -> FakeLogSink:
+    return FakeLogSink()
+
+
+@pytest.fixture
+def log_store(tmp_path) -> LogStore:
+    """SQLite log sungguhan, di berkas sementara milik test ini."""
+    return LogStore(tmp_path / "log" / "app.db")
+
+
+@pytest.fixture
 def login_limiter() -> FailureLimiter:
     """Baru per test, supaya kegagalan login satu test tidak mengunci test lain."""
     return FailureLimiter(LOGIN_MAX_FAILURES, LOGIN_WINDOW_SECONDS)
@@ -115,20 +131,25 @@ def make_client(
     accounts,
     runtime_config,
     units,
+    log_sink,
+    log_store,
 ):
     """Bangun TestClient dengan retriever yang hasilnya ditentukan test.
 
     `retriever` boleh diisi untuk memeriksa apa yang diterima retriever (mis.
-    unit pilihan mahasiswa); tanpa itu dibuat baru dari `documents`.
+    unit pilihan mahasiswa); tanpa itu dibuat baru dari `documents`. `gate`
+    menggantikan gerbang JEV; default None berarti gerbang mati.
     """
 
-    def factory(documents, *, session=None, retriever=None) -> TestClient:
+    def factory(documents, *, session=None, retriever=None, gate=None) -> TestClient:
         app = create_app()
         app.dependency_overrides[build_retriever] = lambda: (
             retriever if retriever is not None else FakeRetriever(documents)
         )
         app.dependency_overrides[build_llm_call] = lambda: api_llm
         app.dependency_overrides[build_rewrite_call] = lambda: api_rewriter
+        # None = gerbang mati, apa pun isi JEV_ENABLED di .env mesin ini.
+        app.dependency_overrides[build_gate_call] = lambda: gate
         app.dependency_overrides[get_kill_switch] = lambda: kill_switch
         app.dependency_overrides[get_session] = lambda: session
         app.dependency_overrides[get_chat_logger] = lambda: chat_logger
@@ -138,6 +159,8 @@ def make_client(
         app.dependency_overrides[get_embeddings] = lambda: FakeEmbeddings()
         app.dependency_overrides[get_storage] = lambda: None
         app.dependency_overrides[get_unit_directory] = lambda: units
+        app.dependency_overrides[get_log_sink] = lambda: log_sink
+        app.dependency_overrides[get_log_store] = lambda: log_store
         return TestClient(app)
 
     return factory

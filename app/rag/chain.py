@@ -1,9 +1,10 @@
 """Orkestrasi alur tanya-jawab (PRD §7 'Struktur Chain').
 
-Alurnya punya beberapa jalan keluar lebih awal (sensitif, penolakan) yang
-harus dapat dibuktikan lewat test -- terutama invarian "LLM tidak dipanggil
-saat ditolak". Karena itu urutannya ditulis eksplisit di sini, sementara
-LangChain tetap memegang bagian prompt + pemanggilan model.
+Alurnya punya beberapa jalan keluar lebih awal (sensitif, sapaan, gerbang
+JEV, penolakan) yang harus dapat dibuktikan lewat test -- terutama invarian
+"LLM tidak dipanggil saat ditolak". Urutannya dipegang graf LangGraph di
+`app/rag/graph.py`; modul ini menyimpan bentuk hasilnya dan titik masuknya,
+sementara LangChain tetap memegang bagian prompt + pemanggilan model.
 
 Urutan sengaja: pemeriksaan sensitif (FR-7) mendahului segalanya, termasuk
 retrieval. Mahasiswa yang menulis "saya stres, takut di-DO" tidak boleh
@@ -19,10 +20,9 @@ from typing import Any
 
 from app.rag import risk as risk_module
 from app.rag import sensitive as sensitive_module
-from app.rag import smalltalk as smalltalk_module
-from app.rag.rewriter import Turn, format_history, needs_rewrite
-from app.rag.threshold import Decision, ThresholdDecision, ThresholdPolicy, evaluate
-from app.security.sanitize import sanitize_question, wrap_user_input
+from app.rag.gate import GateVerdict
+from app.rag.rewriter import Turn
+from app.rag.threshold import ThresholdDecision, ThresholdPolicy
 
 
 class OutcomeKind(StrEnum):
@@ -33,6 +33,10 @@ class OutcomeKind(StrEnum):
     SMALLTALK = "smalltalk"
     """Sapaan atau basa-basi. Dibalas singkat tanpa retrieval maupun LLM, dan
     tidak pernah membawa sitasi -- tidak ada dokumen yang menjawab "hai"."""
+    REJECTED = "rejected"
+    """Dihentikan gerbang JEV: nonsense, upaya manipulasi, atau di luar topik
+    kampus. Tanpa retrieval dan LLM, tanpa sitasi, dan tidak masuk AD-4 --
+    pesan seperti ini bukan celah dokumen yang perlu ditambal admin."""
 
 
 @dataclass(frozen=True)
@@ -43,6 +47,8 @@ class PipelineOutcome:
     decision: ThresholdDecision | None = None
     risk: risk_module.RiskAssessment | None = None
     sensitivity: sensitive_module.SensitivityAssessment | None = None
+    gate: GateVerdict | None = None
+    """Vonis gerbang JEV; None bila gerbang mati atau tidak sempat berjalan."""
     rewritten_query: str | None = None
     llm_called: bool = False
     contacts: tuple[Any, ...] = field(default_factory=tuple)
@@ -87,12 +93,15 @@ async def run_pipeline(
     llm_call: Callable[[str, Sequence[Any]], Awaitable[str]],
     history: list[Turn] | None = None,
     rewrite_call: Callable[[str, str], Awaitable[str]] | None = None,
+    gate_call: Callable[[str, Sequence[tuple[str, str]]], Awaitable[GateVerdict]]
+    | None = None,
     policy: ThresholdPolicy | None = None,
     on_token: Callable[[str], Awaitable[None]] | None = None,
     on_stage: Callable[[str], Awaitable[None]] | None = None,
     unit: str | None = None,
+    callbacks: Sequence[Any] = (),
 ) -> PipelineOutcome:
-    """Jalankan satu putaran tanya-jawab.
+    """Jalankan satu putaran tanya-jawab lewat graf `app.rag.graph`.
 
     Args:
         question: pertanyaan mentah dari mahasiswa.
@@ -100,6 +109,8 @@ async def run_pipeline(
         llm_call: (pertanyaan_terbungkus, dokumen) -> teks jawaban.
         history: riwayat percakapan; kosong berarti pesan pertama (FR-4).
         rewrite_call: (pertanyaan, riwayat_terformat) -> pertanyaan mandiri.
+        gate_call: (pertanyaan, [(peran, isi)]) -> vonis gerbang JEV. None
+            berarti gerbang mati dan setiap pesan diteruskan ke retrieval.
         policy: ambang penolakan FR-3.
         on_token: dipanggil untuk setiap potongan jawaban LLM (FE-1). Tanpa ini
             jawaban tetap dirakit utuh dulu, seperti `/api/chat`.
@@ -108,92 +119,26 @@ async def run_pipeline(
             menyusun kalimat pertamanya.
         unit: nama resmi unit pilihan mahasiswa; retrieval hanya mencari di
             dokumen unit itu. None berarti semua unit.
+        callbacks: callback LangChain untuk seluruh graf, mis. perekam durasi
+            per node (`app.observability.applog.NodeRecorder`).
 
-    `llm_call` dan `rewrite_call` disuntikkan agar test dapat membuktikan
-    kapan LLM dipanggil dan kapan tidak, tanpa memanggil API sungguhan.
+    `llm_call`, `rewrite_call`, dan `gate_call` disuntikkan agar test dapat
+    membuktikan kapan layanan luar dipanggil dan kapan tidak, tanpa memanggil
+    API sungguhan.
     """
-    history = history or []
-    clean = sanitize_question(question)
+    from app.rag.graph import PipelineDeps, run_graph
 
-    # FR-7 -- mendahului retrieval dan LLM.
-    sensitivity = sensitive_module.detect(clean)
-    if sensitivity.bypasses_rag:
-        contacts_text = render_contacts(sensitivity.contacts)
-        return PipelineOutcome(
-            kind=OutcomeKind.SUPPORT,
-            text=SUPPORT_TEMPLATE.format(contacts=contacts_text),
-            sensitivity=sensitivity,
-            contacts=sensitivity.contacts,
-            llm_called=False,
-        )
-
-    # Sapaan dan basa-basi, setelah FR-7 supaya "halo, saya stres" tetap
-    # ditangani sebagai pertanyaan sensitif. Tidak ada dokumen resmi yang
-    # menjawab "hai": menjalankannya lewat retrieval hanya menghasilkan
-    # penolakan FR-3 yang kaku dan satu baris palsu di AD-4.
-    chitchat = smalltalk_module.detect(clean)
-    if chitchat.handled:
-        return PipelineOutcome(
-            kind=OutcomeKind.SMALLTALK,
-            text=chitchat.reply,
-            sensitivity=sensitivity,
-            llm_called=False,
-        )
-
-    # FR-4 -- dilewati bila pesan pertama.
-    search_query = clean
-    rewritten: str | None = None
-    if rewrite_call is not None and needs_rewrite(history):
-        rewritten = (await rewrite_call(clean, format_history(history))).strip()
-        if rewritten:
-            search_query = rewritten
-
-    # FR-2
-    documents = await retriever.ainvoke(search_query, unit=unit)
-
-    # FR-3 -- LLM tidak dipanggil bila ditolak.
-    hits = _hits_from_documents(documents)
-    decision = evaluate(hits, policy)
-    if decision.decision is Decision.REFUSE:
-        assessment = risk_module.detect(clean)
-        # Semua unit terkait ditampilkan, bukan hanya yang pertama: pertanyaan
-        # "deadline pembayaran UKT" menyangkut akademik DAN keuangan sekaligus,
-        # dan mahasiswa yang ditolak tidak boleh dikirim ke loket yang salah.
-        contacts = assessment.contacts or (DEFAULT_FALLBACK_CONTACT,)
-        text = REFUSAL_TEMPLATE.format(contacts=render_contacts(contacts))
-        if unit is not None:
-            text += REFUSAL_UNIT_HINT.format(unit=unit)
-        return PipelineOutcome(
-            kind=OutcomeKind.REFUSAL,
-            text=text,
-            documents=tuple(documents),
-            decision=decision,
-            risk=assessment,
-            sensitivity=sensitivity,
-            rewritten_query=rewritten,
-            llm_called=False,
-            contacts=contacts,
-        )
-
-    # FR-6
-    assessment = risk_module.detect(clean)
-
-    if on_stage is not None:
-        await on_stage("menyusun jawaban")
-
-    # FR-5
-    answer = await _jawab(llm_call, wrap_user_input(clean), documents, on_token)
-
-    return PipelineOutcome(
-        kind=OutcomeKind.ANSWER,
-        text=answer,
-        documents=tuple(documents),
-        decision=decision,
-        risk=assessment,
-        sensitivity=sensitivity,
-        rewritten_query=rewritten,
-        llm_called=True,
-        contacts=assessment.contacts,
+    deps = PipelineDeps(
+        retriever=retriever,
+        llm_call=llm_call,
+        rewrite_call=rewrite_call,
+        gate_call=gate_call,
+        policy=policy,
+        on_token=on_token,
+        on_stage=on_stage,
+    )
+    return await run_graph(
+        question, deps, history=list(history or []), unit=unit, callbacks=callbacks
     )
 
 
@@ -237,6 +182,7 @@ def _hits_from_documents(documents: Sequence[Any]):
                 rrf_score=float(meta.get("rrf_score", 0.0)),
                 ranks=dict(meta.get("ranks", {})),
                 raw_scores=dict(meta.get("raw_scores", {})),
+                rerank_score=meta.get("rerank_score"),
             )
         )
     return hits

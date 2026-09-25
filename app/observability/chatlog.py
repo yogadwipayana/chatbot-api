@@ -99,6 +99,15 @@ def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
         "embed_tokens": entry.embed_tokens,
         "embed_biaya_usd": entry.embed_biaya_usd,
         "embed_biaya_sumber": entry.embed_biaya_sumber,
+        # Gerbang JEV. `gate_label` terisi juga untuk pesan yang diteruskan,
+        # supaya ambang JEV dapat dikalibrasi dari log, bukan ditebak.
+        "gate_label": outcome.gate.label.value if outcome.gate else None,
+        "gate_confidence": outcome.gate.confidence if outcome.gate else None,
+        "gate_error": outcome.gate.error if outcome.gate else None,
+        "gate_biaya_usd": outcome.gate.cost_usd if outcome.gate else None,
+        "top_rerank_score": (
+            outcome.decision.top_rerank_score if outcome.decision else None
+        ),
     }
 
 

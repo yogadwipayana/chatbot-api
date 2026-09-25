@@ -1,0 +1,5 @@
+// Contoh format set evaluasi generasi (RAGAS). Salin ke generation_set.jsonl lalu isi.
+// `reference` adalah jawaban benar menurut dokumen resmi -- WAJIB ditulis atau
+// divalidasi staf akademik (PRD §14). `unit` opsional; kosong = semua unit.
+{"question": "Apa saja syarat mengajukan cuti kuliah?", "reference": "Mahasiswa dapat mengajukan cuti akademik setelah menempuh minimal dua semester, dengan mengisi formulir cuti yang disetujui dosen wali dan melunasi kewajiban administrasi semester berjalan."}
+{"question": "Kapan pengisian KRS semester ganjil dibuka?", "reference": "Pengisian KRS semester ganjil dibuka sesuai kalender akademik, pada minggu pertama Agustus.", "unit": "Akademik"}

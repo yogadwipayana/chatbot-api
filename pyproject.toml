@@ -12,6 +12,9 @@ dependencies = [
     "langchain-openai==1.6.2",
     "langchain-community==0.4.2",
     "langsmith==0.12.4",
+    # Orkestrasi alur chat (app/rag/graph.py). Sudah ikut terpasang lewat
+    # `langchain`; dicantumkan eksplisit karena kini dipakai langsung.
+    "langgraph>=1.2,<1.3",
 
     # --- API -------------------------------------------------------------
     "fastapi>=0.141,<0.142",
@@ -38,6 +41,9 @@ dependencies = [
     "bcrypt>=4.2,<6",
     "pyjwt>=2.13,<3",
     "slowapi>=0.1.10,<0.2",
+
+    # --- Layanan luar via HTTP (JEV, reranker API) -----------------------
+    "httpx>=0.28,<0.29",
 ]
 
 [project.optional-dependencies]
@@ -51,6 +57,12 @@ dev = [
     "moto[s3]>=5.1,<6",
     "ruff>=0.9",
     "mypy>=1.14",
+]
+# Model lokal: embedding multilingual-e5 dan reranker cross-encoder. Membawa
+# torch (ratusan MB) -- pasang hanya bila EMBED_PROVIDER=local atau
+# RERANK_PROVIDER=local.
+local = [
+    "sentence-transformers>=5,<7",
 ]
 
 [build-system]

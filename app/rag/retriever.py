@@ -11,6 +11,9 @@ masing-masing di sesi database sendiri, digabung dengan RRF, dipotong menjadi
 top 5. Skor mentah tiap sumber ikut dibawa di `Document.metadata` agar tahap
 threshold dapat membacanya.
 
+Bila reranker dipasang, RRF dipotong menjadi `rerank_candidates` dulu, lalu
+reranker memilih top 5 dari situ (`app.rag.reranker`).
+
 Mahasiswa yang memilih unit di menu chatbot mempersempit KEDUA pencarian ke
 dokumen unit itu, lewat WHERE yang sama -- bukan disaring setelah hasilnya
 kembali, yang bisa menyisakan nol kandidat padahal unit itu punya jawabannya.
@@ -34,6 +37,7 @@ from sqlalchemy import text
 
 from app.rag.filters import active_document_clause
 from app.rag.fusion import RankedHit, reciprocal_rank_fusion
+from app.rag.reranker import rerank_documents
 from app.rag.threshold import LEXICAL_SOURCE, VECTOR_SOURCE
 
 FTS_CONFIG = "indonesian"
@@ -136,6 +140,9 @@ class PostgresHybridRetriever(BaseRetriever):
     rrf_k: int = 60
     weight_vector: float = 1.0
     weight_fulltext: float = 1.0
+    reranker: Any = None
+    """`app.rag.reranker.Reranker`, atau None untuk memakai urutan RRF langsung."""
+    rerank_candidates: int = 20
 
     async def _aget_relevant_documents(
         self,
@@ -167,11 +174,15 @@ class PostgresHybridRetriever(BaseRetriever):
                 LEXICAL_SOURCE: self.weight_fulltext,
             },
             k=self.rrf_k,
-            top_n=self.top_n,
+            top_n=(
+                max(self.rerank_candidates, self.top_n)
+                if self.reranker is not None
+                else self.top_n
+            ),
         )
 
         by_id = {r["chunk_id"]: r for r in (*vector_rows, *fulltext_rows)}
-        return [
+        documents = [
             Document(
                 id=hit.chunk_id,
                 page_content=by_id[hit.chunk_id]["konten"],
@@ -189,6 +200,7 @@ class PostgresHybridRetriever(BaseRetriever):
             )
             for hit in fused
         ]
+        return await rerank_documents(query, documents, self.reranker, top_n=self.top_n)
 
     def _get_relevant_documents(
         self,

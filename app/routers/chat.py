@@ -18,13 +18,16 @@ from app.deps import (
     SessionDep,
     SettingsDep,
     UnitDirectoryDep,
+    build_gate_call,
     build_llm_call,
     build_retriever,
     build_rewrite_call,
     get_chat_logger,
+    get_log_sink,
     guard_kill_switch,
     unit_terdaftar,
 )
+from app.observability.applog import catat_giliran
 from app.observability.chatlog import ChatLogEntry
 from app.observability.tracing import (
     akhiri_jejak,
@@ -64,31 +67,44 @@ async def chat(
     retriever: Any = Depends(build_retriever),
     llm_call: Any = Depends(build_llm_call),
     rewrite_call: Any = Depends(build_rewrite_call),
+    gate_call: Any = Depends(build_gate_call),
     chat_logger: Any = Depends(get_chat_logger),
+    log_sink: Any = Depends(get_log_sink),
 ) -> ChatResponse:
     """Jawaban sekali kirim. Dipakai kotak uji coba admin (AD-6) dan test."""
     unit = await unit_terdaftar(units, payload.unit) if payload.unit else None
     mulai = time.perf_counter()
     run_id = id_giliran()
     tandai_sesi(payload.session_id, llm_call, rewrite_call)
-    async with jejak_giliran(
-        run_id=run_id, session_id=payload.session_id, pertanyaan=payload.question
-    ) as akar:
-        outcome = await run_pipeline(
-            payload.question,
-            retriever=retriever,
-            llm_call=llm_call,
-            rewrite_call=rewrite_call,
-            history=[Turn(t.role, t.konten) for t in payload.history],
-            policy=policy_from(settings),
-            unit=unit,
-        )
-        akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
+    with catat_giliran(
+        log_sink, endpoint="chat", session_id=payload.session_id, unit=unit
+    ) as giliran:
+        async with jejak_giliran(
+            run_id=run_id, session_id=payload.session_id, pertanyaan=payload.question
+        ) as akar:
+            outcome = await run_pipeline(
+                payload.question,
+                retriever=retriever,
+                llm_call=llm_call,
+                rewrite_call=rewrite_call,
+                gate_call=gate_call,
+                history=[Turn(t.role, t.konten) for t in payload.history],
+                policy=policy_from(settings),
+                unit=unit,
+                callbacks=[giliran.recorder],
+            )
+            akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
 
-    response = to_response(outcome)
-    response.message_id = await catat(
-        chat_logger, payload, outcome, mulai, llm_call, retriever, run_id, unit=unit
-    )
+        response = to_response(outcome)
+        response.message_id = await catat(
+            chat_logger, payload, outcome, mulai, llm_call, retriever, run_id, unit=unit
+        )
+        giliran.selesai(
+            hasil=outcome.kind,
+            message_id=response.message_id,
+            langsmith_run_id=run_id,
+            llm_call=llm_call,
+        )
     return response
 
 
@@ -100,7 +116,9 @@ async def chat_stream(
     retriever: Any = Depends(build_retriever),
     llm_call: Any = Depends(build_llm_call),
     rewrite_call: Any = Depends(build_rewrite_call),
+    gate_call: Any = Depends(build_gate_call),
     chat_logger: Any = Depends(get_chat_logger),
+    log_sink: Any = Depends(get_log_sink),
 ) -> StreamingResponse:
     """Server-Sent Events untuk streaming token (FE-1)."""
     # Divalidasi sebelum aliran dimulai. Galat di dalam generator terjadi setelah
@@ -123,35 +141,54 @@ async def chat_stream(
 
         async def jalankan() -> ChatResponse:
             try:
-                async with jejak_giliran(
-                    run_id=run_id,
+                with catat_giliran(
+                    log_sink,
+                    endpoint="chat_stream",
                     session_id=payload.session_id,
-                    pertanyaan=payload.question,
-                ) as akar:
-                    outcome = await run_pipeline(
-                        payload.question,
-                        retriever=retriever,
-                        llm_call=llm_call,
-                        rewrite_call=rewrite_call,
-                        history=[Turn(t.role, t.konten) for t in payload.history],
-                        policy=policy_from(settings),
-                        on_token=lambda teks: antrean.put(("token", {"text": teks})),
-                        on_stage=lambda stage: antrean.put(("status", {"stage": stage})),
+                    unit=unit,
+                ) as giliran:
+
+                    def token(teks: str):
+                        giliran.token_pertama()
+                        return antrean.put(("token", {"text": teks}))
+
+                    async with jejak_giliran(
+                        run_id=run_id,
+                        session_id=payload.session_id,
+                        pertanyaan=payload.question,
+                    ) as akar:
+                        outcome = await run_pipeline(
+                            payload.question,
+                            retriever=retriever,
+                            llm_call=llm_call,
+                            rewrite_call=rewrite_call,
+                            gate_call=gate_call,
+                            history=[Turn(t.role, t.konten) for t in payload.history],
+                            policy=policy_from(settings),
+                            on_token=token,
+                            on_stage=lambda stage: antrean.put(("status", {"stage": stage})),
+                            unit=unit,
+                            callbacks=[giliran.recorder],
+                        )
+                        akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
+
+                    response = to_response(outcome)
+                    response.message_id = await catat(
+                        chat_logger,
+                        payload,
+                        outcome,
+                        mulai,
+                        llm_call,
+                        retriever,
+                        run_id,
                         unit=unit,
                     )
-                    akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
-
-                response = to_response(outcome)
-                response.message_id = await catat(
-                    chat_logger,
-                    payload,
-                    outcome,
-                    mulai,
-                    llm_call,
-                    retriever,
-                    run_id,
-                    unit=unit,
-                )
+                    giliran.selesai(
+                        hasil=outcome.kind,
+                        message_id=response.message_id,
+                        langsmith_run_id=run_id,
+                        llm_call=llm_call,
+                    )
                 return response
             finally:
                 # Penutup antrean, juga saat pipeline gagal: tanpa ini penerus di
@@ -327,6 +364,11 @@ def policy_from(settings) -> ThresholdPolicy:
     return ThresholdPolicy(
         vector_threshold=settings.vector_threshold,
         lexical_threshold=settings.lexical_threshold,
+        # Hanya berarti bila reranker hidup; tanpa skor reranker, ambang lama
+        # yang berlaku (lihat `ThresholdPolicy.rerank_threshold`).
+        rerank_threshold=(
+            settings.rerank_threshold if settings.rerank_provider != "none" else None
+        ),
     )
 
 

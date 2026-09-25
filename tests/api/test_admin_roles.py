@@ -35,9 +35,15 @@ SANDI_BARU = "kata-sandi-baru-yang-juga-panjang"
 
 
 def konkret(path: str) -> str:
-    for parameter in ("{document_id}", "{entry_id}", "{unanswered_id}", "{user_id}"):
+    for parameter in (
+        "{document_id}",
+        "{turn_id}",
+        "{entry_id}",
+        "{unanswered_id}",
+        "{user_id}",
+    ):
         path = path.replace(parameter, UUID_CONTOH)
-    return path
+    return path.replace("{nama}", "Keuangan")
 
 
 def kasus_di_bawah_minimum():

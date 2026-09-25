@@ -40,12 +40,18 @@ _PESAN_SQL = text(
         count(*) FILTER (
             WHERE m.role = 'assistant' AND m.meta->>'kind' = 'smalltalk'
         ) AS smalltalk,
+        count(*) FILTER (
+            WHERE m.role = 'assistant' AND m.meta->>'kind' = 'rejected'
+        ) AS rejected,
         coalesce(
             sum((m.meta->>'biaya_usd')::float) FILTER (WHERE m.role = 'assistant'), 0
         ) AS biaya,
         coalesce(
             sum((m.meta->>'embed_biaya_usd')::float) FILTER (WHERE m.role = 'assistant'), 0
         ) AS biaya_embed,
+        coalesce(
+            sum((m.meta->>'gate_biaya_usd')::float) FILTER (WHERE m.role = 'assistant'), 0
+        ) AS biaya_gate,
         count(*) FILTER (
             WHERE m.role = 'assistant'
               AND m.meta->>'llm_dipanggil' = 'true'
@@ -250,6 +256,7 @@ async def compute_stats(
             "refusal": pesan["refusal"],
             "support": pesan["support"],
             "smalltalk": pesan["smalltalk"],
+            "rejected": pesan["rejected"],
         },
         "jumlah_feedback": feedback["jumlah"],
         "rasio_feedback_positif": ratio(feedback["positif"], feedback["jumlah"]),
@@ -257,7 +264,11 @@ async def compute_stats(
         "volume_harian": [dict(r) for r in volume],
         "topik_populer": [dict(r) for r in topik],
         "biaya_usd_berjalan": round(
-            float(pesan["biaya"]) + float(pesan["biaya_embed"]) + float(usage["biaya"]), 6
+            float(pesan["biaya"])
+            + float(pesan["biaya_embed"])
+            + float(pesan["biaya_gate"])
+            + float(usage["biaya"]),
+            6,
         ),
         "pesan_tanpa_estimasi_biaya": (
             pesan["tanpa_biaya"] + pesan["embed_tanpa_biaya"] + usage["tanpa_biaya"]

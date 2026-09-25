@@ -309,6 +309,8 @@ class KindBreakdown(BaseModel):
     smalltalk: int
     """Sapaan dan basa-basi. Bukan pertanyaan administrasi, jadi jangan
     dibandingkan dengan `answer` seolah keduanya setara."""
+    rejected: int
+    """Dihentikan gerbang JEV (nonsense, manipulasi, di luar topik)."""
 
 
 class Stats(BaseModel):
@@ -442,6 +444,62 @@ class AdminUserUpdate(BaseModel):
     @model_validator(mode="after")
     def _field_wajib_tidak_boleh_null(self) -> AdminUserUpdate:
         for nama in ("role", "is_active"):
+            if nama in self.model_fields_set and getattr(self, nama) is None:
+                raise ValueError(f"{nama} tidak boleh kosong")
+        return self
+
+
+def _nama_unit(v: str | None) -> str | None:
+    """Rapikan spasi; tolak nama yang tidak dapat dibawa di path URL."""
+    v = _rapikan_unit(v)
+    if v is not None and "/" in v:
+        raise ValueError("nama unit tidak boleh memuat '/'")
+    return v
+
+
+class AdminUnit(BaseModel):
+    """Satu unit layanan, termasuk yang nonaktif, beserta pemakaiannya."""
+
+    nama: str
+    deskripsi: str | None = None
+    urutan: int
+    is_active: bool
+    jumlah_dokumen: int
+    jumlah_akun: int
+
+
+class AdminUnitCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    nama: str = Field(min_length=1, max_length=200)
+    deskripsi: str | None = Field(default=None, max_length=500)
+    urutan: int | None = Field(default=None, ge=0, le=10000)
+    """Kosong = diletakkan paling akhir di menu."""
+
+    @field_validator("nama")
+    @classmethod
+    def _rapikan(cls, v: str) -> str:
+        return _nama_unit(v) or v
+
+
+class AdminUnitUpdate(BaseModel):
+    """Hanya field yang dikirim yang diubah."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    nama: str | None = Field(default=None, min_length=1, max_length=200)
+    deskripsi: str | None = Field(default=None, max_length=500)
+    urutan: int | None = Field(default=None, ge=0, le=10000)
+    is_active: bool | None = None
+
+    @field_validator("nama")
+    @classmethod
+    def _rapikan(cls, v: str | None) -> str | None:
+        return _nama_unit(v)
+
+    @model_validator(mode="after")
+    def _field_wajib_tidak_boleh_null(self) -> AdminUnitUpdate:
+        for nama in ("nama", "urutan", "is_active"):
             if nama in self.model_fields_set and getattr(self, nama) is None:
                 raise ValueError(f"{nama} tidak boleh kosong")
         return self

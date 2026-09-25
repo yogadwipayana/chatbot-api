@@ -77,7 +77,52 @@ class Settings(BaseSettings):
     utuh, yang hilang hanya angka biayanya."""
     embed_model: str = "text-embedding-3-large"
     """Harus menghasilkan 1024 dimensi, sama dengan kolom `chunks.embedding`
-    (`app.db.models.EMBEDDING_DIM`). Mengganti model = re-index seluruh dokumen."""
+    (`app.db.models.EMBEDDING_DIM`). Mengganti model = re-index seluruh dokumen
+    (`python -m scripts.reindex_embeddings`)."""
+
+    embed_provider: Literal["api", "local"] = "api"
+    """`api` = EMBED_MODEL lewat BASE_URL. `local` = sentence-transformers di
+    server ini, mis. `EMBED_MODEL=intfloat/multilingual-e5-small`; butuh
+    `uv sync --extra local`. Awalan `query: `/`passage: ` model e5 dipasang
+    otomatis, dan vektor yang lebih pendek dari 1024 diisi nol di ekornya --
+    cosine similarity tidak berubah, jadi skema database tidak perlu diubah."""
+
+    # --- Reranker (setelah RRF, sebelum threshold) -------------------
+    rerank_provider: Literal["none", "api", "local"] = "none"
+    """`none` = urutan RRF langsung dipakai. `api` = endpoint `/rerank` gaya
+    Cohere/Jina. `local` = cross-encoder sentence-transformers."""
+    rerank_model: str = ""
+    """Mis. `BAAI/bge-reranker-v2-m3` (local) atau
+    `jina-reranker-v2-base-multilingual` (api)."""
+    rerank_base_url: str | None = None
+    """Kosong = BASE_URL. `/rerank` ditambahkan di belakangnya."""
+    rerank_api_key: SecretStr | None = None
+    """Kosong = API_KEY."""
+    rerank_candidates: int = 20
+    """Jumlah hasil RRF yang dinilai ulang; yang lolos tetap RETRIEVAL_TOP_N."""
+    rerank_threshold: float | None = None
+    """Skor reranker minimum (0..1). Terisi = FR-3 memakai skor reranker, yang
+    bersifat absolut, alih-alih skor mentah vector/fulltext. Kosong = ambang lama.
+    Kalibrasi dulu; skor tiap model reranker tersebar berbeda."""
+    rerank_timeout_seconds: float = 10.0
+
+    # --- Gerbang JEV (Decisions API lewat gateway) ------------------
+    jev_enabled: bool = False
+    """Klasifikasi pesan sebelum retrieval: academic / smalltalk / out_of_scope /
+    nonsense / malicious. Gagal atau lewat batas waktu = pesan diteruskan."""
+    jev_url: str | None = None
+    """Kosong = `<BASE_URL>/systemone`, endpoint gateway yang meneruskan JEV.
+    Diisi hanya bila JEV dilayani alamat lain dengan badan permintaan yang sama."""
+    jev_api_key: SecretStr | None = None
+    """Kosong = API_KEY, kunci yang sama dengan gateway."""
+    jev_model: str = "openrouter/typesafe/jev-1.13"
+    """Nama model JEV menurut gateway."""
+    jev_timeout_seconds: float = 3.0
+    jev_block_threshold: float = 0.8
+    """Keyakinan minimum untuk menghentikan pesan nonsense/malicious/smalltalk."""
+    jev_out_of_scope_threshold: float = 0.9
+    """Lebih ketat: pertanyaan di luar topik juga ditolak FR-3 bila lolos
+    gerbang, sedangkan salah blokir menelan pertanyaan akademik tanpa jejak."""
 
     # --- Retrieval (FR-2, FR-3) --------------------------------------
     retrieval_candidates: int = 20
@@ -152,6 +197,15 @@ class Settings(BaseSettings):
     meneruskannya ke SDK -- trace mendarat di region yang salah tanpa satu pun
     pesan galat."""
 
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    """Level minimum logger `app.*`, untuk konsol maupun SQLite."""
+    log_db_path: str = "log/app.db"
+    """Berkas SQLite log aplikasi (`logs.md`), relatif terhadap direktori kerja.
+    Di Docker, direktorinya harus di-mount sebagai volume: filesystem container
+    hilang setiap redeploy."""
+    log_retention_days: int = Field(default=7, ge=1)
+    """Baris log yang lebih tua dari ini dihapus saat start dan setiap jam."""
+
     # --- Keamanan (FR-9) ---------------------------------------------
     admin_jwt_secret: SecretStr = SecretStr(PLACEHOLDER_JWT_SECRET)
     admin_token_ttl_minutes: int = 480
@@ -213,6 +267,54 @@ class Settings(BaseSettings):
         """API_KEY, atau None bila kosong."""
         return _terisi(self.api_key)
 
+    def kunci_rerank(self) -> SecretStr | None:
+        """RERANK_API_KEY, atau API_KEY bila kosong."""
+        return _terisi(self.rerank_api_key) or self.kunci_api()
+
+    def kunci_jev(self) -> SecretStr | None:
+        """JEV_API_KEY, atau API_KEY bila kosong."""
+        return _terisi(self.jev_api_key) or self.kunci_api()
+
+    def url_jev(self) -> str | None:
+        """JEV_URL, atau `<BASE_URL>/systemone` bila kosong."""
+        if self.jev_url:
+            return self.jev_url
+        return f"{self.base_url.rstrip('/')}/systemone" if self.base_url else None
+
+    def url_rerank(self) -> str | None:
+        """RERANK_BASE_URL, atau BASE_URL bila kosong."""
+        return self.rerank_base_url or self.base_url
+
+    @model_validator(mode="after")
+    def _reranker_dan_jev_valid(self) -> Settings:
+        """Setelan yang setengah terisi gagal saat start, bukan saat mahasiswa bertanya."""
+        if self.rerank_provider != "none":
+            if not self.rerank_model.strip():
+                raise ValueError(
+                    f"RERANK_PROVIDER={self.rerank_provider} tetapi RERANK_MODEL kosong"
+                )
+            if self.rerank_provider == "api" and not self.url_rerank():
+                raise ValueError("RERANK_PROVIDER=api butuh RERANK_BASE_URL atau BASE_URL")
+        # rerank_candidates < retrieval_top_n tidak ditolak di sini: RETRIEVAL_TOP_N
+        # dapat dinaikkan dari dashboard, dan retriever memakai yang lebih besar.
+        if self.rerank_candidates < 1:
+            raise ValueError(f"rerank_candidates harus >= 1, diberi {self.rerank_candidates}")
+        if self.rerank_threshold is not None and not 0.0 <= self.rerank_threshold <= 1.0:
+            raise ValueError(f"rerank_threshold di luar 0..1: {self.rerank_threshold}")
+
+        if self.jev_enabled:
+            if self.kunci_jev() is None:
+                raise ValueError(
+                    "JEV_ENABLED=true tetapi JEV_API_KEY maupun API_KEY belum diisi"
+                )
+            if not self.url_jev():
+                raise ValueError("JEV_ENABLED=true butuh BASE_URL (atau JEV_URL)")
+        for nama in ("jev_block_threshold", "jev_out_of_scope_threshold"):
+            nilai = getattr(self, nama)
+            if not 0.0 < nilai <= 1.0:
+                raise ValueError(f"{nama} harus di (0, 1], diberi {nilai}")
+        return self
+
     @model_validator(mode="after")
     def _penyimpanan_objek_lengkap(self) -> Settings:
         """Gagalkan konfigurasi S3 yang tidak lengkap saat startup.
@@ -234,11 +336,11 @@ class Settings(BaseSettings):
             if not nilai
         ]
         if kurang:
-            raise ValueError(
-                f"STORAGE_BACKEND=s3 tetapi belum diisi: {', '.join(kurang)}"
-            )
+            raise ValueError(f"STORAGE_BACKEND=s3 tetapi belum diisi: {', '.join(kurang)}")
 
-        if self.s3_endpoint_url and not self.s3_endpoint_url.startswith(("http://", "https://")):
+        if self.s3_endpoint_url and not self.s3_endpoint_url.startswith(
+            ("http://", "https://")
+        ):
             raise ValueError(
                 f"S3_ENDPOINT_URL harus diawali http:// atau https://, diberi "
                 f"{self.s3_endpoint_url!r}"
