@@ -1,7 +1,7 @@
 """Penyimpanan chunk + embedding ke Postgres (FR-1).
 
 Ditulis dengan SQL langsung, bukan `vectorstore.add_documents()`, karena PRD §6
-menuntut kendali penuh atas kolom metadata kustom (`halaman`, `urutan`,
+menuntut kendali penuh atas kolom metadata kustom (`page`, `position`,
 `document_id`) dan atas pembuatan `tsvector` -- keduanya tidak terjangkau lewat
 abstraksi VectorStore.
 """
@@ -37,17 +37,21 @@ def galat_layanan_ai(exc: BaseException) -> bool:
     return isinstance(exc, openai.APIError)
 
 
-BATCH_SIZE = 64
+BATCH_SIZE = 32
 """Jumlah chunk per panggilan embedding. Terlalu besar berisiko kena batas
-ukuran request penyedia; terlalu kecil membuat ingestion lambat dan mahal."""
+ukuran request penyedia; terlalu kecil membuat ingestion lambat dan mahal.
+
+32 adalah batas bawaan Text Embeddings Inference (`--max-client-batch-size`)
+yang melayani e5: batch 33 ke atas ditolak 422, dan setiap dokumen yang
+potongannya lebih dari itu gagal dipasang dengan 502."""
 
 INSERT_CHUNK_SQL = text(
     f"""
-    INSERT INTO chunks (id, document_id, konten, halaman, urutan, embedding, tsv)
+    INSERT INTO chunks (id, document_id, content, page, position, embedding, tsv)
     VALUES (
-        :id, :document_id, :konten, :halaman, :urutan,
+        :id, :document_id, :content, :page, :position,
         (:embedding)::vector,
-        to_tsvector('{FTS_CONFIG}', :konten)
+        to_tsvector('{FTS_CONFIG}', :content)
     )
     """
 )
@@ -84,9 +88,9 @@ async def embed_and_store(
                 {
                     "id": uuid.uuid4(),
                     "document_id": document_id,
-                    "konten": chunk.konten,
-                    "halaman": chunk.halaman,
-                    "urutan": chunk.urutan,
+                    "content": chunk.konten,
+                    "page": chunk.halaman,
+                    "position": chunk.urutan,
                     # Format yang sama persis dengan yang dipakai retriever saat
                     # mencari; dua format berbeda adalah sumber bug yang sulit dilacak.
                     "embedding": vector_literal(vec),

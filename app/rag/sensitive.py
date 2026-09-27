@@ -8,7 +8,11 @@ Pemeriksaan ini berjalan paling awal dan menang atas seluruh alur lain --
 termasuk atas eskalasi FR-6. Mahasiswa yang menulis "saya stres, takut di-DO"
 tidak boleh dibalas dengan kutipan pasal tentang tata cara DO.
 
-Nomor layanan di bawah adalah placeholder; verifikasi pada Fase 0 (PRD §13).
+Unit Layanan Konseling adalah unit resmi kampus (instiki.ac.id/unit-layanan-
+konseling), tetapi halamannya tidak mencantumkan kontak langsung. Sampai unit
+itu memberikan kontaknya (PRD §13 Fase 0), mahasiswa diarahkan lewat Front
+Office -- satu-satunya kontak kampus yang tercantum di sumber resmi. Nomor
+SEJIWA belum diverifikasi ulang.
 """
 
 from __future__ import annotations
@@ -16,6 +20,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+
+from app.rag.risk import KONTAK_FRONT_OFFICE
 
 
 class SensitivityLevel(StrEnum):
@@ -33,25 +39,23 @@ class SupportContact:
     kontak: str
 
 
+KONSELING_KAMPUS = SupportContact(
+    unit="Unit Layanan Konseling INSTIKI",
+    jam_layanan="Jadwal konseling diatur melalui Front Office",
+    kontak=KONTAK_FRONT_OFFICE,
+)
+
 CRISIS_CONTACTS: tuple[SupportContact, ...] = (
     SupportContact(
         unit="Layanan SEJIWA (Kemenkes)",
         jam_layanan="24 jam",
         kontak="119 ext. 8",
     ),
-    SupportContact(
-        unit="Unit Bimbingan & Konseling Kampus",
-        jam_layanan="Senin-Jumat, 08.00-15.00",
-        kontak="konseling@instiki.ac.id",
-    ),
+    KONSELING_KAMPUS,
 )
 
 DISTRESS_CONTACTS: tuple[SupportContact, ...] = (
-    SupportContact(
-        unit="Unit Bimbingan & Konseling Kampus",
-        jam_layanan="Senin-Jumat, 08.00-15.00",
-        kontak="konseling@instiki.ac.id",
-    ),
+    KONSELING_KAMPUS,
     SupportContact(
         unit="Dosen Wali",
         jam_layanan="Sesuai jadwal bimbingan",

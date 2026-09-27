@@ -18,6 +18,8 @@ import bcrypt
 from app.admin.accounts import EDITABLE_FIELDS, Account, DuplicateEmailError
 from app.admin.permissions import ROLE_LEVEL, AdminRole
 from app.admin.runtime_config import NilaiTersimpan
+from app.embed_keys import EDITABLE_FIELDS as EMBED_EDITABLE_FIELDS
+from app.embed_keys import KunciSematan, bentuk_sah, buat_kunci
 from app.units import (
     EDITABLE_FIELDS as UNIT_EDITABLE_FIELDS,
 )
@@ -192,7 +194,7 @@ class FakeAccountStore:
         *,
         password: str = "kata-sandi-admin-yang-panjang",
         unit: str | None = None,
-        nama: str | None = None,
+        name: str | None = None,
         is_active: bool = True,
     ) -> Account:
         # rounds=4: bcrypt default sengaja lambat, dan fixture ini dibuat per test.
@@ -204,7 +206,7 @@ class FakeAccountStore:
             password_hash=password_hash,
             is_active=is_active,
             unit=unit,
-            nama=nama,
+            name=name,
             created_at=datetime.now(UTC),
         )
         self.accounts[account.id] = account
@@ -234,7 +236,7 @@ class FakeAccountStore:
         self,
         *,
         email: str,
-        nama: str | None,
+        name: str | None,
         role: AdminRole,
         unit: str | None,
         password_hash: str,
@@ -246,7 +248,7 @@ class FakeAccountStore:
             email=email.lower(),
             role=AdminRole(role),
             password_hash=password_hash,
-            nama=nama,
+            name=name,
             unit=unit,
             created_at=datetime.now(UTC),
         )
@@ -326,14 +328,14 @@ UNIT_RESMI = (
 
 
 def _urutan(unit: UnitRecord) -> tuple[int, str]:
-    return (unit.urutan, unit.nama)
+    return (unit.sort_order, unit.name)
 
 
 class FakeUnitDirectory:
     """Pengganti `SqlUnitDirectory`: daftar unit di memori, aturan cocok yang sama."""
 
-    def __init__(self, nama: Sequence[str] = UNIT_RESMI) -> None:
-        self.records = [UnitRecord(n, None, i, True) for i, n in enumerate(nama, start=1)]
+    def __init__(self, names: Sequence[str] = UNIT_RESMI) -> None:
+        self.records = [UnitRecord(n, None, i, True) for i, n in enumerate(names, start=1)]
         self.faq: dict[str, list[str]] = {}
         """unit -> pertanyaan entri tanya jawab, terbaru lebih dulu."""
         self.diminta: list[tuple[str | None, int]] = []
@@ -342,7 +344,7 @@ class FakeUnitDirectory:
     def units(self) -> list[UnitInfo]:
         """Unit aktif, dalam urutan menu -- seperti `SqlUnitDirectory.list`."""
         aktif = [u for u in sorted(self.records, key=_urutan) if u.is_active]
-        return [UnitInfo(u.nama, u.deskripsi) for u in aktif]
+        return [UnitInfo(u.name, u.description) for u in aktif]
 
     async def list(self) -> list[UnitInfo]:
         return list(self.units)
@@ -352,33 +354,92 @@ class FakeUnitDirectory:
         semua = self.faq.get(unit, []) if unit else [p for ps in self.faq.values() for p in ps]
         return semua[:limit]
 
-    async def resolve(self, nama: str | None) -> str | None:
-        return cocokkan(self.units, nama)
+    async def resolve(self, name: str | None) -> str | None:
+        return cocokkan(self.units, name)
 
     async def semua(self) -> list[UnitRecord]:
         return sorted(self.records, key=_urutan)
 
-    async def ambil(self, nama: str) -> UnitRecord | None:
-        return next((u for u in self.records if u.nama == nama), None)
+    async def ambil(self, name: str) -> UnitRecord | None:
+        return next((u for u in self.records if u.name == name), None)
 
     async def buat(
-        self, *, nama: str, deskripsi: str | None, urutan: int | None
+        self, *, name: str, description: str | None, sort_order: int | None
     ) -> UnitRecord:
-        if bentrok(self.records, nama):
-            raise DuplicateUnitError(nama)
-        if urutan is None:
-            urutan = max((u.urutan for u in self.records), default=0) + 1
-        unit = UnitRecord(nama, deskripsi, urutan, True)
+        if bentrok(self.records, name):
+            raise DuplicateUnitError(name)
+        if sort_order is None:
+            sort_order = max((u.sort_order for u in self.records), default=0) + 1
+        unit = UnitRecord(name, description, sort_order, True)
         self.records.append(unit)
         return unit
 
-    async def ubah(self, nama: str, changes: dict[str, Any]) -> UnitRecord | None:
-        lama = await self.ambil(nama)
+    async def ubah(self, name: str, changes: dict[str, Any]) -> UnitRecord | None:
+        lama = await self.ambil(name)
         if lama is None:
             return None
-        baru = changes.get("nama", nama)
-        if baru != nama and bentrok(self.records, baru, kecuali=nama):
+        baru = changes.get("name", name)
+        if baru != name and bentrok(self.records, baru, kecuali=name):
             raise DuplicateUnitError(baru)
         unit = replace(lama, **{k: v for k, v in changes.items() if k in UNIT_EDITABLE_FIELDS})
         self.records[self.records.index(lama)] = unit
         return unit
+
+
+class FakeEmbedKeyStore:
+    """Pengganti `SqlEmbedKeyStore`: kunci sematan di memori."""
+
+    def __init__(self) -> None:
+        self.keys: dict[str, KunciSematan] = {}
+
+    def add(
+        self,
+        name: str = "Situs PMB",
+        allowed_origins: Sequence[str] = (),
+        *,
+        is_active: bool = True,
+        questions_30d: int = 0,
+    ) -> KunciSematan:
+        """Penyiapan data test, tanpa melewati endpoint."""
+        kunci = KunciSematan(
+            key=buat_kunci(),
+            name=name,
+            allowed_origins=list(allowed_origins),
+            is_active=is_active,
+            created_by="uji@instiki.ac.id",
+            created_at=datetime.now(UTC),
+            questions_30d=questions_30d,
+        )
+        self.keys[kunci.key] = kunci
+        return kunci
+
+    async def aktif(self, kunci: str) -> KunciSematan | None:
+        hasil = self.keys.get(kunci) if bentuk_sah(kunci) else None
+        return hasil if hasil is not None and hasil.is_active else None
+
+    async def semua(self) -> list[KunciSematan]:
+        # Sort stabil: jam Windows cukup kasar untuk memberi dua kunci created_at
+        # yang sama, dan urutan pembuatan yang menjadi penentu seri.
+        return sorted(self.keys.values(), key=lambda k: k.created_at)
+
+    async def ambil(self, kunci: str) -> KunciSematan | None:
+        return self.keys.get(kunci)
+
+    async def buat(self, *, name: str, allowed_origins: list[str], oleh: str) -> KunciSematan:
+        kunci = self.add(name, allowed_origins)
+        kunci = replace(kunci, created_by=oleh)
+        self.keys[kunci.key] = kunci
+        return kunci
+
+    async def ubah(self, kunci: str, changes: dict[str, Any]) -> KunciSematan | None:
+        lama = self.keys.get(kunci)
+        if lama is None:
+            return None
+        baru = replace(
+            lama, **{k: v for k, v in changes.items() if k in EMBED_EDITABLE_FIELDS}
+        )
+        self.keys[kunci] = baru
+        return baru
+
+    async def hapus(self, kunci: str) -> bool:
+        return self.keys.pop(kunci, None) is not None

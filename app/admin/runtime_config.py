@@ -42,12 +42,17 @@ DAPAT_DIUBAH: tuple[str, ...] = (
     "lexical_threshold",
     "chunk_size",
     "chunk_overlap",
+    "chat_daily_limit",
 )
 """Field `Settings` yang boleh ditimpa dari dashboard.
 
-Sengaja hanya parameter retrieval dan chunking: keduanya disetel dengan
-mencoba, dan kekeliruan paling jauh membuat jawaban lebih sering ditolak --
-dapat dikembalikan dalam satu klik.
+Parameter retrieval dan chunking: keduanya disetel dengan mencoba, dan
+kekeliruan paling jauh membuat jawaban lebih sering ditolak -- dapat
+dikembalikan dalam satu klik.
+
+Ditambah batas pertanyaan harian: saat batas itu menyalakan kill switch,
+superadmin harus dapat menaikkannya dari halaman yang sama sebelum menyalakan
+layanan lagi, tanpa menunggu pengelola server.
 
 Di luar daftar ini tetap lewat `.env` + restart. Nama model (`CHAT_MODEL`,
 `EMBED_MODEL`) bukan sekadar angka: mengganti model embedding menuntut

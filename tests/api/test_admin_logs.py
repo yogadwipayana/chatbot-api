@@ -21,12 +21,12 @@ def _log(logger: str, pesan: str, *, levelno: int = 30, turn_id: str | None = No
     return (
         "app",
         {
-            "waktu": BARU,
+            "timestamp": BARU,
             "level": {20: "INFO", 30: "WARNING", 40: "ERROR"}[levelno],
             "levelno": levelno,
             "logger": logger,
-            "pesan": pesan,
-            "lokasi": "modul:1",
+            "message": pesan,
+            "location": "modul:1",
             "traceback": None,
             "turn_id": turn_id,
         },
@@ -41,13 +41,13 @@ def terisi(log_store):
                 "turn",
                 {
                     "turn_id": "t1",
-                    "waktu": BARU,
+                    "timestamp": BARU,
                     "endpoint": "chat",
                     "session_id": "sesi-uji-12345",
                     "message_id": "m1",
                     "unit": None,
-                    "hasil": "answer",
-                    "node_terakhir": "generate",
+                    "outcome": "answer",
+                    "last_node": "generate",
                     "total_ms": 1200,
                     "ttft_ms": None,
                     "status": "ok",
@@ -58,12 +58,12 @@ def terisi(log_store):
                 "node",
                 {
                     "turn_id": "t1",
-                    "urutan": 1,
+                    "position": 1,
                     "node": "retrieve",
-                    "mulai": BARU,
-                    "durasi_ms": 300.0,
+                    "started_at": BARU,
+                    "duration_ms": 300.0,
                     "status": "ok",
-                    "detail": {"jumlah_dokumen": 2},
+                    "detail": {"document_count": 2},
                 },
             ),
             _log("app.rag.gate", "Gerbang JEV gagal", turn_id="t1"),
@@ -99,8 +99,8 @@ class TestRingkasan:
     def test_kosong_tetap_200(self, client, admin):
         r = client.get("/api/admin/logs/summary?range=7d", headers=admin)
         body = r.json()
-        assert body["jumlah_giliran"] == 0
-        assert len(body["per_jam"]) >= 7 * 24
+        assert body["turn_count"] == 0
+        assert len(body["per_hour"]) >= 7 * 24
 
     def test_rentang_tidak_dikenal_422(self, client, admin):
         assert (
@@ -109,13 +109,14 @@ class TestRingkasan:
 
     def test_isi(self, client, terisi, superadmin):
         body = client.get("/api/admin/logs/summary", headers=superadmin).json()
-        assert body["jumlah_giliran"] == 1
+        assert body["turn_count"] == 1
         assert body["per_node"][0]["node"] == "retrieve"
-        assert body["titik_keluar"] == [{"node": "generate", "jumlah": 1}]
-        assert body["log_error"] == 1
+        assert body["exit_points"] == [{"node": "generate", "count": 1}]
+        assert body["error_log_count"] == 1
 
     def test_error_audit_tidak_dihitung_untuk_admin(self, client, terisi, admin):
-        assert client.get("/api/admin/logs/summary", headers=admin).json()["log_error"] == 0
+        body = client.get("/api/admin/logs/summary", headers=admin).json()
+        assert body["error_log_count"] == 0
 
 
 class TestGiliran:
@@ -126,7 +127,7 @@ class TestGiliran:
 
     def test_detail(self, client, terisi, superadmin):
         body = client.get("/api/admin/logs/turns/t1", headers=superadmin).json()
-        assert body["nodes"][0]["detail"] == {"jumlah_dokumen": 2}
+        assert body["nodes"][0]["detail"] == {"document_count": 2}
         assert len(body["logs"]) == 2
 
     def test_detail_tanpa_audit_untuk_admin(self, client, terisi, admin):
@@ -171,8 +172,8 @@ class TestPencatatanGiliranChat:
         [turn] = log_sink.of("turn")
         assert turn["endpoint"] == "chat"
         assert turn["status"] == "ok"
-        assert turn["hasil"] == "answer"
-        assert turn["node_terakhir"] == "generate"
+        assert turn["outcome"] == "answer"
+        assert turn["last_node"] == "generate"
         assert turn["message_id"] == chat_logger.message_id
         nodes = log_sink.of("node")
         assert {n["turn_id"] for n in nodes} == {turn["turn_id"]}
@@ -196,5 +197,5 @@ class TestPencatatanGiliranChat:
     ):
         make_client(weak_documents).post("/api/chat", json=payload)
         [turn] = log_sink.of("turn")
-        assert turn["hasil"] == "refusal"
-        assert turn["node_terakhir"] == "refuse"
+        assert turn["outcome"] == "refusal"
+        assert turn["last_node"] == "refuse"

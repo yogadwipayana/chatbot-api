@@ -20,70 +20,70 @@ class TestDaftar:
         client.patch(f"{URL}/PLK", json={"is_active": False}, headers=admin_headers)
         r = client.get(URL, headers=admin_headers)
         assert r.status_code == 200
-        assert [u["nama"] for u in r.json()] == list(UNIT_RESMI)
-        plk = next(u for u in r.json() if u["nama"] == "PLK")
+        assert [u["name"] for u in r.json()] == list(UNIT_RESMI)
+        plk = next(u for u in r.json() if u["name"] == "PLK")
         assert plk["is_active"] is False
-        assert {"jumlah_dokumen", "jumlah_akun", "urutan"} <= plk.keys()
+        assert {"document_count", "account_count", "sort_order"} <= plk.keys()
 
 
 class TestTambah:
     def test_langsung_muncul_di_menu_dan_diakui_isian(self, client, admin_headers):
         r = client.post(
-            URL, json={"nama": "  Perpustakaan ", "deskripsi": "UPT"}, headers=admin_headers
+            URL, json={"name": "  Perpustakaan ", "description": "UPT"}, headers=admin_headers
         )
         assert r.status_code == 201
-        assert r.json()["nama"] == "Perpustakaan"
-        assert r.json()["urutan"] == len(UNIT_RESMI) + 1
-        assert "Perpustakaan" in [u["nama"] for u in client.get("/api/units").json()]
+        assert r.json()["name"] == "Perpustakaan"
+        assert r.json()["sort_order"] == len(UNIT_RESMI) + 1
+        assert "Perpustakaan" in [u["name"] for u in client.get("/api/units").json()]
 
     @pytest.mark.parametrize("nama", ["keuangan", " KEUANGAN ", "Keuangan"])
     def test_nama_kembar_ditolak(self, client, admin_headers, nama):
-        r = client.post(URL, json={"nama": nama}, headers=admin_headers)
+        r = client.post(URL, json={"name": nama}, headers=admin_headers)
         assert r.status_code == 409
 
     @pytest.mark.parametrize("nama", ["", "   ", "BAAK/Akademik", "x" * 201])
     def test_nama_tidak_sah_422(self, client, admin_headers, nama):
-        assert client.post(URL, json={"nama": nama}, headers=admin_headers).status_code == 422
+        assert client.post(URL, json={"name": nama}, headers=admin_headers).status_code == 422
 
 
 class TestUbah:
     def test_ganti_nama(self, client, admin_headers):
-        r = client.patch(f"{URL}/FO", json={"nama": "Front Office"}, headers=admin_headers)
+        r = client.patch(f"{URL}/FO", json={"name": "Front Office"}, headers=admin_headers)
         assert r.status_code == 200
-        assert r.json()["nama"] == "Front Office"
-        menu = [u["nama"] for u in client.get("/api/units").json()]
+        assert r.json()["name"] == "Front Office"
+        menu = [u["name"] for u in client.get("/api/units").json()]
         assert "Front Office" in menu and "FO" not in menu
 
     def test_ganti_nama_ke_unit_lain_ditolak(self, client, admin_headers):
-        r = client.patch(f"{URL}/FO", json={"nama": "baak"}, headers=admin_headers)
+        r = client.patch(f"{URL}/FO", json={"name": "baak"}, headers=admin_headers)
         assert r.status_code == 409
 
     def test_ganti_huruf_besar_nama_sendiri_boleh(self, client, admin_headers):
-        r = client.patch(f"{URL}/PLK", json={"nama": "Plk"}, headers=admin_headers)
+        r = client.patch(f"{URL}/PLK", json={"name": "Plk"}, headers=admin_headers)
         assert r.status_code == 200
 
     def test_nonaktif_hilang_dari_menu_dan_isian(self, client, admin_headers):
         r = client.patch(f"{URL}/Prodi", json={"is_active": False}, headers=admin_headers)
         assert r.status_code == 200
-        assert "Prodi" not in [u["nama"] for u in client.get("/api/units").json()]
+        assert "Prodi" not in [u["name"] for u in client.get("/api/units").json()]
         faq = client.get("/api/faq/questions", params={"unit": "Prodi"})
         assert faq.status_code == 422
 
     def test_urutan_menentukan_urutan_menu(self, client, admin_headers):
-        client.patch(f"{URL}/Akademik", json={"urutan": 0}, headers=admin_headers)
-        assert client.get("/api/units").json()[0]["nama"] == "Akademik"
+        client.patch(f"{URL}/Akademik", json={"sort_order": 0}, headers=admin_headers)
+        assert client.get("/api/units").json()[0]["name"] == "Akademik"
 
     def test_deskripsi_kosong_menjadi_null(self, client, admin_headers):
-        client.patch(f"{URL}/UPS", json={"deskripsi": "Sertifikasi"}, headers=admin_headers)
-        r = client.patch(f"{URL}/UPS", json={"deskripsi": "  "}, headers=admin_headers)
-        assert r.json()["deskripsi"] is None
+        client.patch(f"{URL}/UPS", json={"description": "Sertifikasi"}, headers=admin_headers)
+        r = client.patch(f"{URL}/UPS", json={"description": "  "}, headers=admin_headers)
+        assert r.json()["description"] is None
 
     def test_unit_tak_dikenal_404(self, client, admin_headers):
-        r = client.patch(f"{URL}/Tidak Ada", json={"urutan": 1}, headers=admin_headers)
+        r = client.patch(f"{URL}/Tidak Ada", json={"sort_order": 1}, headers=admin_headers)
         assert r.status_code == 404
 
     @pytest.mark.parametrize(
-        "body", [{"nama": None}, {"is_active": None}, {"urutan": -1}, {"hapus": True}]
+        "body", [{"name": None}, {"is_active": None}, {"sort_order": -1}, {"hapus": True}]
     )
     def test_isian_tidak_sah_422(self, client, admin_headers, body):
         assert client.patch(f"{URL}/BAAK", json=body, headers=admin_headers).status_code == 422

@@ -13,7 +13,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app.admin.permissions import AdminRole
-from app.db.models import JenisDokumen
+from app.db.models import DocumentType
+from app.embed_keys import rapikan_daftar_asal
 from app.rag.chain import OutcomeKind
 from app.rag.threshold import Decision, Reason
 from app.schemas.chat import ContactOut
@@ -49,13 +50,13 @@ class TokenResponse(BaseModel):
 
 class Document(BaseModel):
     id: str
-    judul: str
+    title: str
     unit: str
-    tahun_berlaku: int | None = None
+    effective_year: int | None = None
     valid_until: date | None = None
     updated_at: datetime
     is_active: bool
-    jumlah_chunk: int
+    chunk_count: int
     stale: bool
     """AD-2: >6 bulan tidak diperbarui, atau sudah lewat masa berlaku."""
     uploaded_by: str | None = None
@@ -65,7 +66,7 @@ class Document(BaseModel):
 class DocumentPage(BaseModel):
     items: list[Document]
     total: int
-    jumlah_stale: int
+    stale_count: int
     """Dokumen AKTIF yang perlu ditinjau, untuk lencana angka di navigasi.
     Dokumen nonaktif tidak dihitung karena sudah tidak terambil retrieval."""
 
@@ -75,16 +76,16 @@ class DocumentUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    judul: str | None = Field(default=None, min_length=3, max_length=500)
+    title: str | None = Field(default=None, min_length=3, max_length=500)
     unit: str | None = Field(default=None, min_length=2, max_length=200)
-    tahun_berlaku: int | None = Field(default=None, ge=2000, le=2100)
+    effective_year: int | None = Field(default=None, ge=2000, le=2100)
     valid_until: date | None = None
     is_active: bool | None = None
 
     @model_validator(mode="after")
     def _field_wajib_tidak_boleh_null(self) -> DocumentUpdate:
-        """`tahun_berlaku` dan `valid_until` boleh dikosongkan; tiga ini tidak."""
-        for nama in ("judul", "unit", "is_active"):
+        """`effective_year` dan `valid_until` boleh dikosongkan; tiga ini tidak."""
+        for nama in ("title", "unit", "is_active"):
             if nama in self.model_fields_set and getattr(self, nama) is None:
                 raise ValueError(f"{nama} tidak boleh kosong")
         return self
@@ -92,9 +93,9 @@ class DocumentUpdate(BaseModel):
 
 class IngestionResult(BaseModel):
     document_id: str
-    jumlah_halaman: int
-    jumlah_chunk: int
-    peringatan: list[str] = []
+    page_count: int
+    chunk_count: int
+    warnings: list[str] = []
     """Catatan mutu dokumen yang baru diunggah, mis. teks terbaca sangat sedikit.
 
     Bukan galat: unggahan tetap berhasil. Ditampilkan admin agar dokumen yang
@@ -103,9 +104,9 @@ class IngestionResult(BaseModel):
 
 class Chunk(BaseModel):
     id: str
-    konten: str
-    halaman: int
-    urutan: int
+    content: str
+    page: int
+    position: int
 
 
 # --- Entri tanya jawab ------------------------------------------------------
@@ -114,19 +115,19 @@ class Chunk(BaseModel):
 class FaqEntry(BaseModel):
     """Satu pasang pertanyaan-jawaban yang dipakai chatbot seperti dokumen.
 
-    Tidak ada `jumlah_halaman` maupun berkas: yang tersimpan hanya teks yang
-    diketik admin. `jumlah_chunk` tetap ditampilkan karena jawaban panjang
+    Tidak ada `page_count` maupun berkas: yang tersimpan hanya teks yang
+    diketik admin. `chunk_count` tetap ditampilkan karena jawaban panjang
     dipecah, dan jumlah potongan itulah yang benar-benar masuk indeks.
     """
 
     id: str
-    pertanyaan: str
-    jawaban: str
+    question: str
+    answer: str
     unit: str
     valid_until: date | None = None
     updated_at: datetime
     is_active: bool
-    jumlah_chunk: int
+    chunk_count: int
     stale: bool
     """Sama dengan dokumen: >6 bulan tidak diperbarui, atau sudah lewat masa berlaku."""
     uploaded_by: str | None = None
@@ -140,9 +141,9 @@ class FaqPage(BaseModel):
 class FaqEntryCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    pertanyaan: str = Field(min_length=5, max_length=500)
+    question: str = Field(min_length=5, max_length=500)
     """Tampil apa adanya sebagai judul sumber pada kartu sitasi mahasiswa."""
-    jawaban: str = Field(min_length=10, max_length=5000)
+    answer: str = Field(min_length=10, max_length=5000)
     unit: str = Field(min_length=2, max_length=200)
     valid_until: date | None = None
 
@@ -157,8 +158,8 @@ class FaqEntryUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    pertanyaan: str | None = Field(default=None, min_length=5, max_length=500)
-    jawaban: str | None = Field(default=None, min_length=10, max_length=5000)
+    question: str | None = Field(default=None, min_length=5, max_length=500)
+    answer: str | None = Field(default=None, min_length=10, max_length=5000)
     unit: str | None = Field(default=None, min_length=2, max_length=200)
     valid_until: date | None = None
     is_active: bool | None = None
@@ -171,7 +172,7 @@ class FaqEntryUpdate(BaseModel):
     @model_validator(mode="after")
     def _field_wajib_tidak_boleh_null(self) -> FaqEntryUpdate:
         """`valid_until` boleh dikosongkan; sisanya tidak."""
-        for nama in ("pertanyaan", "jawaban", "unit", "is_active"):
+        for nama in ("question", "answer", "unit", "is_active"):
             if nama in self.model_fields_set and getattr(self, nama) is None:
                 raise ValueError(f"{nama} tidak boleh kosong")
         return self
@@ -184,12 +185,12 @@ class UnansweredGroup(BaseModel):
     """AD-4: pertanyaan mirip dikelompokkan beserta frekuensinya."""
 
     ids: list[str]
-    """Seluruh baris `unanswered` dalam kelompok. Menandai kelompok selesai
-    berarti mengirim PATCH untuk setiap id."""
-    contoh_pertanyaan: str
-    jumlah: int
-    top_score_rata2: float | None = None
-    terakhir_ditanyakan: datetime
+    """Seluruh baris `unanswered_questions` dalam kelompok. Menandai kelompok
+    selesai berarti mengirim PATCH untuk setiap id."""
+    sample_question: str
+    count: int
+    avg_top_score: float | None = None
+    last_asked_at: datetime
     resolved: bool
 
 
@@ -204,7 +205,7 @@ class FeedbackItem(BaseModel):
     """Satu penilaian 👍/👎 beserta pasangan pertanyaan-jawaban yang dinilai.
 
     Rasio kepuasan di AD-5 hanya memberi tahu ada yang salah; baris inilah yang
-    memberi tahu apanya. `pertanyaan` diambil dari pesan mahasiswa terakhir
+    memberi tahu apanya. `question` diambil dari pesan mahasiswa terakhir
     sebelum jawaban ini di percakapan yang sama.
     """
 
@@ -212,11 +213,11 @@ class FeedbackItem(BaseModel):
     message_id: str
     helpful: bool
     created_at: datetime
-    jawaban: str
-    catatan: str | None = None
+    answer: str
+    comment: str | None = None
     """Isian bebas mahasiswa. FE-5 tidak mewajibkannya, jadi sebagian besar
     umpan balik hanya berupa jempol tanpa penjelasan."""
-    pertanyaan: str | None = None
+    question: str | None = None
     """None bila pesan pertanyaannya sudah terhapus dari log. Pertanyaan
     sensitif (FR-7) berisi penanda tetap, bukan kalimat aslinya."""
     kind: str | None = None
@@ -229,8 +230,8 @@ class FeedbackPage(BaseModel):
     items: list[FeedbackItem]
     total: int
     """Jumlah baris yang cocok dengan seluruh filter, untuk penomoran halaman."""
-    jumlah_positif: int
-    jumlah_negatif: int
+    positive_count: int
+    negative_count: int
     """Keduanya dihitung mengabaikan filter `helpful`, sehingga jumlah pada
     kedua tab tetap terlihat saat salah satunya sedang dipilih."""
 
@@ -249,11 +250,11 @@ class TestQueryRequest(BaseModel):
 class RetrievedChunk(BaseModel):
     chunk_id: str
     document_id: str | None = None
-    judul: str
-    jenis: JenisDokumen = JenisDokumen.PDF
+    title: str
+    type: DocumentType = DocumentType.PDF
     """Asal potongan ini: dokumen PDF atau entri tanya jawab."""
-    halaman: int
-    konten: str
+    page: int
+    content: str
     rrf_score: float
     raw_scores: dict[str, float]
     """Hanya sumber yang benar-benar menemukan chunk ini yang punya kunci."""
@@ -281,7 +282,7 @@ class TestQueryResponse(BaseModel):
     retrieved: list[RetrievedChunk]
     decision: ThresholdDecisionOut | None
     """None bila pertanyaan dialihkan ke konseling (FR-7) sebelum retrieval."""
-    ambang: ThresholdValues
+    thresholds: ThresholdValues
     contacts: list[ContactOut]
     escalated: bool
     latency_ms: int
@@ -293,13 +294,13 @@ class TestQueryResponse(BaseModel):
 
 
 class DailyVolume(BaseModel):
-    tanggal: date
-    jumlah: int
+    date: date
+    count: int
 
 
 class TopicCount(BaseModel):
-    topik: str
-    jumlah: int
+    topic: str
+    count: int
 
 
 class KindBreakdown(BaseModel):
@@ -314,64 +315,59 @@ class KindBreakdown(BaseModel):
 
 
 class Stats(BaseModel):
-    sejak: date
-    sampai: date
-    total_percakapan: int
-    total_pertanyaan: int
-    rincian_jenis: KindBreakdown
-    jumlah_feedback: int
-    rasio_feedback_positif: float | None
-    rasio_tak_terjawab: float | None
-    volume_harian: list[DailyVolume]
-    topik_populer: list[TopicCount]
-    biaya_usd_berjalan: float
-    pesan_tanpa_estimasi_biaya: int
+    since: date
+    until: date
+    total_conversations: int
+    total_questions: int
+    kind_breakdown: KindBreakdown
+    feedback_count: int
+    positive_feedback_ratio: float | None
+    unanswered_ratio: float | None
+    daily_volume: list[DailyVolume]
+    top_topics: list[TopicCount]
+    running_cost_usd: float
+    messages_without_cost_estimate: int
     """Jawaban yang memanggil LLM tetapi modelnya belum punya tarif di
-    `costs.PRICES_PER_MTOK`. Lebih dari nol berarti `biaya_usd_berjalan` kurang."""
+    `costs.PRICES_PER_MTOK`. Lebih dari nol berarti `running_cost_usd` kurang."""
     latency_p95_ms: int | None
 
 
 class CostByModel(BaseModel):
-    jenis: Literal["llm_chat", "embedding_chat", "embedding_ingestion"]
+    type: Literal["llm_chat", "embedding_chat"]
     model: str
-    jumlah_panggilan: int
+    call_count: int
     input_tokens: int
     output_tokens: int
     tokens: int
-    biaya_usd: float
+    cost_usd: float
 
 
 class DailyCost(BaseModel):
-    tanggal: date
-    jumlah_panggilan: int
+    date: date
+    call_count: int
     llm_tokens: int
     embed_tokens: int
-    biaya_llm_usd: float
-    biaya_embedding_usd: float
-    biaya_ingestion_usd: float
-    biaya_usd: float
+    llm_cost_usd: float
+    embedding_cost_usd: float
+    cost_usd: float
 
 
 class Costs(BaseModel):
-    sejak: date
-    sampai: date
-    jumlah_panggilan_llm: int
+    since: date
+    until: date
+    llm_call_count: int
     input_tokens: int
     output_tokens: int
     total_tokens: int
-    biaya_usd: float
-    biaya_llm_usd: float
-    embed_chat_tokens: int
-    biaya_embed_chat_usd: float
-    jumlah_embed_chat: int
-    usage_log_tokens: int
-    biaya_usage_log_usd: float
-    jumlah_usage_log: int
-    llm_tanpa_biaya: int
-    embed_chat_tanpa_biaya: int
-    usage_log_tanpa_biaya: int
-    rincian_model: list[CostByModel]
-    biaya_harian: list[DailyCost]
+    cost_usd: float
+    llm_cost_usd: float
+    chat_embed_tokens: int
+    chat_embed_cost_usd: float
+    chat_embed_count: int
+    llm_calls_without_cost: int
+    chat_embeds_without_cost: int
+    model_breakdown: list[CostByModel]
+    daily_costs: list[DailyCost]
 
 
 # --- FR-9 -------------------------------------------------------------------
@@ -379,11 +375,11 @@ class Costs(BaseModel):
 
 class KillSwitchRequest(BaseModel):
     engaged: bool
-    alasan: str | None = Field(default=None, max_length=500)
+    reason: str | None = Field(default=None, max_length=500)
 
     @model_validator(mode="after")
     def _alasan_wajib_saat_menyalakan(self) -> KillSwitchRequest:
-        if self.engaged and not (self.alasan or "").strip():
+        if self.engaged and not (self.reason or "").strip():
             raise ValueError("alasan wajib diisi saat mematikan layanan chat")
         return self
 
@@ -405,7 +401,7 @@ class AdminUser(BaseModel):
     email: str
     role: AdminRole
     is_active: bool
-    nama: str | None = None
+    name: str | None = None
     unit: str | None = None
     """Wajib untuk staf/dosen: membatasi dokumen yang dapat dikelola."""
     created_at: datetime | None = None
@@ -417,7 +413,7 @@ class AdminUserCreate(BaseModel):
 
     email: EmailStr
     role: AdminRole
-    nama: str | None = Field(default=None, max_length=200)
+    name: str | None = Field(default=None, max_length=200)
     unit: str | None = Field(default=None, max_length=200)
 
     @field_validator("unit")
@@ -431,7 +427,7 @@ class AdminUserUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    nama: str | None = Field(default=None, max_length=200)
+    name: str | None = Field(default=None, max_length=200)
     role: AdminRole | None = None
     unit: str | None = Field(default=None, max_length=200)
     is_active: bool | None = None
@@ -460,23 +456,23 @@ def _nama_unit(v: str | None) -> str | None:
 class AdminUnit(BaseModel):
     """Satu unit layanan, termasuk yang nonaktif, beserta pemakaiannya."""
 
-    nama: str
-    deskripsi: str | None = None
-    urutan: int
+    name: str
+    description: str | None = None
+    sort_order: int
     is_active: bool
-    jumlah_dokumen: int
-    jumlah_akun: int
+    document_count: int
+    account_count: int
 
 
 class AdminUnitCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    nama: str = Field(min_length=1, max_length=200)
-    deskripsi: str | None = Field(default=None, max_length=500)
-    urutan: int | None = Field(default=None, ge=0, le=10000)
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=500)
+    sort_order: int | None = Field(default=None, ge=0, le=10000)
     """Kosong = diletakkan paling akhir di menu."""
 
-    @field_validator("nama")
+    @field_validator("name")
     @classmethod
     def _rapikan(cls, v: str) -> str:
         return _nama_unit(v) or v
@@ -487,19 +483,79 @@ class AdminUnitUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    nama: str | None = Field(default=None, min_length=1, max_length=200)
-    deskripsi: str | None = Field(default=None, max_length=500)
-    urutan: int | None = Field(default=None, ge=0, le=10000)
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=500)
+    sort_order: int | None = Field(default=None, ge=0, le=10000)
     is_active: bool | None = None
 
-    @field_validator("nama")
+    @field_validator("name")
     @classmethod
     def _rapikan(cls, v: str | None) -> str | None:
         return _nama_unit(v)
 
     @model_validator(mode="after")
     def _field_wajib_tidak_boleh_null(self) -> AdminUnitUpdate:
-        for nama in ("nama", "urutan", "is_active"):
+        for nama in ("name", "sort_order", "is_active"):
+            if nama in self.model_fields_set and getattr(self, nama) is None:
+                raise ValueError(f"{nama} tidak boleh kosong")
+        return self
+
+
+# --- Kunci sematan (khusus superadmin) ------------------------------------
+
+
+class EmbedKey(BaseModel):
+    """Satu kunci sematan beserta pemakaiannya."""
+
+    key: str
+    """`emb_` + 24 karakter. Bukan rahasia: tertulis di kode sumber situs penyemat."""
+    name: str
+    allowed_origins: list[str]
+    """Kosong = situs mana pun boleh memakai kunci ini."""
+    is_active: bool
+    created_by: str | None = None
+    created_at: datetime
+    questions_30d: int
+    last_used_at: datetime | None = None
+    embed_code: str | None = None
+    """Baris `<script>` siap tempel; None bila `PORTAL_URL` belum diisi."""
+
+
+def _daftar_asal(v: list[str] | None) -> list[str] | None:
+    return None if v is None else rapikan_daftar_asal(v)
+
+
+class EmbedKeyCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=200)
+    allowed_origins: list[str] = Field(default_factory=list)
+    """Alamat situs lengkap tanpa path, mis. `https://pmb.instiki.ac.id`. Kosong =
+    situs mana pun. Garis miring akhir, huruf besar, dan port bawaan dirapikan."""
+
+    @field_validator("allowed_origins")
+    @classmethod
+    def _rapikan_asal(cls, v: list[str]) -> list[str]:
+        return _daftar_asal(v) or []
+
+
+class EmbedKeyUpdate(BaseModel):
+    """Hanya field yang dikirim yang diubah."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    allowed_origins: list[str] | None = None
+    is_active: bool | None = None
+
+    @field_validator("allowed_origins")
+    @classmethod
+    def _rapikan_asal(cls, v: list[str] | None) -> list[str] | None:
+        return _daftar_asal(v)
+
+    @model_validator(mode="after")
+    def _field_wajib_tidak_boleh_null(self) -> EmbedKeyUpdate:
+        for nama in ("name", "allowed_origins", "is_active"):
             if nama in self.model_fields_set and getattr(self, nama) is None:
                 raise ValueError(f"{nama} tidak boleh kosong")
         return self
@@ -507,19 +563,19 @@ class AdminUnitUpdate(BaseModel):
 
 class AdminUserCreated(BaseModel):
     user: AdminUser
-    password_sementara: str
+    temporary_password: str
     """Ditampilkan sekali. Serahkan lewat jalur aman; pengguna menggantinya sendiri."""
 
 
 class TemporaryPassword(BaseModel):
-    password_sementara: str
+    temporary_password: str
 
 
 class PasswordChange(BaseModel):
-    password_lama: str = Field(min_length=1, max_length=256)
-    password_baru: str = Field(min_length=12, max_length=72)
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=12, max_length=72)
 
-    @field_validator("password_baru")
+    @field_validator("new_password")
     @classmethod
     def _batas_bcrypt(cls, v: str) -> str:
         # bcrypt hanya membaca 72 byte pertama; sisanya diam-diam diabaikan.
@@ -548,6 +604,8 @@ class RuntimeConfigValues(BaseModel):
     lexical_threshold: float
     chunk_size: int
     chunk_overlap: int
+    chat_daily_limit: int
+    """Pertanyaan per hari dari semua sumber; terlampaui = kill switch. 0 = tanpa batas."""
 
 
 class RuntimeConfigUpdate(BaseModel):
@@ -575,6 +633,7 @@ class RuntimeConfigUpdate(BaseModel):
     lexical_threshold: float | None = Field(default=None, ge=0, le=1)
     chunk_size: int | None = Field(default=None, ge=200, le=4000)
     chunk_overlap: int | None = Field(default=None, ge=0, le=1000)
+    chat_daily_limit: int | None = Field(default=None, ge=0, le=1_000_000)
 
     def perubahan(self) -> dict[str, float | None]:
         """Field yang benar-benar dikirim; `None` = kembalikan ke nilai `.env`.
@@ -588,21 +647,21 @@ class RuntimeConfigUpdate(BaseModel):
 class RuntimeConfig(BaseModel):
     """Isi halaman Konfigurasi: yang berlaku sekarang, asalnya, dan jejaknya."""
 
-    nilai: RuntimeConfigValues
+    values: RuntimeConfigValues
     """Yang dipakai layanan saat ini."""
-    nilai_env: RuntimeConfigValues
+    env_values: RuntimeConfigValues
     """Yang tertulis di `.env` server. Tombol "kembalikan" menuju ke sini."""
-    diubah: list[str]
+    overridden: list[str]
     """Nama field yang sedang ditimpa dari dashboard."""
     chat_model: str
     embed_model: str
     base_url: str | None = None
     """Endpoint OpenAI-compatible; kosong berarti OpenAI resmi."""
-    api_key_terisi: bool
+    api_key_set: bool
     """Kunci API-nya sendiri tidak pernah dikirim ke peramban."""
-    diperbarui_at: datetime | None = None
-    diperbarui_oleh: str | None = None
-    peringatan: str | None = None
+    updated_at: datetime | None = None
+    updated_by: str | None = None
+    warning: str | None = None
     """Terisi bila nilai tersimpan tidak dapat dipakai (mis. `.env` berubah
     sehingga kombinasinya melanggar aturan) dan layanan sementara kembali ke
     `.env`."""

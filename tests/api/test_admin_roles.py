@@ -43,7 +43,7 @@ def konkret(path: str) -> str:
         "{user_id}",
     ):
         path = path.replace(parameter, UUID_CONTOH)
-    return path.replace("{nama}", "Keuangan")
+    return path.replace("{name}", "Keuangan").replace("{key}", "emb_" + "a" * 24)
 
 
 def kasus_di_bawah_minimum():
@@ -172,7 +172,7 @@ class TestAkunSendiri:
         lama = token_lama(STAF_EMAIL)
         r = client.post(
             "/api/admin/me/password",
-            json={"password_lama": SANDI, "password_baru": SANDI_BARU},
+            json={"current_password": SANDI, "new_password": SANDI_BARU},
             headers=lama,
         )
         assert r.status_code == 200
@@ -188,7 +188,7 @@ class TestAkunSendiri:
     def test_sandi_lama_salah_400(self, client, headers_for):
         r = client.post(
             "/api/admin/me/password",
-            json={"password_lama": "bukan-sandi-lama", "password_baru": SANDI_BARU},
+            json={"current_password": "bukan-sandi-lama", "new_password": SANDI_BARU},
             headers=headers_for(STAF_EMAIL),
         )
         assert r.status_code == 400
@@ -197,7 +197,7 @@ class TestAkunSendiri:
     def test_sandi_baru_sama_dengan_lama_400(self, client, headers_for):
         r = client.post(
             "/api/admin/me/password",
-            json={"password_lama": SANDI, "password_baru": SANDI},
+            json={"current_password": SANDI, "new_password": SANDI},
             headers=headers_for(STAF_EMAIL),
         )
         assert r.status_code == 400
@@ -208,7 +208,7 @@ class TestAkunSendiri:
     ):
         r = client.post(
             "/api/admin/me/password",
-            json={"password_lama": SANDI, "password_baru": sandi_baru},
+            json={"current_password": SANDI, "new_password": sandi_baru},
             headers=headers_for(STAF_EMAIL),
         )
         assert r.status_code == 422
@@ -231,18 +231,18 @@ class TestKelolaAkun:
                 "email": "Dosen.Baru@Instiki.ac.id",
                 "role": "staf",
                 "unit": "Fakultas",
-                "nama": "Dosen Baru",
+                "name": "Dosen Baru",
             },
             headers=admin_headers,
         )
         assert r.status_code == 201, r.text
         data = r.json()
         assert data["user"]["email"] == "dosen.baru@instiki.ac.id"
-        assert len(data["password_sementara"]) >= 16
+        assert len(data["temporary_password"]) >= 16
 
         masuk = client.post(
             "/api/admin/login",
-            json={"email": "dosen.baru@instiki.ac.id", "password": data["password_sementara"]},
+            json={"email": "dosen.baru@instiki.ac.id", "password": data["temporary_password"]},
         )
         assert masuk.status_code == 200
         me = client.get("/api/admin/me", headers=bearer(masuk)).json()
@@ -279,11 +279,11 @@ class TestKelolaAkun:
     def test_boleh_mengubah_nama_sendiri(self, client, accounts, admin_headers):
         r = client.patch(
             f"/api/admin/users/{self.id_of(accounts, ADMIN_EMAIL)}",
-            json={"nama": "Nama Baru"},
+            json={"name": "Nama Baru"},
             headers=admin_headers,
         )
         assert r.status_code == 200
-        assert r.json()["nama"] == "Nama Baru"
+        assert r.json()["name"] == "Nama Baru"
 
     def test_menjadikan_staf_wajib_unit(self, client, accounts, admin_headers):
         url = f"/api/admin/users/{self.id_of(accounts, ADMIN_BIASA_EMAIL)}"
@@ -318,7 +318,7 @@ class TestKelolaAkun:
         assert client.get("/api/admin/me", headers=lama).status_code == 401
         masuk = client.post(
             "/api/admin/login",
-            json={"email": STAF_EMAIL, "password": r.json()["password_sementara"]},
+            json={"email": STAF_EMAIL, "password": r.json()["temporary_password"]},
         )
         assert masuk.status_code == 200
 
@@ -346,7 +346,7 @@ class TestKelolaAkun:
 
     def test_akun_tak_dikenal_404(self, client, admin_headers):
         r = client.patch(
-            f"/api/admin/users/{uuid.uuid4()}", json={"nama": "x"}, headers=admin_headers
+            f"/api/admin/users/{uuid.uuid4()}", json={"name": "x"}, headers=admin_headers
         )
         assert r.status_code == 404
 
@@ -365,7 +365,7 @@ class TestDokumenStaf:
             "/api/admin/documents",
             headers=headers_for(STAF_EMAIL),
             files={"file": ("panduan.pdf", b"%PDF-1.4 isi", "application/pdf")},
-            data={"judul": "Panduan Akademik", "unit": "BAAK"},
+            data={"title": "Panduan Akademik", "unit": "BAAK"},
         )
         assert r.status_code == 403
         assert STAF_UNIT in r.json()["detail"]
@@ -375,8 +375,8 @@ class TestTanyaJawabStaf:
     """Entri tanya jawab mengikuti batas unit yang sama dengan dokumen."""
 
     ENTRI = {
-        "pertanyaan": "Bagaimana cara mengurus KTM yang hilang?",
-        "jawaban": "Bawa surat kehilangan dari kepolisian ke loket 3.",
+        "question": "Bagaimana cara mengurus KTM yang hilang?",
+        "answer": "Bawa surat kehilangan dari kepolisian ke loket 3.",
     }
 
     def test_menambah_untuk_unit_lain_ditolak(self, client, headers_for):
@@ -391,9 +391,9 @@ class TestTanyaJawabStaf:
     @pytest.mark.parametrize(
         "payload",
         [
-            {"pertanyaan": "?", "jawaban": "Cukup panjang.", "unit": STAF_UNIT},
-            {"pertanyaan": "Kapan wisuda?", "jawaban": "Okt", "unit": STAF_UNIT},
-            {"pertanyaan": "Kapan wisuda?", "jawaban": "Bulan Oktober."},
+            {"question": "?", "answer": "Cukup panjang.", "unit": STAF_UNIT},
+            {"question": "Kapan wisuda?", "answer": "Okt", "unit": STAF_UNIT},
+            {"question": "Kapan wisuda?", "answer": "Bulan Oktober."},
         ],
     )
     def test_isian_tidak_lengkap_ditolak_422(self, client, headers_for, payload):

@@ -243,7 +243,7 @@ def split_qa(
     jawaban diam-diam hilang dari indeks.
 
     `halaman` selalu 1. Entri tanya jawab tidak berhalaman, tetapi sitasi FR-5
-    berformat `[Judul, hal. N]` dan kolom `chunks.halaman` NOT NULL, jadi
+    berformat `[Judul, hal. N]` dan kolom `chunks.page` NOT NULL, jadi
     nilainya dibuat tetap alih-alih dibuat pengecualian di banyak tempat.
 
     Raises:

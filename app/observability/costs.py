@@ -11,8 +11,9 @@ from dataclasses import dataclass
 
 PRICES_PER_MTOK: dict[str, tuple[float, float]] = {
     # model: (input, output)
-    "cx/gpt-5.5": (5, 30),
-    "openrouter/openai/text-embedding-3-small": (0.02, 0.0),
+    "cx/gpt-6-luna": (0.10, 0.50),
+    "intfloat/multilingual-e5-small": (0.0, 0.0),
+    "openrouter/typesafe/jev-1.13": (0.042, 0.0),
 }
 
 
@@ -70,11 +71,11 @@ def _hitung(harga: tuple[float, float], input_tokens: int, output_tokens: int) -
 
 
 SUMBER_PROVIDER = "provider"
-"""`biaya_usd` berasal dari `usage.cost` yang dilaporkan penyedia -- angka
+"""`embed_cost_usd` berasal dari `usage.cost` yang dilaporkan penyedia -- angka
 penyedia sendiri, bukan hitungan kita."""
 
 SUMBER_ESTIMASI = "estimasi"
-"""`biaya_usd` dihitung dari `PRICES_PER_MTOK`. Ikut salah bila tarifnya usang."""
+"""`embed_cost_usd` dihitung dari `PRICES_PER_MTOK`. Ikut salah bila tarifnya usang."""
 
 
 def estimate_input_cost(model: str, input_tokens: int) -> float | None:

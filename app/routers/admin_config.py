@@ -38,7 +38,7 @@ audit = logging.getLogger("app.audit")
 
 router = APIRouter(
     prefix="/api/admin",
-    tags=["admin-operasional"],
+    tags=["admin-ops"],
     dependencies=[Depends(require_admin), Depends(require_role(AdminRole.SUPERADMIN))],
     responses={401: {"model": Error}, 403: {"model": Error}},
 )
@@ -119,18 +119,18 @@ async def reset_config(
 def susun(base: Settings, tersimpan: dict[str, NilaiTersimpan]) -> RuntimeConfig:
     terbaru = max(tersimpan.values(), key=lambda n: n.updated_at, default=None)
     return RuntimeConfig(
-        nilai=_nilai(terapkan(base, tersimpan)),
-        nilai_env=_nilai(base),
-        diubah=sorted(k for k in tersimpan if k in DAPAT_DIUBAH),
+        values=_nilai(terapkan(base, tersimpan)),
+        env_values=_nilai(base),
+        overridden=sorted(k for k in tersimpan if k in DAPAT_DIUBAH),
         chat_model=base.chat_model,
         embed_model=base.embed_model,
         base_url=base.base_url,
         # Kunci API tidak pernah meninggalkan server; halaman Konfigurasi hanya
         # perlu tahu sudah diisi atau belum untuk menjelaskan kegagalan model.
-        api_key_terisi=base.kunci_api() is not None,
-        diperbarui_at=terbaru.updated_at if terbaru else None,
-        diperbarui_oleh=terbaru.updated_by if terbaru else None,
-        peringatan=keluhan(base, tersimpan),
+        api_key_set=base.kunci_api() is not None,
+        updated_at=terbaru.updated_at if terbaru else None,
+        updated_by=terbaru.updated_by if terbaru else None,
+        warning=keluhan(base, tersimpan),
     )
 
 

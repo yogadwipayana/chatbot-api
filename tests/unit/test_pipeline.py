@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import pytest
 
+from app.rag import risk as risk_module
 from app.rag.chain import OutcomeKind, run_pipeline
 from app.rag.rewriter import Turn
+from app.rag.risk import RiskTopic, UnitContact
 from app.rag.threshold import Decision, ThresholdPolicy
 from app.security.sanitize import CLOSE_TAG, OPEN_TAG
 from tests.fixtures.fakes import FakeRetriever, RecordingRewriter, make_document
@@ -88,8 +90,18 @@ class TestPenolakan:
         assert hasil.contacts[0].kontak in hasil.text
 
     async def test_penolakan_topik_risiko_memakai_kontak_unit_yang_tepat(
-        self, weak_retriever, llm
+        self, weak_retriever, llm, monkeypatch
     ):
+        # Kontak bawaan saat ini semuanya Front Office (satu banner); yang diuji
+        # di sini mekanismenya, dengan kontak per unit seperti hasil Fase 0.
+        monkeypatch.setattr(
+            risk_module,
+            "DEFAULT_CONTACTS",
+            {
+                RiskTopic.DEADLINE: UnitContact("Biro Administrasi Akademik", "08-15", "a"),
+                RiskTopic.PEMBAYARAN: UnitContact("Biro Keuangan", "08-14", "k"),
+            },
+        )
         hasil = await run_pipeline(
             "kapan deadline pembayaran UKT",
             retriever=weak_retriever,
@@ -106,7 +118,7 @@ class TestPenolakan:
             assert kontak.kontak in hasil.text
 
     async def test_penolakan_membawa_top_score_untuk_dicatat(self, weak_retriever, llm):
-        """Nilai ini yang masuk tabel unanswered dan dipakai mengkalibrasi ambang."""
+        """Nilai ini yang masuk tabel unanswered_questions dan dipakai mengkalibrasi ambang."""
         hasil = await run_pipeline(
             "sesuatu", retriever=weak_retriever, llm_call=llm, policy=POLICY
         )
@@ -187,7 +199,7 @@ class TestSapaan:
         assert weak_retriever.queries == []
 
     async def test_tidak_punya_keputusan_ambang_untuk_dicatat(self, strong_retriever, llm):
-        """Tanpa keputusan ambang, sapaan tidak pernah masuk tabel unanswered (AD-4)."""
+        """Tanpa keputusan ambang, sapaan tidak pernah masuk `unanswered_questions` (AD-4)."""
         hasil = await run_pipeline(
             "makasih", retriever=strong_retriever, llm_call=llm, policy=POLICY
         )

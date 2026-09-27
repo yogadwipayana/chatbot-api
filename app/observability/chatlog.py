@@ -52,6 +52,8 @@ class ChatLogEntry:
     """Unit yang dipilih mahasiswa di menu chatbot; None = semua unit. Tanpa
     ini, penolakan akibat salah pilih unit tidak dapat dibedakan dari dokumen
     yang memang belum ada."""
+    embed_key: str | None = None
+    """Kunci situs penyemat asal pertanyaan (`app/embed_keys.py`); None = portal."""
     embed_dipanggil: bool = False
     """False untuk FR-7 dan smalltalk: keduanya berhenti sebelum retrieval,
     sehingga pertanyaannya tidak pernah di-embed sama sekali."""
@@ -81,30 +83,30 @@ def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
     return {
         "kind": outcome.kind.value,
         "escalated": bool(outcome.contacts),
-        "topik": [t.value for t in outcome.risk.topics] if outcome.risk else [],
-        "sensitivitas": outcome.sensitivity.level.value if outcome.sensitivity else None,
-        "llm_dipanggil": outcome.llm_called,
+        "topics": [t.value for t in outcome.risk.topics] if outcome.risk else [],
+        "sensitivity": outcome.sensitivity.level.value if outcome.sensitivity else None,
+        "llm_called": outcome.llm_called,
         "model": entry.model if outcome.llm_called else None,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "biaya_usd": biaya,
+        "llm_cost_usd": biaya,
         "rewritten_query": outcome.rewritten_query,
         "unit": entry.unit,
-        # Biaya meng-embed pertanyaan mahasiswa. Dipisah dari `biaya_usd`, bukan
-        # dijumlahkan ke dalamnya: `biaya_usd` sudah berarti "biaya LLM" di
+        # Biaya meng-embed pertanyaan mahasiswa. Dipisah dari `llm_cost_usd`, bukan
+        # dijumlahkan ke dalamnya: `llm_cost_usd` sudah berarti "biaya LLM" di
         # seluruh baris lama dan di `app/admin/stats.py`, dan mengubah artinya
         # diam-diam membuat baris sebelum dan sesudah hari ini tidak sebanding.
-        "embed_dipanggil": entry.embed_dipanggil,
+        "embed_called": entry.embed_dipanggil,
         "embed_model": entry.embed_model if entry.embed_dipanggil else None,
         "embed_tokens": entry.embed_tokens,
-        "embed_biaya_usd": entry.embed_biaya_usd,
-        "embed_biaya_sumber": entry.embed_biaya_sumber,
+        "embed_cost_usd": entry.embed_biaya_usd,
+        "embed_cost_source": entry.embed_biaya_sumber,
         # Gerbang JEV. `gate_label` terisi juga untuk pesan yang diteruskan,
         # supaya ambang JEV dapat dikalibrasi dari log, bukan ditebak.
         "gate_label": outcome.gate.label.value if outcome.gate else None,
         "gate_confidence": outcome.gate.confidence if outcome.gate else None,
         "gate_error": outcome.gate.error if outcome.gate else None,
-        "gate_biaya_usd": outcome.gate.cost_usd if outcome.gate else None,
+        "gate_cost_usd": outcome.gate.cost_usd if outcome.gate else None,
         "top_rerank_score": (
             outcome.decision.top_rerank_score if outcome.decision else None
         ),
@@ -121,11 +123,14 @@ def retrieved_chunk_ids(outcome: PipelineOutcome) -> list[uuid.UUID] | None:
     return ids or None
 
 
+# `embed_key` ikut dicocokkan: percakapan dari portal dan dari situs penyemat
+# tidak boleh tergabung, supaya jumlah pertanyaan per situs tidak tercampur.
 _PERCAKAPAN_AKTIF_SQL = text(
     """
     SELECT c.id
     FROM conversations c
     WHERE c.session_id = :session_id
+      AND c.embed_key IS NOT DISTINCT FROM CAST(:embed_key AS text)
       AND coalesce(
             (SELECT max(m.created_at) FROM messages m WHERE m.conversation_id = c.id),
             c.created_at
@@ -140,10 +145,10 @@ _PERCAKAPAN_AKTIF_SQL = text(
 _PESAN_SQL = text(
     """
     INSERT INTO messages
-        (id, conversation_id, role, konten, retrieved_chunk_ids, top_score,
+        (id, conversation_id, role, content, retrieved_chunk_ids, top_score,
          latency_ms, langsmith_run_id, meta, created_at)
     VALUES
-        (:id, :conversation_id, :role, :konten, CAST(:chunk_ids AS uuid[]), :top_score,
+        (:id, :conversation_id, :role, :content, CAST(:chunk_ids AS uuid[]), :top_score,
          :latency_ms, :langsmith_run_id, CAST(:meta AS jsonb), clock_timestamp())
     """
 )
@@ -167,16 +172,25 @@ class ChatLogger:
             conversation_id = (
                 await session.execute(
                     _PERCAKAPAN_AKTIF_SQL,
-                    {"session_id": entry.session_id, "idle": CONVERSATION_IDLE_MINUTES},
+                    {
+                        "session_id": entry.session_id,
+                        "embed_key": entry.embed_key,
+                        "idle": CONVERSATION_IDLE_MINUTES,
+                    },
                 )
             ).scalar()
             if conversation_id is None:
                 conversation_id = uuid.uuid4()
                 await session.execute(
                     text(
-                        "INSERT INTO conversations (id, session_id) VALUES (:id, :session_id)"
+                        "INSERT INTO conversations (id, session_id, embed_key)"
+                        " VALUES (:id, :session_id, :embed_key)"
                     ),
-                    {"id": conversation_id, "session_id": entry.session_id},
+                    {
+                        "id": conversation_id,
+                        "session_id": entry.session_id,
+                        "embed_key": entry.embed_key,
+                    },
                 )
 
             sensitif = outcome.kind is OutcomeKind.SUPPORT
@@ -186,7 +200,7 @@ class ChatLogger:
                     "id": uuid.uuid4(),
                     "conversation_id": conversation_id,
                     "role": "user",
-                    "konten": SENSITIVE_PLACEHOLDER if sensitif else entry.question,
+                    "content": SENSITIVE_PLACEHOLDER if sensitif else entry.question,
                     "chunk_ids": None,
                     "top_score": None,
                     "latency_ms": None,
@@ -203,7 +217,7 @@ class ChatLogger:
                     "id": assistant_id,
                     "conversation_id": conversation_id,
                     "role": "assistant",
-                    "konten": outcome.text,
+                    "content": outcome.text,
                     "chunk_ids": retrieved_chunk_ids(outcome),
                     "top_score": top_score,
                     "latency_ms": entry.latency_ms,
@@ -212,16 +226,18 @@ class ChatLogger:
                 },
             )
 
-            # FR-3: pertanyaan yang ditolak masuk `unanswered`, sumber utama AD-4.
+            # FR-3: pertanyaan yang ditolak masuk `unanswered_questions`, sumber
+            # utama AD-4.
             if outcome.kind is OutcomeKind.REFUSAL:
                 await session.execute(
                     text(
-                        "INSERT INTO unanswered (id, pertanyaan, top_score, message_id)"
-                        " VALUES (:id, :pertanyaan, :top_score, :message_id)"
+                        "INSERT INTO unanswered_questions"
+                        " (id, question, top_score, message_id)"
+                        " VALUES (:id, :question, :top_score, :message_id)"
                     ),
                     {
                         "id": uuid.uuid4(),
-                        "pertanyaan": entry.question,
+                        "question": entry.question,
                         "top_score": top_score,
                         "message_id": assistant_id,
                     },

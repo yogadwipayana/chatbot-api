@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.rag.risk import KONTAK_FRONT_OFFICE
 from app.rag.sensitive import SensitivityLevel, detect
 
 
@@ -28,6 +29,13 @@ class TestTingkatDistress:
         hasil = detect("saya stres berat")
         assert hasil.contacts
         assert any("Konseling" in c.unit for c in hasil.contacts)
+
+    def test_kontak_konseling_dapat_dihubungi(self):
+        """Unit Layanan Konseling belum punya kontak publik; mahasiswa diarahkan
+        lewat Front Office, bukan ke alamat yang tidak ada."""
+        kontak = detect("saya stres berat").contacts
+        konseling = next(c for c in kontak if "Konseling" in c.unit)
+        assert konseling.kontak == KONTAK_FRONT_OFFICE
 
 
 class TestTingkatCrisis:

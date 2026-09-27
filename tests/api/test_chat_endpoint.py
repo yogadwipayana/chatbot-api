@@ -9,6 +9,7 @@ import pytest
 
 from app.observability import tracing
 from app.rag.chain import OutcomeKind
+from app.rag.risk import KONTAK_FRONT_OFFICE
 
 
 def events(response) -> list[tuple[str, dict]]:
@@ -50,12 +51,12 @@ class TestJawabanNormal:
         """FE-2 disebut PRD sebagai komponen paling kritis."""
         sitasi = client.post("/api/chat", json=payload).json()["citations"]
         assert sitasi
-        assert {"judul", "halaman", "document_id", "file_path"} <= set(sitasi[0])
+        assert {"title", "page", "document_id", "file_path"} <= set(sitasi[0])
 
     def test_sitasi_cukup_untuk_membuka_pdf_di_halaman_tepat(self, client, payload):
         sitasi = client.post("/api/chat", json=payload).json()["citations"][0]
         assert sitasi["file_path"].endswith(".pdf")
-        assert sitasi["halaman"] >= 1
+        assert sitasi["page"] >= 1
 
     def test_sitasi_dideduplikasi_per_halaman(self, make_client, payload):
         from tests.fixtures.fakes import make_document
@@ -84,8 +85,8 @@ class TestQueryRewriting:
                 **payload,
                 "question": "kalau telat gimana?",
                 "history": [
-                    {"role": "user", "konten": "Kapan KRS dibuka?"},
-                    {"role": "assistant", "konten": "Tanggal 1-7 Agustus."},
+                    {"role": "user", "content": "Kapan KRS dibuka?"},
+                    {"role": "assistant", "content": "Tanggal 1-7 Agustus."},
                 ],
             },
         )
@@ -112,7 +113,7 @@ class TestSitasiHanyaYangDikutip:
     ):
         api_llm.reply = "Pembayaran lewat bank mitra [Panduan Akademik 2025, hal. 13]."
         data = make_client(strong_documents).post("/api/chat", json=payload).json()
-        assert [c["halaman"] for c in data["citations"]] == [13]
+        assert [c["page"] for c in data["citations"]] == [13]
 
     def test_urutan_mengikuti_kemunculan_di_jawaban(
         self, make_client, strong_documents, payload, api_llm
@@ -122,7 +123,7 @@ class TestSitasiHanyaYangDikutip:
             "A [Panduan Akademik 2025, hal. 13] lalu B [Panduan Akademik 2025, hal. 12]."
         )
         data = make_client(strong_documents).post("/api/chat", json=payload).json()
-        assert [c["halaman"] for c in data["citations"]] == [13, 12]
+        assert [c["page"] for c in data["citations"]] == [13, 12]
 
     def test_sumber_karangan_tidak_pernah_jadi_kartu(
         self, make_client, strong_documents, payload, api_llm
@@ -133,7 +134,7 @@ class TestSitasiHanyaYangDikutip:
             "Menurut [Peraturan Fiktif 2030, hal. 9] dan [Panduan Akademik 2025, hal. 12]."
         )
         data = make_client(strong_documents).post("/api/chat", json=payload).json()
-        assert [(c["judul"], c["halaman"]) for c in data["citations"]] == [
+        assert [(c["title"], c["page"]) for c in data["citations"]] == [
             ("Panduan Akademik 2025", 12)
         ]
 
@@ -143,7 +144,7 @@ class TestSitasiHanyaYangDikutip:
         """LLM melanggar FR-5 di sini; mahasiswa tetap harus punya jalan verifikasi."""
         api_llm.reply = "Silakan hubungi bagian akademik."
         data = make_client(strong_documents).post("/api/chat", json=payload).json()
-        assert [c["halaman"] for c in data["citations"]] == [12, 13]
+        assert [c["page"] for c in data["citations"]] == [12, 13]
 
 
 class TestPenolakan:
@@ -164,7 +165,7 @@ class TestPenolakan:
     def test_menyertakan_kontak(self, make_client, weak_documents, payload):
         data = make_client(weak_documents).post("/api/chat", json=payload).json()
         assert data["contacts"]
-        assert data["contacts"][0]["kontak"] in data["text"]
+        assert data["contacts"][0]["contact"] in data["text"]
 
     def test_retrieval_kosong_juga_ditolak(self, make_client, payload, api_llm):
         data = make_client([]).post("/api/chat", json=payload).json()
@@ -247,7 +248,7 @@ class TestValidasiRequest:
 
     def test_peran_riwayat_dibatasi(self, client, payload):
         r = client.post(
-            "/api/chat", json={**payload, "history": [{"role": "system", "konten": "x"}]}
+            "/api/chat", json={**payload, "history": [{"role": "system", "content": "x"}]}
         )
         assert r.status_code == 422
 
@@ -260,7 +261,7 @@ class TestKillSwitch:
 
     def test_pesan_blokir_menyebut_kontak_manusia(self, client, payload, kill_switch):
         kill_switch.engage("insiden")
-        assert "Akademik" in client.post("/api/chat", json=payload).json()["detail"]
+        assert KONTAK_FRONT_OFFICE in client.post("/api/chat", json=payload).json()["detail"]
 
     def test_llm_tidak_dipanggil_saat_diblokir(self, client, payload, kill_switch, api_llm):
         kill_switch.engage("insiden")
@@ -454,7 +455,7 @@ class TestFeedback:
             json={
                 "message_id": "9c3e1a44-6b2d-4f51-8a70-2d9b5c1e7f03",
                 "helpful": False,
-                "catatan": "x" * 1001,
+                "comment": "x" * 1001,
             },
         )
         assert r.status_code == 422
@@ -489,8 +490,8 @@ class TestGerbangJev:
         meta = build_meta(chat_logger.entries[-1])
         assert meta["kind"] == "rejected"
         assert meta["gate_label"] == "nonsense"
-        assert meta["gate_biaya_usd"] == 0.00002
-        assert meta["embed_dipanggil"] is False
+        assert meta["gate_cost_usd"] == 0.00002
+        assert meta["embed_called"] is False
 
     def test_stream_juga_rejected(self, gated_client, payload):
         resp = gated_client.post("/api/chat/stream", json={**payload, "question": "asdf"})

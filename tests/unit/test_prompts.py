@@ -43,6 +43,12 @@ class TestInstruksiWajibFR5:
     def test_menetapkan_bahasa_indonesia(self):
         assert "Bahasa Indonesia" in SYSTEM_PROMPT
 
+    def test_menyebut_kampus_beserta_nama_lamanya(self):
+        """Dokumen lama menulis STIKI; tanpa ini model bisa menganggap kutipan
+        itu berasal dari kampus lain."""
+        for nama in ("INSTIKI", "STIKI Indonesia"):
+            assert nama in SYSTEM_PROMPT
+
     def test_menyediakan_slot_konteks(self):
         assert "{context}" in SYSTEM_PROMPT
 

@@ -40,7 +40,7 @@ except ModuleNotFoundError:  # pragma: no cover - hanya jalur degradasi
 EMBEDDING_DIM = 1024
 
 
-class JenisDokumen(StrEnum):
+class DocumentType(StrEnum):
     """Asal isi satu baris `documents`.
 
     `pdf`: berkas resmi yang diunggah admin; isinya hidup di penyimpanan objek
@@ -67,13 +67,13 @@ def _uuid_pk() -> Mapped[uuid.UUID]:
 
 
 def _fk_unit() -> ForeignKey:
-    """Rujukan ke `units.nama`.
+    """Rujukan ke `units.name`.
 
     ON UPDATE CASCADE: mengganti nama unit cukup satu UPDATE di `units`, dan
     seluruh dokumen serta akun staf ikut. Penghapusan unit yang masih dipakai
     ditolak (bawaan NO ACTION) -- nonaktifkan lewat `is_active` saja.
     """
-    return ForeignKey("units.nama", onupdate="CASCADE")
+    return ForeignKey("units.name", onupdate="CASCADE")
 
 
 class Unit(Base):
@@ -91,10 +91,12 @@ class Unit(Base):
 
     __tablename__ = "units"
 
-    nama: Mapped[str] = mapped_column(String(200), primary_key=True)
-    deskripsi: Mapped[str | None] = mapped_column(String(500))
+    name: Mapped[str] = mapped_column(String(200), primary_key=True)
+    description: Mapped[str | None] = mapped_column(String(500))
     """Kepanjangan atau cakupan layanan, untuk teks bantu di menu chatbot."""
-    urutan: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    sort_order: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
     """Urutan tampil di menu; kecil lebih dulu."""
     is_active: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default=true(), nullable=False
@@ -107,30 +109,30 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    judul: Mapped[str] = mapped_column(String(500), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
     """Untuk entri tanya jawab: pertanyaannya sendiri. Judul inilah yang muncul
     sebagai sumber pada sitasi yang dilihat mahasiswa (FE-2)."""
     unit: Mapped[str] = mapped_column(String(200), _fk_unit(), nullable=False)
-    jenis: Mapped[str] = mapped_column(
+    type: Mapped[str] = mapped_column(
         String(20),
-        default=JenisDokumen.PDF,
-        server_default=JenisDokumen.PDF.value,
+        default=DocumentType.PDF,
+        server_default=DocumentType.PDF.value,
         nullable=False,
     )
     file_path: Mapped[str | None] = mapped_column(String(1000))
     """Kunci objek di penyimpanan. NULL untuk entri tanya jawab: tidak ada berkas
     yang bisa dibuka, dan `GET /api/documents/{id}/file` menolaknya 404."""
-    nama_file: Mapped[str | None] = mapped_column(String(255))
+    original_filename: Mapped[str | None] = mapped_column(String(255))
     """Nama asli unggahan untuk nama tab browser dan berkas unduhan.
 
     `file_path` tetap memakai key berbasis UUID agar nama pengguna tidak menjadi
     bagian dari lokasi objek. NULL untuk entri tanya jawab dan baris lama.
     """
-    jawaban: Mapped[str | None] = mapped_column(Text)
+    answer: Mapped[str | None] = mapped_column(Text)
     """Jawaban entri tanya jawab, apa adanya seperti diketik admin. Ini sumber
     kebenarannya yang dapat disunting; chunk hanyalah turunannya -- sejajar
     dengan PDF, yang sumbernya berkas asli dan chunk-nya hasil ekstraksi."""
-    tahun_berlaku: Mapped[int | None] = mapped_column(Integer)
+    effective_year: Mapped[int | None] = mapped_column(Integer)
     valid_until: Mapped[date | None] = mapped_column(Date)
     """NULL = berlaku tanpa batas. Diperiksa di setiap retrieval (FR-2)."""
     uploaded_by: Mapped[str | None] = mapped_column(String(255))
@@ -144,19 +146,19 @@ class Document(Base):
     )
 
     __table_args__ = (
-        Index("ix_documents_aktif", "is_active", "valid_until"),
+        Index("ix_documents_active", "is_active", "valid_until"),
         Index("ix_documents_unit", "unit"),
         CheckConstraint(
-            "jenis IN ('pdf', 'tanya_jawab')",
-            name="ck_documents_jenis",
+            "type IN ('pdf', 'tanya_jawab')",
+            name="ck_documents_type",
         ),
         # Satu tabel untuk dua jenis isi hanya aman bila setiap baris lengkap
         # menurut jenisnya: PDF tanpa berkas akan membuat kartu sitasi buntu,
         # dan entri tanya jawab tanpa jawaban tidak dapat disunting kembali.
         CheckConstraint(
-            "(jenis = 'pdf' AND file_path IS NOT NULL AND jawaban IS NULL)"
-            " OR (jenis = 'tanya_jawab' AND file_path IS NULL AND jawaban IS NOT NULL)",
-            name="ck_documents_isi_sesuai_jenis",
+            "(type = 'pdf' AND file_path IS NOT NULL AND answer IS NULL)"
+            " OR (type = 'tanya_jawab' AND file_path IS NULL AND answer IS NOT NULL)",
+            name="ck_documents_content_matches_type",
         ),
     )
 
@@ -168,9 +170,9 @@ class Chunk(Base):
     document_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
     )
-    konten: Mapped[str] = mapped_column(Text, nullable=False)
-    halaman: Mapped[int] = mapped_column(Integer, nullable=False)
-    urutan: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    page: Mapped[int] = mapped_column(Integer, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
     if Vector is not None:
         embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM))
     tsv: Mapped[str | None] = mapped_column(TSVECTOR)
@@ -207,6 +209,10 @@ class Conversation(Base):
     session_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     user_hash: Mapped[str | None] = mapped_column(String(64))
     """Hash anonim (PRD §11). Tidak boleh dapat dikembalikan ke identitas."""
+    embed_key: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("embed_keys.key", ondelete="SET NULL"), index=True
+    )
+    """Kunci situs penyemat asal percakapan; None = portal sendiri."""
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -224,7 +230,7 @@ class Message(Base):
         ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
     )
     role: Mapped[str] = mapped_column(String(20), nullable=False)
-    konten: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
     retrieved_chunk_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
         ARRAY(UUID(as_uuid=True))
     )
@@ -254,7 +260,7 @@ class Feedback(Base):
         ForeignKey("messages.id", ondelete="CASCADE"), nullable=False, index=True
     )
     helpful: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    catatan: Mapped[str | None] = mapped_column(Text)
+    comment: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -263,10 +269,10 @@ class Feedback(Base):
 class Unanswered(Base):
     """Pertanyaan yang ditolak FR-3. Sumber utama perbaikan sistem (AD-4)."""
 
-    __tablename__ = "unanswered"
+    __tablename__ = "unanswered_questions"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    pertanyaan: Mapped[str] = mapped_column(Text, nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
     top_score: Mapped[float | None] = mapped_column()
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -278,7 +284,7 @@ class Unanswered(Base):
     """Jawaban penolakan yang mencatat baris ini. SET NULL, bukan CASCADE: log
     percakapan boleh dibersihkan, sinyal perbaikan AD-4 tidak ikut hilang."""
 
-    __table_args__ = (Index("ix_unanswered_created_at", "created_at"),)
+    __table_args__ = (Index("ix_unanswered_questions_created_at", "created_at"),)
 
 
 class Admin(Base):
@@ -293,7 +299,7 @@ class Admin(Base):
         String(50), default="admin", server_default="admin", nullable=False
     )
     """`staf`, `admin`, atau `superadmin`."""
-    nama: Mapped[str | None] = mapped_column(String(200))
+    name: Mapped[str | None] = mapped_column(String(200))
     unit: Mapped[str | None] = mapped_column(String(200), _fk_unit())
     """Wajib untuk staf/dosen: membatasi dokumen yang dapat dikelola."""
     is_active: Mapped[bool] = mapped_column(
@@ -310,11 +316,38 @@ class Admin(Base):
         CheckConstraint("role IN ('staf', 'admin', 'superadmin')", name="ck_admins_role"),
         CheckConstraint(
             "role <> 'staf' OR (unit IS NOT NULL AND btrim(unit) <> '')",
-            name="ck_admins_staf_unit",
+            name="ck_admins_staff_unit",
         ),
         # Login dan pencarian akun memakai lower(email); tanpa index unik ini
         # "Admin@instiki.ac.id" dan "admin@instiki.ac.id" bisa menjadi dua akun.
         Index("ix_admins_email_lower", text("lower(email)"), unique=True),
+    )
+
+
+class EmbedKey(Base):
+    """Kunci sematan: satu untuk setiap situs lain yang memasang asisten.
+
+    Bukan rahasia -- tertulis di kode sumber situs penyemat -- jadi disimpan apa
+    adanya. Yang membatasi pemakaiannya adalah `allowed_origins` dan `is_active`
+    (lihat `app/embed_keys.py`).
+    """
+
+    __tablename__ = "embed_keys"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    """Nama situs, hanya untuk dashboard."""
+    allowed_origins: Mapped[list[str]] = mapped_column(
+        ARRAY(String(255)), server_default="{}", nullable=False
+    )
+    """Asal situs yang boleh memuat panel, mis. `https://pmb.instiki.ac.id`.
+    Kosong = situs mana pun."""
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 
@@ -341,75 +374,3 @@ class RuntimeConfigEntry(Base):
     )
     updated_by: Mapped[str | None] = mapped_column(String(255))
     """Email admin yang mengubah, untuk jejak audit di halaman Konfigurasi."""
-
-
-class OperasiPemakaian(StrEnum):
-    """Apa yang memicu satu panggilan embedding di luar percakapan mahasiswa."""
-
-    INGEST = "ingest"
-    """Dokumen atau entri tanya jawab baru diindeks untuk pertama kalinya."""
-    REINDEX = "reindex"
-    """Entri tanya jawab yang disunting: chunk lama dibuang, embedding dihitung
-    ulang. Menyunting entri yang sama berulang kali membayar penuh setiap kali,
-    dan sebelum tabel ini hal itu sama sekali tidak meninggalkan jejak."""
-
-
-class UsageLog(Base):
-    """Buku biaya panggilan model yang tidak punya baris pesan untuk ditumpangi.
-
-    Biaya chat menumpang `messages.meta`, tetapi embedding saat ingestion terjadi
-    ketika tidak ada mahasiswa yang bertanya sama sekali -- tidak ada baris yang
-    bisa dititipi. Tanpa tabel ini, halaman Biaya AD-5 diam-diam hanya melaporkan
-    sebagian dari yang benar-benar dibelanjakan.
-
-    Sengaja append-only: tidak ada jalur yang memperbarui atau menghapus barisnya.
-    Buku biaya yang bisa berubah surut tidak dapat dipakai menjawab "bulan lalu
-    habis berapa".
-    """
-
-    __tablename__ = "usage_log"
-
-    id: Mapped[uuid.UUID] = _uuid_pk()
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    operasi: Mapped[str] = mapped_column(String(20), nullable=False)
-    """Nilai `OperasiPemakaian`."""
-    model: Mapped[str] = mapped_column(String(200), nullable=False)
-    """Model yang DIMINTA, sama seperti `EMBED_MODEL` -- kunci yang cocok dengan
-    `costs.PRICES_PER_MTOK`."""
-    model_dilaporkan: Mapped[str | None] = mapped_column(String(200))
-    """Nama menurut respons penyedia, diisi hanya bila berbeda dari `model`."""
-    tokens: Mapped[int | None] = mapped_column(Integer)
-    """NULL bila endpoint tidak melaporkan pemakaian -- bukan berarti nol token."""
-    biaya_usd: Mapped[float | None] = mapped_column()
-    """Disimpan tanpa pembulatan. Satu batch embedding bisa berharga $0,000002;
-    membulatkannya per baris membuat totalnya nol. Lihat
-    `costs.estimate_input_cost`."""
-    biaya_sumber: Mapped[str | None] = mapped_column(String(20))
-    """`provider` (angka penyedia) atau `estimasi` (hitungan kita). Tanpa penanda
-    ini, dua angka berdasar berbeda dalam satu kolom tidak dapat ditafsirkan."""
-    is_byok: Mapped[bool | None] = mapped_column(Boolean)
-    document_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("documents.id", ondelete="SET NULL")
-    )
-    """SET NULL, bukan CASCADE -- alasan yang sama dengan `unanswered.message_id`:
-    menghapus dokumen tidak boleh mengubah laporan biaya bulan yang sudah lewat."""
-    keterangan: Mapped[str | None] = mapped_column(String(500))
-    """Judul dokumen pada saat panggilan terjadi, supaya barisnya tetap terbaca
-    setelah `document_id` menjadi NULL."""
-
-    __table_args__ = (
-        CheckConstraint("operasi IN ('ingest', 'reindex')", name="ck_usage_log_operasi"),
-        CheckConstraint(
-            "biaya_sumber IS NULL OR biaya_sumber IN ('provider', 'estimasi')",
-            name="ck_usage_log_biaya_sumber_nilai",
-        ),
-        # Angka biaya tanpa asal-usul tidak dapat ditafsirkan, dan asal-usul tanpa
-        # angka tidak ada artinya. Keduanya ada, atau keduanya tidak ada.
-        CheckConstraint(
-            "(biaya_usd IS NULL) = (biaya_sumber IS NULL)",
-            name="ck_usage_log_biaya_lengkap",
-        ),
-        Index("ix_usage_log_created_at", "created_at"),
-    )

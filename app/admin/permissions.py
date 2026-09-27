@@ -62,7 +62,7 @@ class CurrentAdmin:
     email: str
     role: AdminRole
     unit: str | None = None
-    nama: str | None = None
+    name: str | None = None
 
     def at_least(self, minimum: AdminRole) -> bool:
         return ROLE_LEVEL[self.role] >= ROLE_LEVEL[minimum]

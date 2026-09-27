@@ -28,25 +28,25 @@ def env():
 class TestMembaca:
     def test_tanpa_penimpaan_mengikuti_env(self, client, admin_headers, env):
         data = client.get(ENDPOINT, headers=admin_headers).json()
-        assert data["nilai"] == data["nilai_env"]
-        assert data["nilai"]["vector_threshold"] == env.vector_threshold
-        assert data["diubah"] == []
-        assert data["diperbarui_oleh"] is None
+        assert data["values"] == data["env_values"]
+        assert data["values"]["vector_threshold"] == env.vector_threshold
+        assert data["overridden"] == []
+        assert data["updated_by"] is None
 
     def test_membawa_keterangan_model_tanpa_kunci_api(self, client, admin_headers, env):
         data = client.get(ENDPOINT, headers=admin_headers).json()
         assert data["chat_model"] == env.chat_model
-        assert data["api_key_terisi"] == (env.kunci_api() is not None)
+        assert data["api_key_set"] == (env.kunci_api() is not None)
         assert "api_key" not in data
 
     def test_penimpaan_tampil_sebagai_diubah(self, client, admin_headers, runtime_config):
         client.patch(ENDPOINT, json={"vector_threshold": 0.6}, headers=admin_headers)
         data = client.get(ENDPOINT, headers=admin_headers).json()
-        assert data["nilai"]["vector_threshold"] == 0.6
-        assert data["nilai_env"]["vector_threshold"] != 0.6
-        assert data["diubah"] == ["vector_threshold"]
-        assert data["diperbarui_oleh"] == ADMIN_EMAIL
-        assert data["diperbarui_at"]
+        assert data["values"]["vector_threshold"] == 0.6
+        assert data["env_values"]["vector_threshold"] != 0.6
+        assert data["overridden"] == ["vector_threshold"]
+        assert data["updated_by"] == ADMIN_EMAIL
+        assert data["updated_at"]
 
     def test_baris_rusak_dilaporkan_sebagai_peringatan(
         self, client, admin_headers, runtime_config, env
@@ -60,9 +60,9 @@ class TestMembaca:
             str(env.chunk_size + 50), datetime.now(UTC), ADMIN_EMAIL
         )
         data = client.get(ENDPOINT, headers=admin_headers).json()
-        assert "chunk_overlap" in data["peringatan"]
-        assert data["nilai"] == data["nilai_env"]
-        assert data["diubah"] == ["chunk_overlap"]
+        assert "chunk_overlap" in data["warning"]
+        assert data["values"] == data["env_values"]
+        assert data["overridden"] == ["chunk_overlap"]
 
 
 class TestMengubah:
@@ -70,8 +70,8 @@ class TestMengubah:
         data = client.patch(
             ENDPOINT, json={"retrieval_top_n": 3}, headers=admin_headers
         ).json()
-        assert data["nilai"]["retrieval_top_n"] == 3
-        assert data["nilai"]["retrieval_candidates"] == env.retrieval_candidates
+        assert data["values"]["retrieval_top_n"] == 3
+        assert data["values"]["retrieval_candidates"] == env.retrieval_candidates
 
     def test_nilai_sama_dengan_env_menghapus_penimpaan(
         self, client, admin_headers, env, runtime_config
@@ -80,7 +80,7 @@ class TestMengubah:
         data = client.patch(
             ENDPOINT, json={"retrieval_top_n": env.retrieval_top_n}, headers=admin_headers
         ).json()
-        assert data["diubah"] == []
+        assert data["overridden"] == []
         assert runtime_config.values == {}
 
     def test_null_mengembalikan_satu_field_ke_env(
@@ -91,13 +91,13 @@ class TestMengubah:
         data = client.patch(
             ENDPOINT, json={"vector_threshold": None}, headers=admin_headers
         ).json()
-        assert data["nilai"]["vector_threshold"] == env.vector_threshold
-        assert data["diubah"] == []
+        assert data["values"]["vector_threshold"] == env.vector_threshold
+        assert data["overridden"] == []
         assert runtime_config.values == {}
 
     def test_permintaan_kosong_tidak_mengubah_apa_pun(self, client, admin_headers):
         data = client.patch(ENDPOINT, json={}, headers=admin_headers).json()
-        assert data["diubah"] == []
+        assert data["overridden"] == []
 
     @pytest.mark.parametrize(
         "body",
@@ -149,7 +149,7 @@ class TestMengubah:
             headers=admin_headers,
         )
         assert r.status_code == 200, r.text
-        assert r.json()["nilai"]["retrieval_top_n"] == 40
+        assert r.json()["values"]["retrieval_top_n"] == 40
 
 
 class TestMengembalikan:
@@ -160,8 +160,8 @@ class TestMengembalikan:
             headers=admin_headers,
         )
         data = client.delete(ENDPOINT, headers=admin_headers).json()
-        assert data["diubah"] == []
-        assert data["nilai"] == data["nilai_env"]
+        assert data["overridden"] == []
+        assert data["values"] == data["env_values"]
         assert runtime_config.values == {}
 
     def test_tanpa_penimpaan_tetap_aman(self, client, admin_headers):
@@ -186,7 +186,7 @@ class TestBerlakuSaatMenjawab:
             "/api/admin/test-query", json=self.PERTANYAAN, headers=admin_headers
         )
         assert sesudah.json()["kind"] == "refusal"
-        assert sesudah.json()["ambang"]["vector"] == 0.95
+        assert sesudah.json()["thresholds"]["vector"] == 0.95
 
     def test_ambang_baru_langsung_dipakai_chat_mahasiswa(self, client, admin_headers):
         payload = {**self.PERTANYAAN, "session_id": "sesi-uji-12345"}

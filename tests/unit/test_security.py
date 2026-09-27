@@ -7,6 +7,7 @@ import time
 import jwt
 import pytest
 
+from app.rag.risk import KONTAK_FRONT_OFFICE
 from app.security.auth import (
     create_access_token,
     decode_access_token,
@@ -109,7 +110,8 @@ class TestKillSwitch:
     def test_pesan_untuk_mahasiswa_menyebut_kontak_manusia(self):
         """Layanan mati bukan alasan meninggalkan mahasiswa tanpa jalan keluar."""
         pesan = KillSwitch().message
-        assert "Akademik" in pesan
+        assert "Front Office" in pesan
+        assert KONTAK_FRONT_OFFICE in pesan
 
     def test_pelaku_tercatat_dan_dibersihkan(self):
         switch = KillSwitch()

@@ -1,7 +1,7 @@
 """Entri tanya jawab: sumber jawaban yang diketik langsung, tanpa PDF.
 
 Satu entri adalah satu baris `documents` berjenis `tanya_jawab` (lihat
-`JenisDokumen`): `judul` menyimpan pertanyaannya, `jawaban` menyimpan
+`DocumentType`): `title` menyimpan pertanyaannya, `answer` menyimpan
 jawabannya, dan chunk-nya dibangkitkan dari keduanya. Karena tabelnya sama,
 entri tanya jawab ikut terambil retrieval hibrida, ikut tunduk pada filter
 dokumen aktif dan masa berlaku (FR-2), dan ikut menjadi kartu sitasi -- tanpa
@@ -24,36 +24,36 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.documents import UNIT_MATCH, stale_clause
 from app.admin.permissions import normalize_unit
-from app.db.models import JenisDokumen
+from app.db.models import DocumentType
 from app.ingestion.chunker import split_qa
 from app.ingestion.embedder import embed_and_store
 
-TANYA_JAWAB_SAJA = "d.jenis = :jenis"
+TANYA_JAWAB_SAJA = "d.type = :type"
 
 _STALE = stale_clause("d")
 
 _KOLOM = f"""
-    d.id::text AS id, d.judul AS pertanyaan, d.jawaban, d.unit, d.valid_until,
+    d.id::text AS id, d.title AS question, d.answer, d.unit, d.valid_until,
     d.updated_at, d.is_active, d.uploaded_by,
-    (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) AS jumlah_chunk,
+    (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) AS chunk_count,
     {_STALE} AS stale
 """
 
-EDITABLE_FIELDS = ("pertanyaan", "jawaban", "unit", "valid_until", "is_active")
+EDITABLE_FIELDS = ("question", "answer", "unit", "valid_until", "is_active")
 
-KOLOM_DB = {"pertanyaan": "judul"}
+KOLOM_DB = {"question": "title"}
 """Nama field API yang berbeda dari nama kolomnya di database."""
 
-REINDEX_FIELDS = frozenset({"pertanyaan", "jawaban"})
+REINDEX_FIELDS = frozenset({"question", "answer"})
 """Mengubah salah satunya membuat chunk lama tidak lagi mewakili isinya."""
 
-CONTENT_FIELDS = frozenset({"pertanyaan", "jawaban", "unit", "valid_until"})
+CONTENT_FIELDS = frozenset({"question", "answer", "unit", "valid_until"})
 """Mengubah salah satunya dianggap peninjauan dan memperbarui `updated_at`.
 `is_active` tidak, sama seperti dokumen PDF."""
 
 
 def _params(**extra: Any) -> dict[str, Any]:
-    return {"jenis": JenisDokumen.TANYA_JAWAB.value, **extra}
+    return {"type": DocumentType.TANYA_JAWAB.value, **extra}
 
 
 async def list_entries(
@@ -130,15 +130,15 @@ async def create_entry(
         await session.execute(
             text(
                 "INSERT INTO documents"
-                " (id, judul, jawaban, unit, jenis, file_path, valid_until, uploaded_by,"
+                " (id, title, answer, unit, type, file_path, valid_until, uploaded_by,"
                 "  updated_at, is_active)"
-                " VALUES (:id, :pertanyaan, :jawaban, :unit, :jenis, NULL, :valid_until,"
+                " VALUES (:id, :question, :answer, :unit, :type, NULL, :valid_until,"
                 " :uploaded_by, now(), true)"
             ),
             _params(
                 id=entry_id,
-                pertanyaan=pertanyaan,
-                jawaban=jawaban,
+                question=pertanyaan,
+                answer=jawaban,
                 unit=unit,
                 valid_until=valid_until,
                 uploaded_by=uploaded_by,
@@ -200,8 +200,8 @@ async def update_entry(
                 session,
                 entry_id,
                 split_qa(
-                    baru["pertanyaan"],
-                    baru["jawaban"],
+                    baru["question"],
+                    baru["answer"],
                     chunk_size=chunk_size,
                     chunk_overlap=chunk_overlap,
                     metadata={"unit": baru["unit"]},

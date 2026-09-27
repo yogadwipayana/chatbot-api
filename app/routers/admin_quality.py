@@ -13,7 +13,7 @@ from app.admin.feedback import fetch_feedback
 from app.admin.grouping import group_questions
 from app.admin.permissions import AdminRole
 from app.admin.unanswered import fetch_items, set_resolved
-from app.db.models import JenisDokumen
+from app.db.models import DocumentType
 from app.deps import (
     BaseSettingsDep,
     SessionDep,
@@ -43,7 +43,7 @@ from app.schemas.common import Error
 
 router = APIRouter(
     prefix="/api/admin",
-    tags=["admin-kualitas"],
+    tags=["admin-quality"],
     dependencies=[Depends(require_admin)],
     responses={401: {"model": Error}},
 )
@@ -58,22 +58,22 @@ async def list_unanswered(
     resolved: Annotated[
         bool | None, Query(description="Kosongkan untuk menampilkan keduanya.")
     ] = None,
-    sejak: date | None = None,
+    since: date | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[UnansweredGroup]:
     """AD-4. `limit` dan `offset` berlaku atas kelompok, bukan atas baris."""
     items = await fetch_items(
-        session, resolved=resolved, sejak=sejak, timezone=settings.timezone
+        session, resolved=resolved, sejak=since, timezone=settings.timezone
     )
     kelompok = group_questions(items)[offset : offset + limit]
     return [
         UnansweredGroup(
             ids=g.ids,
-            contoh_pertanyaan=g.representative.pertanyaan,
-            jumlah=g.jumlah,
-            top_score_rata2=g.top_score_rata2,
-            terakhir_ditanyakan=g.terakhir_ditanyakan,
+            sample_question=g.representative.pertanyaan,
+            count=g.jumlah,
+            avg_top_score=g.top_score_rata2,
+            last_asked_at=g.terakhir_ditanyakan,
             resolved=g.resolved,
         )
         for g in kelompok
@@ -107,7 +107,7 @@ async def list_feedback(
     helpful: Annotated[
         bool | None, Query(description="Kosongkan untuk menampilkan keduanya.")
     ] = None,
-    sejak: date | None = None,
+    since: date | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> FeedbackPage:
@@ -121,7 +121,7 @@ async def list_feedback(
         **await fetch_feedback(
             session,
             helpful=helpful,
-            sejak=sejak,
+            sejak=since,
             timezone=settings.timezone,
             limit=limit,
             offset=offset,
@@ -185,10 +185,10 @@ async def admin_test_query(
                     if doc.metadata.get("document_id")
                     else None
                 ),
-                judul=doc.metadata.get("judul", ""),
-                jenis=doc.metadata.get("jenis") or JenisDokumen.PDF,
-                halaman=doc.metadata.get("halaman", 0),
-                konten=doc.page_content,
+                title=doc.metadata.get("judul", ""),
+                type=doc.metadata.get("jenis") or DocumentType.PDF,
+                page=doc.metadata.get("halaman", 0),
+                content=doc.page_content,
                 rrf_score=float(doc.metadata.get("rrf_score", 0.0)),
                 raw_scores=dict(doc.metadata.get("raw_scores", {})),
                 ranks=dict(doc.metadata.get("ranks", {})),
@@ -205,7 +205,7 @@ async def admin_test_query(
             if decision
             else None
         ),
-        ambang=ThresholdValues(
+        thresholds=ThresholdValues(
             vector=policy.vector_threshold, fulltext=policy.lexical_threshold
         ),
         contacts=respons.contacts,

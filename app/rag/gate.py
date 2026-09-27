@@ -47,16 +47,19 @@ QUESTION_KEY = "kategori"
 
 INSTRUCTIONS = (
     "Classify the latest student message sent to PANDU, the administrative "
-    "assistant of an Indonesian university (messages are usually in Indonesian). "
-    "Use the recent conversation only to understand short follow-up messages."
+    "assistant of Institut Bisnis dan Teknologi Indonesia (INSTIKI, formerly "
+    "STIKI Indonesia), a university in Denpasar, Bali (messages are usually in "
+    "Indonesian). Use the recent conversation only to understand short "
+    "follow-up messages."
 )
 
 CRITERIA: dict[str, str] = {
     GateLabel.ACADEMIC: (
         "A question or request about the university's academic or administrative "
         "matters: course registration (KRS), tuition (UKT/SPP), schedules, leave, "
-        "theses, graduation, scholarships, campus units, documents or procedures. "
-        "Includes short follow-ups that continue such a conversation."
+        "theses, graduation, scholarships, campus units, documents or procedures, "
+        "and facts about INSTIKI itself such as its accreditation or study "
+        "programmes. Includes short follow-ups that continue such a conversation."
     ),
     GateLabel.SMALLTALK: (
         "Greeting, thanks, farewell or casual chat with the assistant that asks "
@@ -80,7 +83,7 @@ CRITERIA: dict[str, str] = {
 
 REPLIES: dict[GateLabel, str] = {
     GateLabel.SMALLTALK: (
-        "Halo! Saya PANDU, asisten administrasi akademik. Silakan tanyakan urusan "
+        "Halo! Saya PANDU, asisten administrasi akademik INSTIKI. Silakan tanyakan urusan "
         "administrasi Anda -- jawaban saya bersumber dari dokumen resmi kampus."
     ),
     GateLabel.OUT_OF_SCOPE: (

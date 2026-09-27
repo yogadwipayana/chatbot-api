@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/admin/documents",
-    tags=["admin-dokumen"],
+    tags=["admin-documents"],
     dependencies=[Depends(require_admin)],
     responses={401: {"model": Error}, 403: {"model": Error}},
 )
@@ -96,7 +96,7 @@ async def list_documents(
     return DocumentPage(
         items=[Document.model_validate(r) for r in rows],
         total=total,
-        jumlah_stale=jumlah_stale,
+        stale_count=jumlah_stale,
     )
 
 
@@ -113,11 +113,11 @@ async def upload_document(
     storage: StorageDep,
     units: UnitDirectoryDep,
     file: Annotated[UploadFile, File(description="Berkas PDF.")],
-    judul: Annotated[str, Form(min_length=3, max_length=500)],
+    title: Annotated[str, Form(min_length=3, max_length=500)],
     unit: Annotated[
         str, Form(min_length=2, max_length=200, description="Nama dari `GET /api/units`.")
     ],
-    tahun_berlaku: Annotated[int | None, Form(ge=2000, le=2100)] = None,
+    effective_year: Annotated[int | None, Form(ge=2000, le=2100)] = None,
     valid_until: Annotated[date | None, Form()] = None,
     embeddings: Any = Depends(get_embeddings),
 ) -> IngestionResult:
@@ -127,7 +127,7 @@ async def upload_document(
     non-teknis (PRD §9). Galat layanan luar (penyimpanan, API AI) menjadi 502
     dengan saran mencoba lagi; rinciannya hanya masuk log server.
     """
-    judul = judul.strip()
+    title = title.strip()
     unit = await unit_terdaftar(units, unit)
     if not admin.can_manage_unit(unit):
         # Diperiksa sebelum berkas dibaca: tidak ada gunanya memproses PDF
@@ -136,7 +136,7 @@ async def upload_document(
             status.HTTP_403_FORBIDDEN,
             f"Akun Anda hanya dapat mengunggah dokumen untuk unit {admin.unit}.",
         )
-    if len(judul) < 3:
+    if len(title) < 3:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Judul minimal 3 karakter.")
 
     batas = settings.max_upload_mb * 1024 * 1024
@@ -169,11 +169,11 @@ async def upload_document(
                 hasil = await ingest_document(
                     session,
                     path=path,
-                    judul=judul,
+                    judul=title,
                     unit=unit,
                     embeddings=embeddings,
                     storage=storage,
-                    tahun_berlaku=tahun_berlaku,
+                    tahun_berlaku=effective_year,
                     valid_until=valid_until,
                     uploaded_by=admin.email,
                     nama_file=nama,
@@ -192,9 +192,9 @@ async def upload_document(
 
     return IngestionResult(
         document_id=str(hasil.document_id),
-        jumlah_halaman=hasil.jumlah_halaman,
-        jumlah_chunk=hasil.jumlah_chunk,
-        peringatan=list(hasil.peringatan),
+        page_count=hasil.jumlah_halaman,
+        chunk_count=hasil.jumlah_chunk,
+        warnings=list(hasil.peringatan),
     )
 
 
@@ -282,7 +282,7 @@ def nama_berkas_aman(nama: str | None) -> str:
     """Nama berkas unggahan, tanpa unsur lintasan dan karakter terlarang.
 
     Dipakai hanya untuk berkas sementara dan kalimat galat
-    (`'Panduan Akademik 2025.pdf' tampaknya hasil scan...`) -- bukan sebagai
+    (`'Panduan Akademik 2025.pdf' tidak memiliki lapisan teks...`) -- bukan sebagai
     kunci penyimpanan, yang selalu diturunkan dari `document_id`.
     """
     dasar = Path((nama or "").replace("\\", "/")).name

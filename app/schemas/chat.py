@@ -6,22 +6,51 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.db.models import JenisDokumen
+from app.db.models import DocumentType
 from app.rag.chain import OutcomeKind
+from app.rag.rewriter import HISTORY_WINDOW
+
+MAKS_PERTANYAAN = 500
+"""Batas panjang pertanyaan mahasiswa.
+
+Kotak pertanyaan portal membatasi 200 karakter, tetapi pertanyaan siap klik
+di menu topik adalah entri tanya jawab admin, yang boleh sampai 500
+(`FaqEntryCreate.question`). Di atas ini hanya pemanggil langsung --
+Postman, skrip -- yang dapat mengirim, dan setiap karakternya dibayar sebagai
+token di penulisan ulang, gerbang JEV, dan jawaban."""
+
+MAKS_KONTEN_RIWAYAT = 2000
+"""Satu giliran riwayat dipotong sepanjang ini, bukan ditolak. Isinya hanya
+konteks penulisan ulang pertanyaan lanjutan (FR-4) -- awal jawaban sudah cukup
+-- dan menolaknya akan mematahkan pertanyaan lanjutan setelah jawaban panjang."""
 
 
 class TurnIn(BaseModel):
     role: str = Field(pattern="^(user|assistant)$")
-    konten: str
+    content: str
+
+    @field_validator("content")
+    @classmethod
+    def _potong(cls, v: str) -> str:
+        return v[:MAKS_KONTEN_RIWAYAT]
 
 
 class ChatRequest(BaseModel):
-    question: str = Field(min_length=1, max_length=2000)
+    question: str = Field(min_length=1, max_length=MAKS_PERTANYAAN)
     session_id: str = Field(min_length=8, max_length=128)
-    history: list[TurnIn] = Field(default_factory=list)
+    history: list[TurnIn] = Field(default_factory=list, max_length=50)
+    """Hanya `HISTORY_WINDOW` giliran terakhir yang disimpan; sisanya dibuang di
+    sini, karena pipeline memang hanya membaca sebanyak itu. Lebih dari 50
+    ditolak: portal mengirim tiga, dan daftar raksasa tetap harus diurai
+    seluruhnya sebelum dipotong."""
     unit: str | None = Field(default=None, max_length=200)
-    """`nama` dari `GET /api/units`: retrieval hanya mencari di dokumen unit itu.
+    """`name` dari `GET /api/units`: retrieval hanya mencari di dokumen unit itu.
     Kosong berarti semua unit. Nama yang tidak terdaftar ditolak 422."""
+
+    @field_validator("history")
+    @classmethod
+    def _giliran_terakhir(cls, v: list[TurnIn]) -> list[TurnIn]:
+        return v[-HISTORY_WINDOW:]
 
     @field_validator("unit")
     @classmethod
@@ -32,28 +61,35 @@ class ChatRequest(BaseModel):
 class UnitOut(BaseModel):
     """Satu pilihan di menu unit chatbot."""
 
-    nama: str
+    name: str
     """Dikirim kembali apa adanya sebagai `unit` pada `POST /api/chat`."""
-    deskripsi: str | None = None
+    description: str | None = None
 
 
 class FaqQuestion(BaseModel):
     """Satu pertanyaan siap klik di menu topik chatbot."""
 
-    pertanyaan: str
+    question: str
     """Dikirim apa adanya sebagai `question` pada `POST /api/chat`, bersama
     unit topiknya."""
+
+
+class EmbedKeyInfo(BaseModel):
+    """Yang perlu diketahui portal tentang satu kunci sematan yang masih berlaku."""
+
+    allowed_origins: list[str]
+    """Menjadi `frame-ancestors` halaman `/embed`. Kosong = situs mana pun."""
 
 
 class CitationOut(BaseModel):
     """Isi kartu sitasi FE-2 -- cukup untuk membuka PDF di halaman yang tepat."""
 
-    judul: str
-    halaman: int
+    title: str
+    page: int
     document_id: str
     file_path: str
     """Kosong untuk sumber tanpa berkas; jangan dijadikan tautan."""
-    jenis: JenisDokumen = JenisDokumen.PDF
+    type: DocumentType = DocumentType.PDF
     """`tanya_jawab` berarti sumbernya diketik admin di dashboard, bukan PDF:
     tidak ada berkas yang bisa dibuka dan nomor halaman tidak berarti apa-apa,
     jadi kartunya harus tampil tanpa tautan dan tanpa "hal. N"."""
@@ -61,8 +97,8 @@ class CitationOut(BaseModel):
 
 class ContactOut(BaseModel):
     unit: str
-    jam_layanan: str
-    kontak: str
+    service_hours: str
+    contact: str
 
 
 class ChatResponse(BaseModel):
@@ -90,4 +126,4 @@ class ChatResponse(BaseModel):
 class FeedbackRequest(BaseModel):
     message_id: UUID
     helpful: bool
-    catatan: str | None = Field(default=None, max_length=1000)
+    comment: str | None = Field(default=None, max_length=1000)

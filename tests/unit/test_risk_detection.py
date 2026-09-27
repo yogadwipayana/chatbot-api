@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.rag.risk import RiskTopic, UnitContact, detect
+from app.rag.risk import DEFAULT_CONTACTS, FRONT_OFFICE, RiskTopic, UnitContact, detect
 
 
 class TestDeteksiPerTopik:
@@ -76,10 +76,27 @@ class TestKontakEskalasi:
         assert len(hasil.contacts) == 1
 
     def test_unit_berbeda_memunculkan_kontak_berbeda(self):
-        hasil = detect("kapan deadline bayar UKT dan apa sanksinya")
+        kustom = {
+            RiskTopic.DEADLINE: UnitContact("BAAK", "08-15", "a"),
+            RiskTopic.PEMBAYARAN: UnitContact("Keuangan", "08-14", "k"),
+            RiskTopic.SANKSI: UnitContact("Kemahasiswaan", "08-15", "m"),
+        }
+        hasil = detect("kapan deadline bayar UKT dan apa sanksi telat bayar", contacts=kustom)
         units = {c.unit for c in hasil.contacts}
         assert len(units) == len(hasil.contacts)
-        assert len(units) >= 2
+        assert units == {"BAAK", "Keuangan", "Kemahasiswaan"}
+
+    @pytest.mark.parametrize("topik", list(RiskTopic))
+    def test_setiap_topik_punya_kontak_bawaan(self, topik):
+        """Topik tanpa kontak berarti banner FR-6 diam-diam hilang."""
+        assert DEFAULT_CONTACTS[topik].kontak.strip()
+
+    def test_kontak_bawaan_front_office_satu_banner(self):
+        """Sampai biro menetapkan kontak per unit, semua topik diarahkan ke
+        Front Office -- dan cukup satu banner walau beberapa topik terdeteksi."""
+        hasil = detect("kapan deadline bayar UKT dan apa sanksinya")
+        assert hasil.contacts == (FRONT_OFFICE,)
+        assert "(0361) 256995" in FRONT_OFFICE.kontak
 
     def test_kontak_dapat_diganti(self):
         """Fase 0 menetapkan daftar kontak; modul ini tidak boleh menguncinya."""

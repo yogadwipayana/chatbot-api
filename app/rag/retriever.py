@@ -14,6 +14,10 @@ threshold dapat membacanya.
 Bila reranker dipasang, RRF dipotong menjadi `rerank_candidates` dulu, lalu
 reranker memilih top 5 dari situ (`app.rag.reranker`).
 
+Jalur fulltext memperluas query dengan kamus sinonim kampus
+(`app.rag.glossary`): "STIKI" ikut mencari "INSTIKI", "UPS" ikut mencari
+"Unit Pelaksana Sertifikasi", dan sebaliknya.
+
 Mahasiswa yang memilih unit di menu chatbot mempersempit KEDUA pencarian ke
 dokumen unit itu, lewat WHERE yang sama -- bukan disaring setelah hasilnya
 kembali, yang bisa menyisakan nol kandidat padahal unit itu punya jawabannya.
@@ -22,6 +26,7 @@ kembali, yang bisa menyisakan nol kandidat padahal unit itu punya jawabannya.
 from __future__ import annotations
 
 import asyncio
+import functools
 import math
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -37,6 +42,7 @@ from sqlalchemy import text
 
 from app.rag.filters import active_document_clause
 from app.rag.fusion import RankedHit, reciprocal_rank_fusion
+from app.rag.glossary import fulltext_variants
 from app.rag.reranker import rerank_documents
 from app.rag.threshold import LEXICAL_SOURCE, VECTOR_SOURCE
 
@@ -65,11 +71,11 @@ terbawa ke koneksi pool berikutnya."""
 VECTOR_SQL = text(
     f"""
     SELECT c.id::text AS chunk_id,
-           c.konten,
-           c.halaman,
+           c.content,
+           c.page,
            d.id::text AS document_id,
-           d.judul,
-           d.jenis,
+           d.title,
+           d.type,
            d.file_path,
            1 - (c.embedding <=> (:query_embedding)::vector) AS score
     FROM chunks c
@@ -81,25 +87,57 @@ VECTOR_SQL = text(
     """
 )
 
-FULLTEXT_SQL = text(
-    f"""
+
+def _param_varian(i: int) -> str:
+    return "query" if i == 0 else f"query_{i}"
+
+
+@functools.cache
+def fulltext_sql(varian: int = 1) -> Any:
+    """Query fulltext untuk `varian` bentuk query (lihat `app.rag.glossary`).
+
+    Baris cocok bila cocok dengan SALAH SATU varian (tsquery digabung `||`).
+    Skornya varian yang paling cocok (`GREATEST`), BUKAN `ts_rank` atas tsquery
+    gabungan: pada gabungan, `ts_rank` ikut menghitung leksem varian lain yang
+    tidak ada di chunk, sehingga skor chunk yang cocok dengan query asli anjlok
+    (terukur 0,099 -> 0,024 untuk "pembayaran ukt") -- jatuh di bawah
+    `ThresholdPolicy.lexical_threshold` dan mengubah jawaban menjadi penolakan.
+    Dengan `GREATEST`, skor terhadap query asli tidak pernah turun.
+
+    Dengan satu varian, SQL-nya sama persis seperti sebelum kamus ada.
+    """
+    if varian < 1:
+        raise ValueError(f"jumlah varian minimal 1, bukan {varian}")
+    tsquery = [
+        f"websearch_to_tsquery('{FTS_CONFIG}', :{_param_varian(i)})" for i in range(varian)
+    ]
+    if varian == 1:
+        skor, cocok = f"ts_rank(c.tsv, {tsquery[0]})", tsquery[0]
+    else:
+        skor = "GREATEST(" + ", ".join(f"ts_rank(c.tsv, {q})" for q in tsquery) + ")"
+        cocok = "(" + " || ".join(tsquery) + ")"
+    return text(
+        f"""
     SELECT c.id::text AS chunk_id,
-           c.konten,
-           c.halaman,
+           c.content,
+           c.page,
            d.id::text AS document_id,
-           d.judul,
-           d.jenis,
+           d.title,
+           d.type,
            d.file_path,
-           ts_rank(c.tsv, websearch_to_tsquery('{FTS_CONFIG}', :query)) AS score
+           {skor} AS score
     FROM chunks c
     JOIN documents d ON d.id = c.document_id
-    WHERE c.tsv @@ websearch_to_tsquery('{FTS_CONFIG}', :query)
+    WHERE c.tsv @@ {cocok}
       AND {_ACTIVE}
       AND {_UNIT}
     ORDER BY score DESC
     LIMIT :limit
     """
-)
+    )
+
+
+FULLTEXT_SQL = fulltext_sql(1)
 
 
 def vector_literal(embedding: Sequence[float]) -> str:
@@ -185,13 +223,15 @@ class PostgresHybridRetriever(BaseRetriever):
         documents = [
             Document(
                 id=hit.chunk_id,
-                page_content=by_id[hit.chunk_id]["konten"],
+                page_content=by_id[hit.chunk_id]["content"],
                 metadata={
                     "chunk_id": hit.chunk_id,
                     "document_id": by_id[hit.chunk_id]["document_id"],
-                    "judul": by_id[hit.chunk_id]["judul"],
-                    "jenis": by_id[hit.chunk_id].get("jenis"),
-                    "halaman": by_id[hit.chunk_id]["halaman"],
+                    # Kunci metadata sengaja tetap (internal, dibaca sitasi);
+                    # kolom sumbernya `title`, `type`, dan `page`.
+                    "judul": by_id[hit.chunk_id]["title"],
+                    "jenis": by_id[hit.chunk_id].get("type"),
+                    "halaman": by_id[hit.chunk_id]["page"],
                     "file_path": by_id[hit.chunk_id]["file_path"],
                     "rrf_score": hit.rrf_score,
                     "raw_scores": hit.raw_scores,
@@ -236,9 +276,18 @@ class PostgresHybridRetriever(BaseRetriever):
     ) -> list[dict[str, Any]]:
         # Tanpa iterative scan: index GIN mencocokkan secara pasti, dan filter
         # unit di atasnya tidak pernah membuang kandidat yang sah.
+        #
+        # Hanya jalur ini yang memakai kamus sinonim. Jalur vektor sudah
+        # menangkap kemiripan makna, dan menambah teks pada query embedding
+        # akan menggeser distribusi skor yang dipakai kalibrasi threshold.
+        varian = fulltext_variants(query)
         return await self._jalankan(
-            FULLTEXT_SQL,
-            {"query": query, "limit": self.candidates, "unit": unit},
+            fulltext_sql(len(varian)),
+            {
+                **{_param_varian(i): teks for i, teks in enumerate(varian)},
+                "limit": self.candidates,
+                "unit": unit,
+            },
         )
 
     async def _jalankan(

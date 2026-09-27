@@ -47,7 +47,7 @@ async def jalankan(dry_run: bool, batch_size: int) -> int:
     try:
         async with SessionLocal() as session:
             rows = (
-                await session.execute(text("SELECT id, konten FROM chunks ORDER BY id"))
+                await session.execute(text("SELECT id, content FROM chunks ORDER BY id"))
             ).all()
             print(f"Chunk   : {len(rows)}")
             if dry_run:
@@ -57,7 +57,7 @@ async def jalankan(dry_run: bool, batch_size: int) -> int:
             mulai = time.perf_counter()
             for awal in range(0, len(rows), batch_size):
                 batch = rows[awal : awal + batch_size]
-                vektor = await embeddings.aembed_documents([r.konten for r in batch])
+                vektor = await embeddings.aembed_documents([r.content for r in batch])
                 for row, vec in zip(batch, vektor, strict=True):
                     await session.execute(
                         UPDATE_SQL, {"id": row.id, "embedding": vector_literal(vec)}

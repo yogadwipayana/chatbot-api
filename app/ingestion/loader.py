@@ -28,7 +28,9 @@ MIN_CHARS_PER_PAGE = 100
 """Di bawah ini, satu halaman dianggap tanpa lapisan teks."""
 
 MAX_EMPTY_PAGE_RATIO = 0.30
-"""Bila lebih dari 30% halaman kosong teks, dokumen ditolak sebagai hasil scan."""
+"""Bila lebih dari 30% halaman kosong teks, dokumen ditolak karena tidak memiliki
+lapisan teks: hasil scan, atau dicetak dengan Print to PDF yang mengubah setiap
+huruf menjadi garis gambar."""
 
 MIN_CHARS_PER_PAGE_WAJAR = 400
 """Ambang kepadatan teks satu halaman panduan yang wajar.
@@ -109,7 +111,8 @@ def is_probably_scanned(
     min_chars: int = MIN_CHARS_PER_PAGE,
     max_empty_ratio: float = MAX_EMPTY_PAGE_RATIO,
 ) -> bool:
-    """Tebakan apakah PDF merupakan hasil scan tanpa OCR."""
+    """Tebakan apakah PDF tidak memiliki lapisan teks (hasil scan tanpa OCR, atau
+    hasil Print to PDF). Keduanya tampak sama dari sini: halaman tanpa teks."""
     return empty_page_ratio(pages, min_chars) > max_empty_ratio
 
 
@@ -276,7 +279,8 @@ def load_pdf(path: str | Path) -> list[LoadedPage]:
     """Muat PDF menjadi daftar halaman, mempertahankan nomor halaman (FR-1).
 
     Raises:
-        ScannedPdfError: bila dokumen terdeteksi hasil scan.
+        ScannedPdfError: bila dokumen tidak memiliki lapisan teks (hasil scan
+            atau Print to PDF).
         UnreadablePdfError: bila berkas tidak dapat dibuka sebagai PDF.
     """
     import pymupdf
@@ -317,10 +321,14 @@ def load_pdf(path: str | Path) -> list[LoadedPage]:
 
     isi = [p.konten for p in halaman]
     if is_probably_scanned(isi):
+        # "Print to PDF" di Windows kerap menggambar ulang setiap huruf sebagai
+        # garis vektor. Hasilnya tidak berisi gambar sama sekali, jadi menyebutnya
+        # "hasil scan" saja menyesatkan admin yang tahu dokumennya bukan scan.
         raise ScannedPdfError(
-            f"'{path.name}' tampaknya hasil scan tanpa lapisan teks "
-            f"({empty_page_ratio(isi):.0%} halaman kosong). "
-            "Jalankan OCR terlebih dahulu, atau unggah versi digital aslinya."
+            f"'{path.name}' tidak memiliki lapisan teks (hasil scan atau dicetak "
+            f"dengan Print to PDF); {empty_page_ratio(isi):.0%} halamannya kosong. "
+            "Simpan ulang dari aplikasi aslinya dengan Save as PDF, atau jalankan "
+            "OCR bila dokumennya hasil scan."
         )
 
     return halaman

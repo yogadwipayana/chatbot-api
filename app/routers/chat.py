@@ -13,11 +13,15 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 
-from app.db.models import JenisDokumen
+from app.db.models import DocumentType
 from app.deps import (
+    EmbedKeyDep,
     SessionDep,
     SettingsDep,
     UnitDirectoryDep,
+    batas_harian,
+    batasi_penilaian,
+    batasi_pertanyaan,
     build_gate_call,
     build_llm_call,
     build_retriever,
@@ -59,11 +63,28 @@ SSE_HEADERS = {
 }
 
 
-@router.post("/chat", response_model=ChatResponse, responses={422: {"model": Error}})
+# Urutannya: kill switch (router), batas laju, lalu batas harian -- permintaan
+# yang ditolak 429 tidak ikut menghabiskan jatah harian.
+BATAS_PERTANYAAN = [Depends(batasi_pertanyaan), Depends(batas_harian)]
+ERROR_PERTANYAAN = {
+    403: {"model": Error},
+    422: {"model": Error},
+    429: {"model": Error},
+    503: {"model": Error},
+}
+
+
+@router.post(
+    "/chat",
+    response_model=ChatResponse,
+    responses=ERROR_PERTANYAAN,
+    dependencies=BATAS_PERTANYAAN,
+)
 async def chat(
     payload: ChatRequest,
     settings: SettingsDep,
     units: UnitDirectoryDep,
+    embed_key: EmbedKeyDep,
     retriever: Any = Depends(build_retriever),
     llm_call: Any = Depends(build_llm_call),
     rewrite_call: Any = Depends(build_rewrite_call),
@@ -88,7 +109,7 @@ async def chat(
                 llm_call=llm_call,
                 rewrite_call=rewrite_call,
                 gate_call=gate_call,
-                history=[Turn(t.role, t.konten) for t in payload.history],
+                history=[Turn(t.role, t.content) for t in payload.history],
                 policy=policy_from(settings),
                 unit=unit,
                 callbacks=[giliran.recorder],
@@ -97,7 +118,15 @@ async def chat(
 
         response = to_response(outcome)
         response.message_id = await catat(
-            chat_logger, payload, outcome, mulai, llm_call, retriever, run_id, unit=unit
+            chat_logger,
+            payload,
+            outcome,
+            mulai,
+            llm_call,
+            retriever,
+            run_id,
+            unit=unit,
+            embed_key=embed_key,
         )
         giliran.selesai(
             hasil=outcome.kind,
@@ -108,11 +137,12 @@ async def chat(
     return response
 
 
-@router.post("/chat/stream", responses={422: {"model": Error}})
+@router.post("/chat/stream", responses=ERROR_PERTANYAAN, dependencies=BATAS_PERTANYAAN)
 async def chat_stream(
     payload: ChatRequest,
     settings: SettingsDep,
     units: UnitDirectoryDep,
+    embed_key: EmbedKeyDep,
     retriever: Any = Depends(build_retriever),
     llm_call: Any = Depends(build_llm_call),
     rewrite_call: Any = Depends(build_rewrite_call),
@@ -163,7 +193,7 @@ async def chat_stream(
                             llm_call=llm_call,
                             rewrite_call=rewrite_call,
                             gate_call=gate_call,
-                            history=[Turn(t.role, t.konten) for t in payload.history],
+                            history=[Turn(t.role, t.content) for t in payload.history],
                             policy=policy_from(settings),
                             on_token=token,
                             on_stage=lambda stage: antrean.put(("status", {"stage": stage})),
@@ -182,6 +212,7 @@ async def chat_stream(
                         retriever,
                         run_id,
                         unit=unit,
+                        embed_key=embed_key,
                     )
                     giliran.selesai(
                         hasil=outcome.kind,
@@ -216,14 +247,18 @@ async def chat_stream(
     "/feedback",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    responses={404: {"model": Error}},
+    responses={403: {"model": Error}, 404: {"model": Error}, 429: {"model": Error}},
+    dependencies=[Depends(batasi_penilaian)],
 )
-async def submit_feedback(payload: FeedbackRequest, session: SessionDep) -> Response:
+async def submit_feedback(
+    payload: FeedbackRequest, session: SessionDep, _embed_key: EmbedKeyDep
+) -> Response:
     """FE-5: satu klik, tanpa modal.
 
     Klik ulang pada pesan yang sama mengganti umpan balik sebelumnya: mahasiswa
     yang berubah pikiran dari 👍 ke 👎 tidak boleh terhitung dua kali pada rasio
-    AD-5.
+    AD-5. Kunci sematan hanya diperiksa masih berlaku; situs yang sudah dicabut
+    tidak lagi mengisi statistik.
     """
     ada = (
         await session.execute(
@@ -239,14 +274,14 @@ async def submit_feedback(payload: FeedbackRequest, session: SessionDep) -> Resp
     )
     await session.execute(
         text(
-            "INSERT INTO feedback (id, message_id, helpful, catatan)"
-            " VALUES (:id, :message_id, :helpful, :catatan)"
+            "INSERT INTO feedback (id, message_id, helpful, comment)"
+            " VALUES (:id, :message_id, :helpful, :comment)"
         ),
         {
             "id": uuid.uuid4(),
             "message_id": payload.message_id,
             "helpful": payload.helpful,
-            "catatan": (payload.catatan or "").strip() or None,
+            "comment": (payload.comment or "").strip() or None,
         },
     )
     await session.commit()
@@ -268,7 +303,7 @@ def to_response(outcome: PipelineOutcome) -> ChatResponse:
         text=outcome.text,
         citations=citations,
         contacts=[
-            ContactOut(unit=c.unit, jam_layanan=c.jam_layanan, kontak=c.kontak)
+            ContactOut(unit=c.unit, service_hours=c.jam_layanan, contact=c.kontak)
             for c in outcome.contacts
         ],
         escalated=bool(outcome.contacts),
@@ -295,17 +330,17 @@ def citations_for(outcome: PipelineOutcome) -> list[CitationOut]:
     for doc in outcome.documents:
         meta = doc.metadata
         kartu = CitationOut(
-            judul=meta.get("judul", ""),
-            halaman=meta.get("halaman", 0),
+            title=meta.get("judul", ""),
+            page=meta.get("halaman", 0),
             document_id=str(meta.get("document_id", "")),
             # Entri tanya jawab tidak punya berkas: `file_path` NULL dari database
-            # menjadi string kosong, dan `jenis` memberi tahu frontend agar
+            # menjadi string kosong, dan `type` memberi tahu frontend agar
             # kartunya tidak dibuat sebagai tautan yang buntu.
             file_path=meta.get("file_path") or "",
-            jenis=meta.get("jenis") or JenisDokumen.PDF,
+            type=meta.get("jenis") or DocumentType.PDF,
         )
         # Chunk berbeda dari halaman yang sama menghasilkan kartu yang sama.
-        tersedia.setdefault((kartu.judul.casefold(), kartu.halaman), kartu)
+        tersedia.setdefault((kartu.title.casefold(), kartu.page), kartu)
 
     # Urutan mengikuti kemunculan di jawaban, bukan peringkat retrieval: itu
     # urutan yang dibaca mahasiswa.
@@ -328,6 +363,7 @@ async def catat(
     run_id: str | None = None,
     *,
     unit: str | None = None,
+    embed_key: str | None = None,
 ) -> str | None:
     """Catat putaran ini (FR-8). None bila pencatatan gagal; jawaban tetap terkirim.
 
@@ -348,6 +384,7 @@ async def catat(
             usage=getattr(llm_call, "usage", None),
             langsmith_run_id=run_id,
             unit=unit,
+            embed_key=embed_key,
             # `getattr` berlapis, sama seperti `llm_call` di atas: test menyuntikkan
             # retriever palsu tanpa alat ukur, dan pencatatan tidak boleh menuntut
             # jenis retriever tertentu.

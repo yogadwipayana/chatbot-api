@@ -26,7 +26,7 @@ class Account:
     role: AdminRole
     password_hash: str
     is_active: bool = True
-    nama: str | None = None
+    name: str | None = None
     unit: str | None = None
     password_changed_at: datetime | None = None
     """Token yang terbit sebelum waktu ini ditolak."""
@@ -35,7 +35,7 @@ class Account:
 
     def as_current(self) -> CurrentAdmin:
         return CurrentAdmin(
-            id=self.id, email=self.email, role=self.role, unit=self.unit, nama=self.nama
+            id=self.id, email=self.email, role=self.role, unit=self.unit, name=self.name
         )
 
 
@@ -43,7 +43,7 @@ class DuplicateEmailError(ValueError):
     """Email sudah dipakai akun lain (tidak peka huruf besar)."""
 
 
-EDITABLE_FIELDS = ("nama", "role", "unit", "is_active")
+EDITABLE_FIELDS = ("name", "role", "unit", "is_active")
 
 
 class AccountStore(Protocol):
@@ -57,7 +57,7 @@ class AccountStore(Protocol):
         self,
         *,
         email: str,
-        nama: str | None,
+        name: str | None,
         role: AdminRole,
         unit: str | None,
         password_hash: str,
@@ -79,7 +79,7 @@ class AccountStore(Protocol):
 
 
 _KOLOM = (
-    "id, email, nama, role, unit, is_active, password_hash, password_changed_at,"
+    "id, email, name, role, unit, is_active, password_hash, password_changed_at,"
     " created_at, last_login_at"
 )
 
@@ -123,7 +123,7 @@ class SqlAccountStore:
         self,
         *,
         email: str,
-        nama: str | None,
+        name: str | None,
         role: AdminRole,
         unit: str | None,
         password_hash: str,
@@ -132,13 +132,13 @@ class SqlAccountStore:
             raise DuplicateEmailError(email)
         try:
             account = await self._one(
-                "INSERT INTO admins (id, email, nama, role, unit, password_hash, is_active)"
-                " VALUES (:id, :email, :nama, :role, :unit, :hash, true)"
+                "INSERT INTO admins (id, email, name, role, unit, password_hash, is_active)"
+                " VALUES (:id, :email, :name, :role, :unit, :hash, true)"
                 f" RETURNING {_KOLOM}",
                 {
                     "id": uuid.uuid4(),
                     "email": email,
-                    "nama": nama,
+                    "name": name,
                     "role": role.value,
                     "unit": unit,
                     "hash": password_hash,

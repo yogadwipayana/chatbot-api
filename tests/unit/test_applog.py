@@ -50,9 +50,9 @@ class TestNodeRecorder:
             "validate_context",
             "generate",
         ]
-        assert [n["urutan"] for n in rec.nodes] == list(range(1, 9))
+        assert [n["position"] for n in rec.nodes] == list(range(1, 9))
         assert rec.node_terakhir == "generate"
-        assert all(n["status"] == "ok" and n["durasi_ms"] >= 0 for n in rec.nodes)
+        assert all(n["status"] == "ok" and n["duration_ms"] >= 0 for n in rec.nodes)
 
     async def test_router_bersyarat_tidak_ikut_tercatat(self, strong_retriever, llm):
         _, rec = await jalankan("kapan pengisian KRS dibuka?", strong_retriever, llm)
@@ -63,17 +63,17 @@ class TestNodeRecorder:
         pertanyaan = "kapan pengisian KRS dibuka?"
         _, rec = await jalankan(pertanyaan, strong_retriever, llm)
         detail = {n["node"]: n["detail"] for n in rec.nodes}
-        assert detail["sanitize"] == {"panjang": len(pertanyaan)}
-        assert detail["jev_gate"] == {"dimatikan": True}
-        assert detail["rewrite"] == {"query_berubah": False}
-        assert detail["retrieve"] == {"jumlah_dokumen": 2}
-        assert detail["validate_context"]["keputusan"] == "proceed"
+        assert detail["sanitize"] == {"length": len(pertanyaan)}
+        assert detail["jev_gate"] == {"disabled": True}
+        assert detail["rewrite"] == {"query_rewritten": False}
+        assert detail["retrieve"] == {"document_count": 2}
+        assert detail["validate_context"]["decision"] == "proceed"
         assert pertanyaan not in repr(rec.nodes)
 
     async def test_berhenti_di_node_sensitif(self, strong_retriever, llm):
         _, rec = await jalankan("saya stres dan ingin bunuh diri", strong_retriever, llm)
         assert rec.node_terakhir == "sensitive"
-        assert rec.nodes[-1]["detail"]["dialihkan"] is True
+        assert rec.nodes[-1]["detail"]["redirected"] is True
 
     async def test_vonis_jev_tercatat(self, strong_retriever, llm):
         async def gerbang(q, riwayat):
@@ -85,7 +85,7 @@ class TestNodeRecorder:
             "label": "nonsense",
             "confidence": 0.97,
             "blocked": True,
-            "biaya_usd": 0.0002,
+            "cost_usd": 0.0002,
             "error": None,
         }
 
@@ -102,8 +102,8 @@ class TestNodeRecorder:
         gagal = recorder.nodes[-1]
         assert gagal["node"] == "retrieve"
         assert gagal["status"] == "error"
-        assert gagal["error_tipe"] == "RuntimeError"
-        assert gagal["error_pesan"] == "database mati"
+        assert gagal["error_type"] == "RuntimeError"
+        assert gagal["error_message"] == "database mati"
 
 
 class TestCatatGiliran:
@@ -117,12 +117,12 @@ class TestCatatGiliran:
             g.recorder.nodes.append(
                 {
                     "node": "generate",
-                    "urutan": 1,
-                    "mulai": "x",
-                    "durasi_ms": 5.0,
+                    "position": 1,
+                    "started_at": "x",
+                    "duration_ms": 5.0,
                     "status": "ok",
-                    "error_tipe": None,
-                    "error_pesan": None,
+                    "error_type": None,
+                    "error_message": None,
                     "detail": {},
                 }
             )
@@ -130,13 +130,13 @@ class TestCatatGiliran:
         assert turn_id_var.get() is None
         [baris] = sink.of("turn")
         assert baris["status"] == "ok"
-        assert baris["hasil"] == "answer"
-        assert baris["node_terakhir"] == "generate"
+        assert baris["outcome"] == "answer"
+        assert baris["last_node"] == "generate"
         assert baris["unit"] == "Keuangan"
         [n] = sink.of("node")
         assert n["turn_id"] == g.turn_id
         assert n["detail"]["model"] == "cx/gpt-5.5"
-        assert n["detail"]["biaya_usd"] == pytest.approx(0.008)
+        assert n["detail"]["cost_usd"] == pytest.approx(0.008)
 
     def test_galat_dicatat_dan_diteruskan(self, caplog):
         sink = FakeLogSink()
@@ -184,7 +184,7 @@ class TestLogWriter:
             g.selesai(hasil="refusal", message_id=None, langsmith_run_id=None)
         writer.stop()
         total, items = store.daftar_giliran(SEJAK)
-        assert total == 1 and items[0]["hasil"] == "refusal"
+        assert total == 1 and items[0]["outcome"] == "refusal"
 
     def test_antrean_penuh_membuang_bukan_memblokir(self, store):
         writer = LogWriter(store, retention_days=7, max_antrean=1)
@@ -203,7 +203,7 @@ class TestLogWriter:
                     "turn",
                     {
                         "turn_id": "lama",
-                        "waktu": "2000-01-01T00:00:00.000Z",
+                        "timestamp": "2000-01-01T00:00:00.000Z",
                         "endpoint": "chat",
                         "status": "ok",
                     },
@@ -237,7 +237,7 @@ class TestLogging:
         finally:
             turn_id_var.reset(token)
         [baris] = sink.of("app")
-        assert baris["pesan"] == "Tracing LangSmith mati"
+        assert baris["message"] == "Tracing LangSmith mati"
         assert baris["level"] == "INFO"
         assert baris["logger"] == "app.main"
         assert baris["turn_id"] == "giliran-1"

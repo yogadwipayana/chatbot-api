@@ -15,7 +15,7 @@ LevelLog = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
 class NodeStat(BaseModel):
     node: str
-    jumlah: int
+    count: int
     p50_ms: float | None
     p95_ms: float | None
     error: int
@@ -24,45 +24,45 @@ class NodeStat(BaseModel):
 class ExitPoint(BaseModel):
     node: str
     """Node terakhir yang berjalan, yaitu tempat giliran berhenti."""
-    jumlah: int
+    count: int
 
 
 class HourlyLogStat(BaseModel):
-    jam: str
+    hour: str
     """Awal jam, UTC, mis. `2026-09-25T03:00:00Z`."""
-    giliran: int
+    turn_count: int
     p95_total_ms: float | None
-    giliran_error: int
-    log_error: int
+    error_turn_count: int
+    error_log_count: int
 
 
 class LogSummary(BaseModel):
-    sejak: str
-    sampai: str
-    jumlah_giliran: int
+    since: str
+    until: str
+    turn_count: int
     p50_total_ms: float | None
     p95_total_ms: float | None
-    giliran_error: int
-    rasio_error: float
-    diblokir_jev: int
-    rasio_diblokir_jev: float
-    log_error: int
+    error_turn_count: int
+    error_ratio: float
+    jev_blocked_count: int
+    jev_blocked_ratio: float
+    error_log_count: int
     """Log ERROR ke atas di rentang ini. Untuk role admin, log audit tidak dihitung."""
     per_node: list[NodeStat]
-    titik_keluar: list[ExitPoint]
-    per_jam: list[HourlyLogStat]
+    exit_points: list[ExitPoint]
+    per_hour: list[HourlyLogStat]
 
 
 class TurnOut(BaseModel):
     turn_id: str
-    waktu: str
+    timestamp: str
     endpoint: str
     session_id: str | None
     message_id: str | None
     """Tautan ke `messages` di Postgres; teks percakapan hanya ada di sana."""
     unit: str | None
-    hasil: str | None
-    node_terakhir: str | None
+    outcome: str | None
+    last_node: str | None
     total_ms: int | None
     ttft_ms: int | None
     """Waktu sampai token pertama; hanya untuk `chat_stream` yang memanggil LLM."""
@@ -77,22 +77,22 @@ class TurnPage(BaseModel):
 
 class NodeRunOut(BaseModel):
     node: str
-    urutan: int
-    mulai: str
-    durasi_ms: float
+    position: int
+    started_at: str
+    duration_ms: float
     status: Literal["ok", "error"]
-    error_tipe: str | None
-    error_pesan: str | None
+    error_type: str | None
+    error_message: str | None
     detail: dict[str, Any]
 
 
 class AppLogOut(BaseModel):
     id: int
-    waktu: str
+    timestamp: str
     level: str
     logger: str
-    pesan: str
-    lokasi: str | None
+    message: str
+    location: str | None
     traceback: str | None
     turn_id: str | None
 

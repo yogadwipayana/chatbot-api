@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from app.observability.logstore import LogStore, persentil, waktu_iso
+from app.observability.logstore import VERSI_SKEMA, LogStore, persentil, waktu_iso
 
 SEKARANG = datetime(2026, 9, 25, 10, 30, tzinfo=UTC)
 
@@ -14,13 +16,13 @@ SEKARANG = datetime(2026, 9, 25, 10, 30, tzinfo=UTC)
 def turn(turn_id: str, *, menit_lalu: int = 5, **lain) -> tuple[str, dict]:
     data = {
         "turn_id": turn_id,
-        "waktu": waktu_iso(SEKARANG - timedelta(minutes=menit_lalu)),
+        "timestamp": waktu_iso(SEKARANG - timedelta(minutes=menit_lalu)),
         "endpoint": "chat",
         "session_id": "sesi-1",
         "message_id": None,
         "unit": None,
-        "hasil": "answer",
-        "node_terakhir": "generate",
+        "outcome": "answer",
+        "last_node": "generate",
         "total_ms": 1000,
         "ttft_ms": None,
         "status": "ok",
@@ -31,14 +33,14 @@ def turn(turn_id: str, *, menit_lalu: int = 5, **lain) -> tuple[str, dict]:
 
 
 def node(
-    turn_id: str, nama: str, durasi: float, *, urutan: int = 1, **lain
+    turn_id: str, nama: str, durasi: float, *, position: int = 1, **lain
 ) -> tuple[str, dict]:
     data = {
         "turn_id": turn_id,
-        "urutan": urutan,
+        "position": position,
         "node": nama,
-        "mulai": waktu_iso(SEKARANG - timedelta(minutes=5)),
-        "durasi_ms": durasi,
+        "started_at": waktu_iso(SEKARANG - timedelta(minutes=5)),
+        "duration_ms": durasi,
         "status": "ok",
         "detail": {"contoh": 1},
     }
@@ -48,12 +50,12 @@ def node(
 
 def log(logger: str, pesan: str, *, levelno: int = 20, turn_id=None, menit_lalu=5):
     return "app", {
-        "waktu": waktu_iso(SEKARANG - timedelta(minutes=menit_lalu)),
+        "timestamp": waktu_iso(SEKARANG - timedelta(minutes=menit_lalu)),
         "level": {20: "INFO", 30: "WARNING", 40: "ERROR"}[levelno],
         "levelno": levelno,
         "logger": logger,
-        "pesan": pesan,
-        "lokasi": "modul:1",
+        "message": pesan,
+        "location": "modul:1",
         "traceback": None,
         "turn_id": turn_id,
     }
@@ -107,7 +109,9 @@ class TestTulisDanHapus:
                 turn("baru"),
                 log("app.x", "lama", menit_lalu=60 * 24 * 8),
                 log("app.x", "baru"),
-                node("lama", "sanitize", 1, mulai=waktu_iso(SEKARANG - timedelta(days=8))),
+                node(
+                    "lama", "sanitize", 1, started_at=waktu_iso(SEKARANG - timedelta(days=8))
+                ),
             ]
         )
         terhapus = store.hapus_lama(SEKARANG - timedelta(days=7))
@@ -116,21 +120,46 @@ class TestTulisDanHapus:
         assert [i["turn_id"] for i in items] == ["baru"]
 
 
+class TestVersiSkema:
+    def test_berkas_berskema_lama_dibuat_ulang(self, tmp_path):
+        """`CREATE TABLE IF NOT EXISTS` tidak mengubah tabel lama; tanpa versi
+        skema setiap INSERT ke berkas lama gagal karena kolomnya berbeda."""
+        path = tmp_path / "app.db"
+        with closing(sqlite3.connect(path)) as conn:
+            conn.executescript(
+                "CREATE TABLE turns (turn_id TEXT PRIMARY KEY, waktu TEXT NOT NULL);"
+                "INSERT INTO turns VALUES ('lama', '2026-09-25T10:00:00.000Z');"
+            )
+        store = LogStore(path)
+        store.tulis([turn("t1")])
+        _, items = store.daftar_giliran(SEKARANG - timedelta(hours=1))
+        assert [i["turn_id"] for i in items] == ["t1"]
+        with closing(sqlite3.connect(path)) as conn:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == VERSI_SKEMA
+
+    def test_berkas_versi_terkini_tidak_dikosongkan(self, tmp_path):
+        path = tmp_path / "app.db"
+        LogStore(path).tulis([turn("t1")])
+        # Objek baru = persiapan skema berjalan lagi, seperti setelah restart.
+        LogStore(path).tulis([turn("t2")])
+        assert LogStore(path).daftar_giliran(SEKARANG - timedelta(hours=1))[0] == 2
+
+
 class TestRingkasan:
     def test_kosong(self, store):
         r = store.ringkasan(SEKARANG - timedelta(hours=2), SEKARANG, audit=True)
-        assert r["jumlah_giliran"] == 0
+        assert r["turn_count"] == 0
         assert r["p95_total_ms"] is None
-        assert r["rasio_error"] == 0.0
-        assert len(r["per_jam"]) == 3
+        assert r["error_ratio"] == 0.0
+        assert len(r["per_hour"]) == 3
 
     def test_kpi_node_dan_titik_keluar(self, store):
         store.tulis(
             [
                 turn("t1", total_ms=1000),
                 turn("t2", total_ms=3000, status="error"),
-                turn("t3", total_ms=200, hasil="rejected", node_terakhir="jev_gate"),
-                turn("t4", total_ms=100, hasil="refusal", node_terakhir="refuse"),
+                turn("t3", total_ms=200, outcome="rejected", last_node="jev_gate"),
+                turn("t4", total_ms=100, outcome="refusal", last_node="refuse"),
                 node("t1", "retrieve", 100),
                 node("t2", "retrieve", 300, status="error"),
                 node("t1", "sanitize", 1),
@@ -139,23 +168,23 @@ class TestRingkasan:
             ]
         )
         r = store.ringkasan(SEKARANG - timedelta(hours=1), SEKARANG, audit=True)
-        assert r["jumlah_giliran"] == 4
-        assert r["giliran_error"] == 1 and r["rasio_error"] == 0.25
-        assert r["diblokir_jev"] == 1 and r["rasio_diblokir_jev"] == 0.25
-        assert r["log_error"] == 2
+        assert r["turn_count"] == 4
+        assert r["error_turn_count"] == 1 and r["error_ratio"] == 0.25
+        assert r["jev_blocked_count"] == 1 and r["jev_blocked_ratio"] == 0.25
+        assert r["error_log_count"] == 2
         # Urutan mengikuti graf, bukan abjad.
         assert [n["node"] for n in r["per_node"]] == ["sanitize", "retrieve"]
         retrieve = r["per_node"][1]
-        assert retrieve["jumlah"] == 2 and retrieve["error"] == 1
+        assert retrieve["count"] == 2 and retrieve["error"] == 1
         assert retrieve["p50_ms"] == 200
-        assert r["titik_keluar"][0] == {"node": "generate", "jumlah": 2}
-        jam_isi = [j for j in r["per_jam"] if j["giliran"]]
-        assert len(jam_isi) == 1 and jam_isi[0]["giliran_error"] == 1
+        assert r["exit_points"][0] == {"node": "generate", "count": 2}
+        jam_isi = [j for j in r["per_hour"] if j["turn_count"]]
+        assert len(jam_isi) == 1 and jam_isi[0]["error_turn_count"] == 1
 
     def test_log_audit_tidak_dihitung_tanpa_hak_audit(self, store):
         store.tulis([log("app.audit", "x", levelno=40), log("app.audit.sub", "y", levelno=40)])
         r = store.ringkasan(SEKARANG - timedelta(hours=1), SEKARANG, audit=False)
-        assert r["log_error"] == 0
+        assert r["error_log_count"] == 0
 
 
 class TestDaftarGiliran:
@@ -172,6 +201,19 @@ class TestDaftarGiliran:
         assert total == 3
         assert [i["turn_id"] for i in items] == ["t1", "t3"]  # terbaru dulu
 
+    def test_filter_hasil_dan_node_terakhir(self, store):
+        store.tulis(
+            [
+                turn("t1"),
+                turn("t2", outcome="rejected", last_node="jev_gate"),
+            ]
+        )
+        total, items = store.daftar_giliran(
+            SEKARANG - timedelta(hours=1), outcome="rejected", last_node="jev_gate"
+        )
+        assert total == 1 and items[0]["turn_id"] == "t2"
+        assert {"timestamp", "outcome", "last_node"} <= items[0].keys()
+
     def test_rentang_waktu(self, store):
         store.tulis([turn("lama", menit_lalu=120), turn("baru")])
         total, _ = store.daftar_giliran(SEKARANG - timedelta(hours=1))
@@ -186,16 +228,20 @@ class TestDetailGiliran:
         store.tulis(
             [
                 turn("t1"),
-                node("t1", "retrieve", 5, urutan=2, detail={"jumlah_dokumen": 3}),
-                node("t1", "sanitize", 1, urutan=1),
+                node("t1", "retrieve", 5, position=2, detail={"document_count": 3}),
+                node("t1", "sanitize", 1, position=1),
                 log("app.rag.gate", "lambat", turn_id="t1"),
                 log("app.audit", "rahasia", turn_id="t1"),
             ]
         )
         d = store.detail_giliran("t1", audit=False)
         assert [n["node"] for n in d["nodes"]] == ["sanitize", "retrieve"]
-        assert d["nodes"][1]["detail"] == {"jumlah_dokumen": 3}
-        assert [x["pesan"] for x in d["logs"]] == ["lambat"]
+        assert d["nodes"][1]["detail"] == {"document_count": 3}
+        assert d["nodes"][1]["position"] == 2
+        kolom = {"started_at", "duration_ms", "error_type", "error_message"}
+        assert kolom <= d["nodes"][1].keys()
+        assert [x["message"] for x in d["logs"]] == ["lambat"]
+        assert d["logs"][0]["location"] == "modul:1"
         assert len(store.detail_giliran("t1", audit=True)["logs"]) == 2
 
 

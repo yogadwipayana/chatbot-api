@@ -32,7 +32,7 @@ from app.schemas.common import Error
 
 router = APIRouter(
     prefix="/api/admin/faq",
-    tags=["admin-tanya-jawab"],
+    tags=["admin-faq"],
     dependencies=[Depends(require_admin)],
     responses={401: {"model": Error}, 403: {"model": Error}},
 )
@@ -90,8 +90,8 @@ async def create_faq(
     with terjemahkan_galat_ai(APA):
         row = await repo.create_entry(
             session,
-            pertanyaan=payload.pertanyaan,
-            jawaban=payload.jawaban,
+            pertanyaan=payload.question,
+            jawaban=payload.answer,
             unit=unit,
             valid_until=payload.valid_until,
             uploaded_by=admin.email,

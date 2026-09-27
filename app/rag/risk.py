@@ -4,9 +4,14 @@ Jawaban pada topik ini SELALU disertai kontak unit resmi. Deteksi berbasis
 kata kunci, bukan LLM: hasilnya harus dapat diaudit dan tidak boleh berubah
 diam-diam saat model diganti.
 
-Daftar kontak di bawah adalah *placeholder*. PRD §13 Fase 0 menetapkan daftar
-topik berisiko tinggi dan kontak resminya sebagai prasyarat blocking -- ganti
-`DEFAULT_CONTACTS` dengan hasil kesepakatan biro akademik sebelum rilis.
+Semua topik saat ini diarahkan ke Front Office INSTIKI -- satu-satunya kontak
+kampus yang tercantum di sumber resmi publik (halaman Contact Us instiki.ac.id,
+Brand Guideline INSTIKI 2022, dan akun resmi kampus). Alamat email per unit
+yang dulu ada di sini (akademik@, keuangan@, kemahasiswaan@) tidak pernah
+tercantum di sumber mana pun; banner yang menyebut alamat yang tidak ada lebih
+buruk daripada tanpa banner. PRD §13 Fase 0 tetap berlaku: ganti entri
+`DEFAULT_CONTACTS` per topik dengan kontak unit yang disepakati biro akademik
+sebelum rilis.
 """
 
 from __future__ import annotations
@@ -81,32 +86,29 @@ _COMPILED: dict[RiskTopic, tuple[re.Pattern[str], ...]] = {
     for topic, patterns in _PATTERNS.items()
 }
 
+KONTAK_FRONT_OFFICE = "Telepon (0361) 256995 / WhatsApp 0813-3896-9832"
+"""Telepon dari halaman Contact Us dan Brand Guideline; WhatsApp dari akun resmi
+kampus ("WhatsApp Front Office"). Alamat: Jl. Tukad Pakerisan No. 97, Denpasar."""
+
+JAM_FRONT_OFFICE = "Senin-Sabtu, 08.00-22.00 WITA"
+"""Jam layanan di halaman Contact Us instiki.ac.id. Artikel resmi "Perdana!
+INSTIKI Terapkan Hybrid Learning" (6 Maret 2022) menyebut jam operasional yang
+sama untuk BAAK, luring maupun daring."""
+
+FRONT_OFFICE = UnitContact(
+    unit="Front Office INSTIKI",
+    jam_layanan=JAM_FRONT_OFFICE,
+    kontak=KONTAK_FRONT_OFFICE,
+)
+
 DEFAULT_CONTACTS: dict[RiskTopic, UnitContact] = {
-    RiskTopic.DEADLINE: UnitContact(
-        unit="Biro Administrasi Akademik",
-        jam_layanan="Senin-Jumat, 08.00-15.00",
-        kontak="akademik@instiki.ac.id",
-    ),
-    RiskTopic.SYARAT_KELULUSAN: UnitContact(
-        unit="Biro Administrasi Akademik",
-        jam_layanan="Senin-Jumat, 08.00-15.00",
-        kontak="akademik@instiki.ac.id",
-    ),
-    RiskTopic.PEMBAYARAN: UnitContact(
-        unit="Biro Keuangan",
-        jam_layanan="Senin-Jumat, 08.00-14.00",
-        kontak="keuangan@instiki.ac.id",
-    ),
-    RiskTopic.SANKSI: UnitContact(
-        unit="Bagian Kemahasiswaan",
-        jam_layanan="Senin-Jumat, 08.00-15.00",
-        kontak="kemahasiswaan@instiki.ac.id",
-    ),
-    RiskTopic.DROP_OUT: UnitContact(
-        unit="Dosen Wali / Bagian Kemahasiswaan",
-        jam_layanan="Senin-Jumat, 08.00-15.00",
-        kontak="kemahasiswaan@instiki.ac.id",
-    ),
+    # Satu entri per topik walau isinya sama: begitu biro akademik menetapkan
+    # kontak per unit, cukup ganti entri topik itu.
+    RiskTopic.DEADLINE: FRONT_OFFICE,
+    RiskTopic.SYARAT_KELULUSAN: FRONT_OFFICE,
+    RiskTopic.PEMBAYARAN: FRONT_OFFICE,
+    RiskTopic.SANKSI: FRONT_OFFICE,
+    RiskTopic.DROP_OUT: FRONT_OFFICE,
 }
 
 

@@ -60,7 +60,7 @@ info:
 
     PRD §8 menyebut FE-2 sebagai komponen paling kritis: verifikasi harus
     semudah satu klik, kalau tidak mahasiswa akan percaya buta. Setiap objek
-    `Citation` membawa `document_id` dan `halaman` yang cukup untuk membuka PDF
+    `Citation` membawa `document_id` dan `page` yang cukup untuk membuka PDF
     tepat di halaman tersebut lewat `GET /api/documents/{document_id}/file`.
 
     ## Privasi
@@ -85,8 +85,8 @@ info:
     token: perubahan level, pemindahan unit, dan penonaktifan akun berlaku saat
     itu juga. Token yang terbit sebelum kata sandi terakhir diganti ditolak.
   contact:
-    name: Biro Administrasi Akademik
-    email: akademik@instiki.ac.id
+    name: Front Office INSTIKI
+    url: https://instiki.ac.id/contact-us
   license:
     name: Internal kampus
 
@@ -99,28 +99,32 @@ servers:
 tags:
   - name: chat
     description: Endpoint mahasiswa. Tanpa login, dibatasi laju, tunduk pada kill switch.
-  - name: unit
+  - name: units
     description: Daftar unit layanan untuk menu chatbot dan isian unit di dashboard.
-  - name: dokumen
+  - name: embed
+    description: Pemeriksaan kunci sematan oleh portal, untuk asisten yang dipasang di situs lain.
+  - name: documents
     description: Akses berkas PDF sumber, untuk verifikasi sitasi (FE-2).
-  - name: sistem
+  - name: health
     description: Health check dan status layanan.
   - name: admin-auth
     description: Autentikasi dashboard admin (AD-1).
-  - name: admin-dokumen
+  - name: admin-documents
     description: Kelola dokumen sumber (AD-2, AD-3).
-  - name: admin-tanya-jawab
+  - name: admin-faq
     description: Entri tanya jawab, sumber jawaban yang diketik langsung tanpa PDF.
-  - name: admin-kualitas
+  - name: admin-quality
     description: Pertanyaan tak terjawab dan uji coba retrieval (AD-4, AD-6).
-  - name: admin-operasional
+  - name: admin-ops
     description: Statistik dan kill switch (AD-5, FR-9).
-  - name: admin-log
+  - name: admin-logs
     description: Log aplikasi dan performa per node pipeline chat, dari SQLite (`logs.md`).
-  - name: admin-pengguna
+  - name: admin-users
     description: Kelola akun dashboard dan level aksesnya (khusus superadmin).
-  - name: admin-unit
+  - name: admin-units
     description: Kelola daftar unit layanan (khusus superadmin).
+  - name: admin-embed-keys
+    description: Kelola kunci sematan situs lain yang memasang asisten (khusus superadmin).
 
 paths:
   # ===========================================================================
@@ -145,6 +149,7 @@ paths:
         `support`.
       parameters:
         - $ref: '#/components/parameters/SessionIdHeader'
+        - $ref: '#/components/parameters/EmbedKeyHeader'
       requestBody:
         required: true
         content:
@@ -152,22 +157,22 @@ paths:
             schema:
               $ref: '#/components/schemas/ChatRequest'
             examples:
-              pertanyaan_pertama:
+              first_question:
                 summary: Pesan pertama, tanpa riwayat
                 value:
                   question: Kapan pengisian KRS semester ganjil dibuka?
                   session_id: 5f2c9a1b-7e04-4d3a-9c88-1a2b3c4d5e6f
-              pertanyaan_lanjutan:
+              follow_up_question:
                 summary: Pertanyaan lanjutan, memicu penulisan ulang query (FR-4)
                 value:
                   question: Kalau telat gimana?
                   session_id: 5f2c9a1b-7e04-4d3a-9c88-1a2b3c4d5e6f
                   history:
                     - role: user
-                      konten: Kapan pengisian KRS dibuka?
+                      content: Kapan pengisian KRS dibuka?
                     - role: assistant
-                      konten: Pengisian KRS dibuka 1-7 Agustus 2025.
-              dengan_unit:
+                      content: Pengisian KRS dibuka 1-7 Agustus 2025.
+              with_unit:
                 summary: Dibatasi pada unit yang dipilih mahasiswa di menu
                 value:
                   question: Bagaimana cara membayar UKT lewat virtual account?
@@ -183,22 +188,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/ChatResponse'
               examples:
-                jawaban:
-                  $ref: '#/components/examples/JawabanNormal'
-                penolakan:
-                  $ref: '#/components/examples/Penolakan'
-                eskalasi:
-                  $ref: '#/components/examples/JawabanEskalasi'
-                dukungan:
-                  $ref: '#/components/examples/Dukungan'
-                sapaan:
-                  $ref: '#/components/examples/Sapaan'
+                answer:
+                  $ref: '#/components/examples/NormalAnswer'
+                refusal:
+                  $ref: '#/components/examples/Refusal'
+                escalation:
+                  $ref: '#/components/examples/EscalatedAnswer'
+                support:
+                  $ref: '#/components/examples/Support'
+                smalltalk:
+                  $ref: '#/components/examples/Smalltalk'
+        '403':
+          $ref: '#/components/responses/InvalidEmbedKey'
         '422':
           $ref: '#/components/responses/ValidationError'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
-          $ref: '#/components/responses/KillSwitchAktif'
+          $ref: '#/components/responses/KillSwitchEngaged'
 
   /api/chat/stream:
     post:
@@ -236,6 +243,7 @@ paths:
         tampilkan sitasinya.
       parameters:
         - $ref: '#/components/parameters/SessionIdHeader'
+        - $ref: '#/components/parameters/EmbedKeyHeader'
       requestBody:
         required: true
         content:
@@ -269,16 +277,18 @@ paths:
                 data: {"text": " 1-7 Agustus 2025"}
 
                 event: message
-                data: {"kind": "answer", "text": "Pengisian KRS dibuka 1-7 Agustus 2025 [Panduan Akademik 2025, hal. 12].", "citations": [{"judul": "Panduan Akademik 2025", "halaman": 12, "document_id": "3f1a...", "file_path": "storage/documents/3f1a....pdf"}], "contacts": [], "escalated": false, "top_score": 0.82}
+                data: {"kind": "answer", "text": "Pengisian KRS dibuka 1-7 Agustus 2025 [Panduan Akademik 2025, hal. 12].", "citations": [{"title": "Panduan Akademik 2025", "page": 12, "document_id": "3f1a...", "file_path": "storage/documents/3f1a....pdf"}], "contacts": [], "escalated": false, "top_score": 0.82}
 
                 event: done
                 data: {}
+        '403':
+          $ref: '#/components/responses/InvalidEmbedKey'
         '422':
           $ref: '#/components/responses/ValidationError'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
-          $ref: '#/components/responses/KillSwitchAktif'
+          $ref: '#/components/responses/KillSwitchEngaged'
 
   /api/feedback:
     post:
@@ -287,7 +297,7 @@ paths:
       operationId: submit_feedback
       x-status: implemented
       description: |
-        FE-5: satu klik, tanpa modal. `catatan` opsional dan hanya muncul bila
+        FE-5: satu klik, tanpa modal. `comment` opsional dan hanya muncul bila
         mahasiswa memilih mengisinya.
 
         Mengirim ulang untuk `message_id` yang sama MENGGANTI umpan balik
@@ -300,6 +310,7 @@ paths:
         berulang kali.
       parameters:
         - $ref: '#/components/parameters/SessionIdHeader'
+        - $ref: '#/components/parameters/EmbedKeyHeader'
       requestBody:
         required: true
         content:
@@ -309,8 +320,10 @@ paths:
       responses:
         '204':
           description: Tercatat. Tidak ada isi balasan -- FE-5 tidak menampilkan konfirmasi.
+        '403':
+          $ref: '#/components/responses/InvalidEmbedKey'
         '404':
-          $ref: '#/components/responses/TidakDitemukan'
+          $ref: '#/components/responses/NotFound'
         '422':
           $ref: '#/components/responses/ValidationError'
         '429':
@@ -340,19 +353,19 @@ paths:
                 items:
                   $ref: '#/components/schemas/Suggestion'
               example:
-                - teks: Kapan pengisian KRS dibuka?
-                - teks: Bagaimana cara mengajukan cuti kuliah?
-                - teks: Apa saja syarat wisuda?
-                - teks: Bagaimana cara minta surat keterangan aktif kuliah?
+                - text: Kapan pengisian KRS dibuka?
+                - text: Bagaimana cara mengajukan cuti kuliah?
+                - text: Apa saja syarat wisuda?
+                - text: Bagaimana cara minta surat keterangan aktif kuliah?
 
   /api/units:
     get:
-      tags: [unit]
+      tags: [units]
       summary: Daftar unit layanan
       operationId: list_units
       x-status: implemented
       description: |
-        Isi menu pilihan unit di chatbot. `nama` dikirim kembali apa adanya
+        Isi menu pilihan unit di chatbot. `name` dikirim kembali apa adanya
         sebagai `unit` pada `POST /api/chat` dan `/api/chat/stream`.
 
         Hanya unit aktif, dalam urutan tampil yang diatur di tabel `units`.
@@ -371,16 +384,16 @@ paths:
                 items:
                   $ref: '#/components/schemas/UnitOut'
               example:
-                - nama: BAAK
-                  deskripsi: null
-                - nama: FO
-                  deskripsi: Front Office
-                - nama: Keuangan
-                  deskripsi: null
+                - name: BAAK
+                  description: null
+                - name: FO
+                  description: Front Office
+                - name: Keuangan
+                  description: null
 
   /api/faq/questions:
     get:
-      tags: [unit]
+      tags: [units]
       summary: Pertanyaan siap klik untuk satu topik
       operationId: list_faq_questions
       x-status: implemented
@@ -402,7 +415,7 @@ paths:
           in: query
           required: false
           description: |
-            `nama` dari `GET /api/units`, tanpa peduli huruf besar. Kosong =
+            `name` dari `GET /api/units`, tanpa peduli huruf besar. Kosong =
             semua unit. Nama yang tidak terdaftar dijawab 422.
           schema: { type: [string, 'null'], maxLength: 200 }
         - name: limit
@@ -419,14 +432,54 @@ paths:
                 items:
                   $ref: '#/components/schemas/FaqQuestion'
               example:
-                - pertanyaan: Bagaimana cara membayar UKT lewat virtual account?
-                - pertanyaan: Kapan batas akhir pembayaran UKT semester ganjil?
+                - question: Bagaimana cara membayar UKT lewat virtual account?
+                - question: Kapan batas akhir pembayaran UKT semester ganjil?
         '422':
           $ref: '#/components/responses/ValidationError'
 
+  /api/embed/keys/{key}:
+    get:
+      tags: [embed]
+      summary: Situs yang boleh memuat panel untuk satu kunci sematan
+      operationId: get_embed_key
+      x-status: implemented
+      description: |
+        Dipanggil SERVER portal (`client/src/proxy.ts`) setiap kali halaman
+        `/embed?key=...` dimuat, bukan oleh peramban. `allowed_origins` menjadi
+        header `Content-Security-Policy: frame-ancestors` halaman itu, sehingga
+        peramban sendiri yang menolak menampilkan panel di situs lain. Daftar
+        kosong = situs mana pun.
+
+        Perubahan dari dashboard berlaku saat panel dibuka berikutnya, tanpa
+        build ulang portal.
+
+        Publik: kunci tertulis di kode sumber situs penyemat, dan daftar situsnya
+        dapat dilihat siapa pun yang membuka situs-situs itu. Tidak tunduk pada
+        kill switch -- panelnya tetap dimuat dan menyampaikan pesan penutupan
+        saat mahasiswa bertanya.
+      parameters:
+        - name: key
+          in: path
+          required: true
+          description: '`emb_` + 24 karakter alfanumerik, dari atribut `data-key` di `embed.js`.'
+          schema: { type: string }
+      responses:
+        '200':
+          description: Kunci aktif
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmbedKeyInfo' }
+              example:
+                allowed_origins: [https://pmb.instiki.ac.id, https://www.instiki.ac.id]
+        '404':
+          description: Kunci tidak dikenal, salah bentuk, atau sudah dinonaktifkan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /api/documents/{document_id}/file:
     get:
-      tags: [dokumen]
+      tags: [documents]
       summary: Unduh atau tampilkan PDF sumber
       operationId: get_document_file
       x-status: implemented
@@ -479,14 +532,14 @@ paths:
               description: Presigned URL berumur pendek, atau URL publik bucket.
               schema: { type: string, format: uri }
         '404':
-          $ref: '#/components/responses/TidakDitemukan'
+          $ref: '#/components/responses/NotFound'
 
   # ===========================================================================
   # SISTEM
   # ===========================================================================
   /health:
     get:
-      tags: [sistem]
+      tags: [health]
       summary: Health check
       operationId: health
       x-status: implemented
@@ -552,7 +605,7 @@ paths:
 
   /api/admin/documents:
     get:
-      tags: [admin-dokumen]
+      tags: [admin-documents]
       summary: Daftar dokumen
       operationId: list_documents
       x-status: implemented
@@ -566,7 +619,7 @@ paths:
         sistem menyebarkan info kedaluwarsa secara aktif. Badge ini mitigasinya,
         jadi jangan sembunyikan di balik filter.
 
-        Staf/dosen hanya melihat dokumen unitnya; `total` dan `jumlah_stale` pun
+        Staf/dosen hanya melihat dokumen unitnya; `total` dan `stale_count` pun
         dihitung atas unit itu. Membuka, mengubah, menghapus, atau mengunggah
         dokumen unit lain dijawab 403. Nama unit dibandingkan tanpa peduli huruf
         besar dan spasi berlebih.
@@ -588,12 +641,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/DocumentPage'
         '401':
-          $ref: '#/components/responses/TidakBerwenang'
+          $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Terlarang'
+          $ref: '#/components/responses/Forbidden'
 
     post:
-      tags: [admin-dokumen]
+      tags: [admin-documents]
       summary: Unggah dokumen baru
       operationId: upload_document
       x-status: implemented
@@ -604,7 +657,8 @@ paths:
         ekstraksi, chunking, embedding, simpan -- semuanya dalam satu transaksi.
         Dokumen yang gagal di tengah jalan tidak meninggalkan chunk yatim.
 
-        PDF hasil scan tanpa lapisan teks ditolak dengan 422 (FR-1). Ini bukan
+        PDF tanpa lapisan teks (hasil scan, atau dicetak dengan Print to PDF yang
+        mengubah huruf menjadi garis gambar) ditolak dengan 422 (FR-1). Ini bukan
         kerewelan: chunk kosong tetap masuk indeks dan tidak pernah terambil,
         sehingga dokumen tampak terpasang padahal tidak berfungsi.
 
@@ -626,9 +680,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/IngestionResult'
         '401':
-          $ref: '#/components/responses/TidakBerwenang'
+          $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Terlarang'
+          $ref: '#/components/responses/Forbidden'
         '502':
           description: |
             Layanan luar gagal: penyimpanan dokumen atau API AI. `detail` berisi
@@ -650,13 +704,14 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
                 pdf_scan:
-                  summary: PDF hasil scan (FR-1)
+                  summary: PDF tanpa lapisan teks -- hasil scan atau Print to PDF (FR-1)
                   value:
                     detail: >-
-                      'Panduan Akademik 2025.pdf' tampaknya hasil scan tanpa lapisan
-                      teks (85% halaman kosong). Jalankan OCR terlebih dahulu, atau
-                      unggah versi digital aslinya.
-                kosong:
+                      'Panduan Akademik 2025.pdf' tidak memiliki lapisan teks (hasil
+                      scan atau dicetak dengan Print to PDF); 85% halamannya kosong.
+                      Simpan ulang dari aplikasi aslinya dengan Save as PDF, atau
+                      jalankan OCR bila dokumennya hasil scan.
+                empty:
                   summary: Tidak menghasilkan satu chunk pun
                   value:
                     detail: "'Lampiran.pdf' tidak menghasilkan satu chunk pun"
@@ -668,7 +723,7 @@ paths:
         required: true
         schema: { type: string, format: uuid }
     get:
-      tags: [admin-dokumen]
+      tags: [admin-documents]
       summary: Detail satu dokumen
       operationId: get_document
       x-status: implemented
@@ -680,12 +735,12 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Document' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
-        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
     patch:
-      tags: [admin-dokumen]
+      tags: [admin-documents]
       summary: Perbarui metadata atau status aktif
       operationId: update_document
       x-status: implemented
@@ -699,7 +754,7 @@ paths:
         Menonaktifkan dokumen TIDAK menghapus chunk-nya, sehingga dapat
         dikembalikan bila ternyata keliru.
 
-        `updated_at` diperbarui saat `judul`, `unit`, `tahun_berlaku`, atau
+        `updated_at` diperbarui saat `title`, `unit`, `effective_year`, atau
         `valid_until` berubah -- itu dianggap peninjauan dan menghapus badge
         usia AD-2. Mengubah `is_active` saja tidak: menyalakan ulang dokumen
         lama tidak boleh menghapus peringatannya.
@@ -714,13 +769,13 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Document' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
-        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/ValidationError' }
 
     delete:
-      tags: [admin-dokumen]
+      tags: [admin-documents]
       summary: Hapus dokumen beserta seluruh chunk-nya
       operationId: delete_document
       x-status: implemented
@@ -735,13 +790,13 @@ paths:
       responses:
         '204':
           description: Terhapus
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
-        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/admin/documents/{document_id}/chunks:
     get:
-      tags: [admin-dokumen]
+      tags: [admin-documents]
       summary: Pratinjau hasil chunking
       operationId: list_document_chunks
       x-status: implemented
@@ -766,13 +821,13 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/Chunk' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
-        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/admin/faq:
     get:
-      tags: [admin-tanya-jawab]
+      tags: [admin-faq]
       summary: Daftar entri tanya jawab
       operationId: list_faq
       x-status: implemented
@@ -784,7 +839,7 @@ paths:
 
         Chatbot memperlakukannya persis seperti dokumen: ikut terambil retrieval
         hibrida, ikut berhenti dipakai saat `valid_until` lewat (FR-2), dan ikut
-        menjadi kartu sitasi -- dengan `jenis: tanya_jawab`, sehingga frontend
+        menjadi kartu sitasi -- dengan `type: tanya_jawab`, sehingga frontend
         tahu tidak ada berkas yang bisa dibuka.
 
         Inilah jalan tercepat menutup pertanyaan tak terjawab (AD-4): tidak
@@ -804,11 +859,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/FaqPage' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
     post:
-      tags: [admin-tanya-jawab]
+      tags: [admin-faq]
       summary: Tambah entri tanya jawab
       operationId: create_faq
       x-status: implemented
@@ -835,8 +890,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/FaqEntry' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '502':
           description: |
@@ -853,19 +908,19 @@ paths:
         required: true
         schema: { type: string, format: uuid }
     patch:
-      tags: [admin-tanya-jawab]
+      tags: [admin-faq]
       summary: Perbarui entri tanya jawab
       operationId: update_faq
       x-status: implemented
       x-min-role: staf
       security: [{ bearerAuth: [] }]
       description: |
-        Mengubah `pertanyaan` atau `jawaban` membuang chunk lama dan menghitung
+        Mengubah `question` atau `answer` membuang chunk lama dan menghitung
         ulang embedding-nya dalam transaksi yang sama. Indeks yang masih memuat
         kalimat versi lama akan menjawab mahasiswa dengan aturan yang sudah
         dicabut -- persis risiko yang diangkat PRD §12.
 
-        `updated_at` diperbarui saat isi berubah (`pertanyaan`, `jawaban`,
+        `updated_at` diperbarui saat isi berubah (`question`, `answer`,
         `unit`, `valid_until`), tetapi tidak saat hanya `is_active` yang
         berubah -- sama seperti dokumen.
       requestBody:
@@ -879,9 +934,9 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/FaqEntry' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
-        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '502':
           description: Layanan AI gagal saat mengindeks ulang; entri tidak berubah.
@@ -890,7 +945,7 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
 
     delete:
-      tags: [admin-tanya-jawab]
+      tags: [admin-faq]
       summary: Hapus entri tanya jawab
       operationId: delete_faq
       x-status: implemented
@@ -903,13 +958,13 @@ paths:
       responses:
         '204':
           description: Terhapus
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
-        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/admin/unanswered:
     get:
-      tags: [admin-kualitas]
+      tags: [admin-quality]
       summary: Pertanyaan tak terjawab, dikelompokkan
       operationId: list_unanswered
       x-status: implemented
@@ -932,7 +987,7 @@ paths:
           in: query
           description: Kosongkan untuk menampilkan keduanya.
           schema: { type: boolean }
-        - name: sejak
+        - name: since
           in: query
           schema: { type: string, format: date }
         - $ref: '#/components/parameters/Limit'
@@ -949,17 +1004,17 @@ paths:
                 - ids:
                     - 0b6f2c1e-3a4d-4e5f-9a8b-7c6d5e4f3a2b
                     - 1c7a3d2f-4b5e-4f60-8b9c-8d7e6f5a4b3c
-                  contoh_pertanyaan: Bagaimana cara mengurus surat keterangan lulus?
-                  jumlah: 12
-                  top_score_rata2: 0.21
-                  terakhir_ditanyakan: '2026-09-09T14:22:11Z'
+                  sample_question: Bagaimana cara mengurus surat keterangan lulus?
+                  count: 12
+                  avg_top_score: 0.21
+                  last_asked_at: '2026-09-09T14:22:11Z'
                   resolved: false
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/admin/unanswered/{unanswered_id}:
     patch:
-      tags: [admin-kualitas]
+      tags: [admin-quality]
       summary: Tandai pertanyaan sudah ditindaklanjuti
       operationId: resolve_unanswered
       x-status: implemented
@@ -985,13 +1040,13 @@ paths:
             schema: { $ref: '#/components/schemas/UnansweredUpdate' }
       responses:
         '204': { description: Tersimpan }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
-        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/admin/feedback:
     get:
-      tags: [admin-kualitas]
+      tags: [admin-quality]
       summary: Umpan balik mahasiswa atas jawaban
       operationId: list_feedback
       x-status: implemented
@@ -1006,8 +1061,8 @@ paths:
         ditelusuri ke pertanyaan yang memicunya, lalu diuji ulang lewat
         `POST /api/admin/test-query`.
 
-        `catatan` jarang terisi: FE-5 satu klik tanpa modal, jadi sebagian besar
-        baris hanya berupa jempol. `pertanyaan` diambil dari pesan mahasiswa
+        `comment` jarang terisi: FE-5 satu klik tanpa modal, jadi sebagian besar
+        baris hanya berupa jempol. `question` diambil dari pesan mahasiswa
         terakhir sebelum jawaban itu di percakapan yang sama; untuk pertanyaan
         sensitif (FR-7) yang tersimpan adalah penanda tetap, bukan kalimat
         aslinya.
@@ -1018,7 +1073,7 @@ paths:
           in: query
           description: Kosongkan untuk menampilkan keduanya.
           schema: { type: boolean }
-        - name: sejak
+        - name: since
           in: query
           schema: { type: string, format: date }
         - $ref: '#/components/parameters/Limit'
@@ -1034,21 +1089,21 @@ paths:
                   - id: 7d1e4b2a-9c3f-4e58-b0a7-1f2e3d4c5b6a
                     message_id: 9c3e1a44-6b2d-4f51-8a70-2d9b5c1e7f03
                     helpful: false
-                    catatan: Jawabannya tidak menyebut biaya cetaknya
+                    comment: Jawabannya tidak menyebut biaya cetaknya
                     created_at: '2026-09-09T14:25:03Z'
-                    pertanyaan: Berapa biaya legalisir ijazah?
-                    jawaban: Legalisir ijazah diurus di Biro Administrasi Akademik [Panduan Akademik 2025, hal. 12].
+                    question: Berapa biaya legalisir ijazah?
+                    answer: Legalisir ijazah diurus di Biro Administrasi Akademik [Panduan Akademik 2025, hal. 12].
                     kind: answer
                     top_score: 0.62
                 total: 18
-                jumlah_positif: 124
-                jumlah_negatif: 18
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+                positive_count: 124
+                negative_count: 18
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/admin/test-query:
     post:
-      tags: [admin-kualitas]
+      tags: [admin-quality]
       summary: Uji coba retrieval, tampilkan chunk dan skornya
       operationId: admin_test_query
       x-status: implemented
@@ -1077,32 +1132,32 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TestQueryResponse' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
 
   /api/admin/stats:
     get:
-      tags: [admin-operasional]
+      tags: [admin-ops]
       summary: Statistik penggunaan dan biaya
       operationId: admin_stats
       x-status: implemented
       x-min-role: admin
       security: [{ bearerAuth: [] }]
       description: |
-        AD-5. Termasuk `biaya_usd_berjalan` -- PRD §12 menandai biaya API
+        AD-5. Termasuk `running_cost_usd` -- PRD §12 menandai biaya API
         membengkak sebagai risiko dengan dampak layanan mati mendadak.
 
-        `total_percakapan` disajikan sebagai konteks, bukan sebagai ukuran
+        `total_conversations` disajikan sebagai konteks, bukan sebagai ukuran
         keberhasilan. PRD §3 menetapkannya sebagai anti-metrik.
 
         Tanpa parameter: 30 hari terakhir sampai hari ini. Hari dihitung menurut
         `TIMEZONE` server, bukan UTC. Rentang paling panjang 366 hari.
       parameters:
-        - name: sejak
+        - name: since
           in: query
           schema: { type: string, format: date }
-        - name: sampai
+        - name: until
           in: query
           schema: { type: string, format: date }
       responses:
@@ -1111,8 +1166,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Stats' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '422':
           description: Rentang tanggal tidak sah (terbalik atau terlalu panjang)
           content:
@@ -1121,7 +1176,7 @@ paths:
 
   /api/admin/costs:
     get:
-      tags: [admin-operasional]
+      tags: [admin-ops]
       summary: Rincian biaya dan token
       operationId: admin_costs
       x-status: implemented
@@ -1129,10 +1184,10 @@ paths:
       security: [{ bearerAuth: [] }]
       description: Menghitung penggunaan token dan estimasi biaya dari kolom `messages.meta`.
       parameters:
-        - name: sejak
+        - name: since
           in: query
           schema: { type: string, format: date }
-        - name: sampai
+        - name: until
           in: query
           schema: { type: string, format: date }
       responses:
@@ -1141,8 +1196,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Costs' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '422':
           description: Rentang tanggal tidak sah
           content:
@@ -1151,7 +1206,7 @@ paths:
 
   /api/admin/logs/summary:
     get:
-      tags: [admin-log]
+      tags: [admin-logs]
       summary: Ringkasan performa pipeline chat
       operationId: log_summary
       x-status: implemented
@@ -1160,17 +1215,17 @@ paths:
       description: |
         Dibaca dari SQLite log (`LOG_DB_PATH`), bukan Postgres. KPI giliran, p50/p95
         durasi per node LangGraph, distribusi titik keluar, dan tren per jam (UTC).
-        Untuk role admin, log `app.audit` tidak ikut dihitung di `log_error`.
+        Untuk role admin, log `app.audit` tidak ikut dihitung di `error_log_count`.
       parameters:
-        - $ref: '#/components/parameters/RentangLog'
+        - $ref: '#/components/parameters/LogRange'
       responses:
         '200':
           description: Ringkasan
           content:
             application/json:
               schema: { $ref: '#/components/schemas/LogSummary' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '422':
           description: Parameter tidak sah
           content:
@@ -1179,7 +1234,7 @@ paths:
 
   /api/admin/logs/turns:
     get:
-      tags: [admin-log]
+      tags: [admin-logs]
       summary: Daftar giliran chat
       operationId: list_turns
       x-status: implemented
@@ -1187,13 +1242,13 @@ paths:
       security: [{ bearerAuth: [] }]
       description: Terbaru lebih dulu. Tanpa teks pertanyaan/jawaban; buka lewat `message_id`.
       parameters:
-        - $ref: '#/components/parameters/RentangLog'
-        - { name: hasil, in: query, schema: { type: string } }
+        - $ref: '#/components/parameters/LogRange'
+        - { name: outcome, in: query, schema: { type: string } }
         - name: status
           in: query
           schema: { type: string, enum: [ok, error, dibatalkan] }
         - { name: unit, in: query, schema: { type: string } }
-        - { name: node_terakhir, in: query, schema: { type: string } }
+        - { name: last_node, in: query, schema: { type: string } }
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Offset'
       responses:
@@ -1202,8 +1257,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TurnPage' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '422':
           description: Parameter tidak sah
           content:
@@ -1212,7 +1267,7 @@ paths:
 
   /api/admin/logs/turns/{turn_id}:
     get:
-      tags: [admin-log]
+      tags: [admin-logs]
       summary: Detail satu giliran chat
       operationId: get_turn
       x-status: implemented
@@ -1227,13 +1282,13 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TurnDetail' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
-        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/admin/logs/app:
     get:
-      tags: [admin-log]
+      tags: [admin-logs]
       summary: Log aplikasi
       operationId: list_app_logs
       x-status: implemented
@@ -1243,7 +1298,7 @@ paths:
         Log Python logger `app.*`. Log `app.audit` hanya untuk superadmin; role admin
         yang memfilter `logger=app.audit` mendapat daftar kosong, bukan 403.
       parameters:
-        - $ref: '#/components/parameters/RentangLog'
+        - $ref: '#/components/parameters/LogRange'
         - name: level
           in: query
           description: Level minimum.
@@ -1264,8 +1319,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AppLogPage' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '422':
           description: Parameter tidak sah
           content:
@@ -1274,7 +1329,7 @@ paths:
 
   /api/admin/kill-switch:
     get:
-      tags: [admin-operasional]
+      tags: [admin-ops]
       summary: Status kill switch
       operationId: get_kill_switch
       x-status: implemented
@@ -1287,11 +1342,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/KillSwitchState' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
     post:
-      tags: [admin-operasional]
+      tags: [admin-ops]
       summary: Nyalakan atau matikan kill switch
       operationId: set_kill_switch
       x-status: implemented
@@ -1301,7 +1356,7 @@ paths:
         FR-9. Mematikan layanan chat dengan cepat saat insiden, tanpa menunggu
         deploy ulang.
 
-        `alasan` wajib diisi saat menyalakan: insiden tanpa catatan alasan tidak
+        `reason` wajib diisi saat menyalakan: insiden tanpa catatan alasan tidak
         bisa diaudit setelahnya. Dashboard admin tetap hidup saat kill switch
         aktif -- justru saat itulah admin perlu masuk untuk melihat apa yang
         terjadi.
@@ -1318,37 +1373,37 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/KillSwitchState' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
 
   /api/admin/config:
     get:
-      tags: [admin-operasional]
+      tags: [admin-ops]
       summary: Setelan retrieval dan chunking yang berlaku
       operationId: get_runtime_config
       x-status: implemented
       x-min-role: superadmin
       security: [{ bearerAuth: [] }]
       description: |
-        Parameter FR-1/FR-2/FR-3 yang dipakai layanan saat ini (`nilai`), beserta
-        nilai `.env` server sebagai pembandingnya (`nilai_env`) dan daftar
-        parameter yang sedang ditimpa dari dashboard (`diubah`).
+        Parameter FR-1/FR-2/FR-3 yang dipakai layanan saat ini (`values`), beserta
+        nilai `.env` server sebagai pembandingnya (`env_values`) dan daftar
+        parameter yang sedang ditimpa dari dashboard (`overridden`).
 
         Nama model dan endpoint ikut dikirim sebagai keterangan saja -- mengganti
         model embedding menuntut re-index seluruh dokumen, jadi ia tetap hanya
-        lewat `.env`. Kunci API tidak pernah dikirim; hanya `api_key_terisi`.
+        lewat `.env`. Kunci API tidak pernah dikirim; hanya `api_key_set`.
       responses:
         '200':
           description: Konfigurasi
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RuntimeConfig' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
     patch:
-      tags: [admin-operasional]
+      tags: [admin-ops]
       summary: Ubah setelan retrieval dan chunking
       operationId: update_runtime_config
       x-status: implemented
@@ -1377,8 +1432,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RuntimeConfig' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '422':
           description: Nilai di luar batas, atau kombinasinya tidak sah
           content:
@@ -1386,7 +1441,7 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
 
     delete:
-      tags: [admin-operasional]
+      tags: [admin-ops]
       summary: Kembalikan seluruh setelan ke nilai .env
       operationId: reset_runtime_config
       x-status: implemented
@@ -1403,8 +1458,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RuntimeConfig' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/admin/me:
     get:
@@ -1424,7 +1479,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AdminUser' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/admin/me/password:
     post:
@@ -1454,13 +1509,13 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
   /api/admin/users:
     get:
-      tags: [admin-pengguna]
+      tags: [admin-users]
       summary: Daftar akun dashboard
       operationId: list_users
       x-status: implemented
@@ -1474,11 +1529,11 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/AdminUser' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
     post:
-      tags: [admin-pengguna]
+      tags: [admin-users]
       summary: Buat akun dashboard
       operationId: create_user
       x-status: implemented
@@ -1486,7 +1541,7 @@ paths:
       security: [{ bearerAuth: [] }]
       description: |
         Kata sandi dibangkitkan server dan dikembalikan SEKALI sebagai
-        `password_sementara`. Superadmin tidak memilih kata sandi orang lain,
+        `temporary_password`. Superadmin tidak memilih kata sandi orang lain,
         sehingga tidak ada yang mengetahui kata sandi akhir selain pemiliknya
         setelah ia menggantinya.
       requestBody:
@@ -1500,8 +1555,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AdminUserCreated' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '409':
           description: Email sudah dipakai, atau level staf tanpa unit
           content:
@@ -1516,7 +1571,7 @@ paths:
         required: true
         schema: { type: string, format: uuid }
     patch:
-      tags: [admin-pengguna]
+      tags: [admin-users]
       summary: Ubah nama, level, unit, atau status aktif
       operationId: update_user
       x-status: implemented
@@ -1537,9 +1592,9 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AdminUser' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
-        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: Melanggar aturan akun (lihat deskripsi)
           content:
@@ -1548,7 +1603,7 @@ paths:
         '422': { $ref: '#/components/responses/ValidationError' }
 
     delete:
-      tags: [admin-pengguna]
+      tags: [admin-users]
       summary: Hapus akun dashboard
       operationId: delete_user
       x-status: implemented
@@ -1561,9 +1616,9 @@ paths:
       responses:
         '204':
           description: Terhapus
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
-        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: Menghapus diri sendiri, atau superadmin aktif terakhir
           content:
@@ -1572,7 +1627,7 @@ paths:
 
   /api/admin/users/{user_id}/reset-password:
     post:
-      tags: [admin-pengguna]
+      tags: [admin-users]
       summary: Atur ulang kata sandi akun lain
       operationId: reset_user_password
       x-status: implemented
@@ -1593,9 +1648,9 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TemporaryPassword' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
-        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: Mengatur ulang akun sendiri
           content:
@@ -1604,7 +1659,7 @@ paths:
 
   /api/admin/units:
     get:
-      tags: [admin-unit]
+      tags: [admin-units]
       summary: Daftar semua unit layanan
       operationId: list_admin_units
       x-status: implemented
@@ -1622,11 +1677,11 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/AdminUnit' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
     post:
-      tags: [admin-unit]
+      tags: [admin-units]
       summary: Tambah unit layanan
       operationId: create_unit
       x-status: implemented
@@ -1634,7 +1689,7 @@ paths:
       security: [{ bearerAuth: [] }]
       description: |
         Unit baru langsung aktif: tampil di menu chatbot dan dapat dipilih untuk
-        dokumen, entri tanya jawab, dan akun staf. `urutan` kosong = paling akhir.
+        dokumen, entri tanya jawab, dan akun staf. `sort_order` kosong = paling akhir.
       requestBody:
         required: true
         content:
@@ -1646,8 +1701,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AdminUnit' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '409':
           description: Nama sama dengan unit lain (huruf besar-kecil dan spasi tidak dibedakan)
           content:
@@ -1655,9 +1710,9 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '422': { $ref: '#/components/responses/ValidationError' }
 
-  /api/admin/units/{nama}:
+  /api/admin/units/{name}:
     patch:
-      tags: [admin-unit]
+      tags: [admin-units]
       summary: Ubah nama, deskripsi, urutan, atau status aktif unit
       operationId: update_unit
       x-status: implemented
@@ -1669,7 +1724,7 @@ paths:
         menyembunyikan unit dari menu chatbot dan dari pilihan isian baru,
         sementara dokumen dan akunnya tetap ada.
       parameters:
-        - name: nama
+        - name: name
           in: path
           required: true
           description: Ejaan resmi, persis seperti di `GET /api/admin/units`.
@@ -1685,15 +1740,114 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AdminUnit' }
-        '401': { $ref: '#/components/responses/TidakBerwenang' }
-        '403': { $ref: '#/components/responses/Terlarang' }
-        '404': { $ref: '#/components/responses/TidakDitemukan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: Nama baru sama dengan unit lain
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '422': { $ref: '#/components/responses/ValidationError' }
+
+  /api/admin/embed-keys:
+    get:
+      tags: [admin-embed-keys]
+      summary: Daftar kunci sematan
+      operationId: list_embed_keys
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Semua kunci, termasuk yang nonaktif, urut dari yang paling lama dibuat,
+        beserta jumlah pertanyaan 30 hari terakhir dan waktu pertanyaan terakhir
+        dari situs itu.
+      responses:
+        '200':
+          description: Semua kunci
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/EmbedKey' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+    post:
+      tags: [admin-embed-keys]
+      summary: Buat kunci sematan untuk satu situs
+      operationId: create_embed_key
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Kuncinya dibuat server dan langsung aktif. Balasan membawa
+        `embed_code` siap tempel.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmbedKeyCreate' }
+      responses:
+        '201':
+          description: Kunci dibuat
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmbedKey' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /api/admin/embed-keys/{key}:
+    parameters:
+      - name: key
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [admin-embed-keys]
+      summary: Ubah nama, daftar situs, atau status aktif kunci sematan
+      operationId: update_embed_key
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Berlaku saat panel dibuka berikutnya. Kunci yang dinonaktifkan juga
+        menolak pertanyaan dari panel yang sedang terbuka (403). Kuncinya sendiri
+        tidak berubah, jadi situs penyemat tidak perlu mengganti kodenya.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmbedKeyUpdate' }
+      responses:
+        '200':
+          description: Tersimpan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmbedKey' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+    delete:
+      tags: [admin-embed-keys]
+      summary: Hapus kunci sematan secara permanen
+      operationId: delete_embed_key
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Situs yang masih memasangnya harus diberi kunci baru. Percakapan dari
+        situs itu tetap tersimpan, hanya tidak lagi tertaut ke kunci mana pun.
+        Untuk menghentikan sementara, nonaktifkan lewat PATCH.
+      responses:
+        '204':
+          description: Terhapus
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
 # =============================================================================
 components:
@@ -1716,6 +1870,16 @@ components:
         sama dengan `session_id` di body.
       schema: { type: string, minLength: 8, maxLength: 128 }
 
+    EmbedKeyHeader:
+      name: X-Embed-Key
+      in: header
+      required: false
+      description: |
+        Kunci situs penyemat, hanya dikirim panel `/embed` portal yang dimuat
+        situs lain. Tanpa header = permintaan dari portal sendiri. Kunci yang
+        tidak dikenal atau sudah dinonaktifkan dijawab 403.
+      schema: { type: string, maxLength: 64 }
+
     Limit:
       name: limit
       in: query
@@ -1726,7 +1890,7 @@ components:
       in: query
       schema: { type: integer, minimum: 0, default: 0 }
 
-    RentangLog:
+    LogRange:
       name: range
       in: query
       description: Rentang waktu. 7 hari adalah batas atas karena masa simpan log.
@@ -1740,7 +1904,11 @@ components:
           schema: { $ref: '#/components/schemas/HTTPValidationError' }
 
     RateLimited:
-      description: Melebihi batas laju (FR-9)
+      description: |
+        Melebihi batas laju (FR-9): per IP, per `X-Session-Id`, atau per kunci
+        sematan -- mana pun yang lebih dulu penuh (`RATE_LIMIT_*` di `.env`).
+        Permintaan yang ditolak tidak ikut menghabiskan jatah. Menilai jawaban
+        (`/api/feedback`) punya jatah sendiri, terpisah dari bertanya.
       headers:
         Retry-After:
           description: Detik sampai boleh mencoba lagi.
@@ -1751,19 +1919,20 @@ components:
           example:
             detail: Terlalu banyak pertanyaan dalam waktu singkat. Coba lagi sebentar lagi.
 
-    KillSwitchAktif:
+    KillSwitchEngaged:
       description: |
-        Layanan chat dimatikan operator (FR-9). Frontend menampilkan `detail`
-        apa adanya -- kalimatnya sudah memuat kontak manusia sebagai jalan keluar.
+        Layanan chat dimatikan operator (FR-9), atau otomatis karena pertanyaan
+        hari ini melewati `CHAT_DAILY_LIMIT`. Frontend menampilkan `detail` apa
+        adanya -- kalimatnya sudah memuat kontak manusia sebagai jalan keluar.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
           example:
             detail: >-
-              Layanan chat sedang dinonaktifkan sementara. Silakan hubungi Biro
-              Administrasi Akademik pada jam kerja.
+              Layanan chat sedang dinonaktifkan sementara. Silakan hubungi Front
+              Office INSTIKI: Telepon (0361) 256995 / WhatsApp 0813-3896-9832.
 
-    TidakBerwenang:
+    Unauthorized:
       description: |
         Token tidak ada, tidak valid, atau kedaluwarsa; akun sudah dinonaktifkan
         atau dihapus; atau kata sandi sudah diganti sejak token terbit. Frontend
@@ -1772,7 +1941,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
 
-    Terlarang:
+    Forbidden:
       description: |
         Level akun di bawah `x-min-role` operasi ini, atau staf/dosen menyentuh
         dokumen unit lain. Sesi tetap berlaku; `detail` siap tampil.
@@ -1780,14 +1949,26 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
 
-    TidakDitemukan:
+    NotFound:
       description: Sumber daya tidak ditemukan
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
 
+    InvalidEmbedKey:
+      description: |
+        `X-Embed-Key` dikirim tetapi kuncinya tidak dikenal atau sudah
+        dinonaktifkan dari dashboard. Frontend menampilkan `detail` apa adanya.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            detail: >-
+              Asisten tidak tersedia di situs ini. Silakan hubungi pengelola situs,
+              atau ajukan pertanyaan lewat portal akademik.
+
   examples:
-    JawabanNormal:
+    NormalAnswer:
       summary: Jawaban bersumber dokumen
       value:
         kind: answer
@@ -1796,15 +1977,15 @@ components:
           Pengisian KRS semester ganjil dibuka pada 1-7 Agustus 2025
           [Panduan Akademik 2025, hal. 12].
         citations:
-          - judul: Panduan Akademik 2025
-            halaman: 12
+          - title: Panduan Akademik 2025
+            page: 12
             document_id: 3f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8
             file_path: storage/documents/3f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8.pdf
         contacts: []
         escalated: false
         top_score: 0.82
 
-    JawabanEskalasi:
+    EscalatedAnswer:
       summary: Topik berisiko tinggi -- jawaban plus banner kontak (FR-6, FE-3)
       value:
         kind: answer
@@ -1813,21 +1994,18 @@ components:
           Batas akhir pembayaran UKT semester ganjil adalah 25 Agustus 2025
           [Panduan Akademik 2025, hal. 30].
         citations:
-          - judul: Panduan Akademik 2025
-            halaman: 30
+          - title: Panduan Akademik 2025
+            page: 30
             document_id: 3f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8
             file_path: storage/documents/3f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8.pdf
         contacts:
-          - unit: Biro Administrasi Akademik
-            jam_layanan: Senin-Jumat, 08.00-15.00
-            kontak: akademik@instiki.ac.id
-          - unit: Biro Keuangan
-            jam_layanan: Senin-Jumat, 08.00-14.00
-            kontak: keuangan@instiki.ac.id
+          - unit: Front Office INSTIKI
+            service_hours: Senin-Sabtu, 08.00-22.00 WITA
+            contact: Telepon (0361) 256995 / WhatsApp 0813-3896-9832
         escalated: true
         top_score: 0.77
 
-    Penolakan:
+    Refusal:
       summary: Retrieval terlalu lemah -- LLM tidak dipanggil (FR-3)
       value:
         kind: refusal
@@ -1835,16 +2013,16 @@ components:
         text: |-
           Maaf, saya tidak menemukan informasi ini di dokumen resmi yang saya miliki. Supaya Anda tidak mendapat jawaban yang keliru, silakan tanyakan langsung ke:
 
-          - Biro Administrasi Akademik (Senin-Jumat, 08.00-15.00): akademik@instiki.ac.id
+          - Front Office INSTIKI (Senin-Sabtu, 08.00-22.00 WITA): Telepon (0361) 256995 / WhatsApp 0813-3896-9832
         citations: []
         contacts:
-          - unit: Biro Administrasi Akademik
-            jam_layanan: Senin-Jumat, 08.00-15.00
-            kontak: akademik@instiki.ac.id
+          - unit: Front Office INSTIKI
+            service_hours: Senin-Sabtu, 08.00-22.00 WITA
+            contact: Telepon (0361) 256995 / WhatsApp 0813-3896-9832
         escalated: true
         top_score: 0.11
 
-    Dukungan:
+    Support:
       summary: Pertanyaan bernuansa tekanan mental (FR-7)
       value:
         kind: support
@@ -1852,20 +2030,20 @@ components:
         text: |-
           Terima kasih sudah menyampaikan ini. Yang Anda rasakan wajar dan Anda tidak sendirian. Saya tidak bisa membantu urusan seperti ini lewat dokumen administrasi, tetapi ada orang yang siap mendengarkan:
 
-          - Unit Bimbingan & Konseling Kampus (Senin-Jumat, 08.00-15.00): konseling@instiki.ac.id
+          - Unit Layanan Konseling INSTIKI (Jadwal konseling diatur melalui Front Office): Telepon (0361) 256995 / WhatsApp 0813-3896-9832
           - Dosen Wali (Sesuai jadwal bimbingan): Hubungi melalui program studi
         citations: []
         contacts:
-          - unit: Unit Bimbingan & Konseling Kampus
-            jam_layanan: Senin-Jumat, 08.00-15.00
-            kontak: konseling@instiki.ac.id
+          - unit: Unit Layanan Konseling INSTIKI
+            service_hours: Jadwal konseling diatur melalui Front Office
+            contact: Telepon (0361) 256995 / WhatsApp 0813-3896-9832
           - unit: Dosen Wali
-            jam_layanan: Sesuai jadwal bimbingan
-            kontak: Hubungi melalui program studi
+            service_hours: Sesuai jadwal bimbingan
+            contact: Hubungi melalui program studi
         escalated: true
         top_score: null
 
-    Sapaan:
+    Smalltalk:
       summary: Sapaan atau basa-basi -- tanpa retrieval dan tanpa LLM
       value:
         kind: smalltalk
@@ -1891,13 +2069,17 @@ components:
 
     TurnIn:
       type: object
-      required: [role, konten]
+      required: [role, content]
       properties:
         role:
           type: string
           pattern: '^(user|assistant)$'
           description: '`system` sengaja tidak diterima -- itu jalur injeksi.'
-        konten: { type: string }
+        content:
+          type: string
+          description: |
+            Dipotong server menjadi 2000 karakter pertama, bukan ditolak: awal
+            jawaban sudah cukup sebagai konteks pertanyaan lanjutan.
 
     ChatRequest:
       type: object
@@ -1906,10 +2088,13 @@ components:
         question:
           type: string
           minLength: 1
-          maxLength: 2000
+          maxLength: 500
           description: |
             Pertanyaan apa adanya. Server yang menyanitasi dan membungkusnya
             dengan delimiter; klien tidak perlu (dan tidak boleh) ikut memproses.
+
+            500 = panjang maksimum pertanyaan siap klik (entri tanya jawab admin).
+            Kotak pertanyaan portal sendiri membatasi 200.
         session_id:
           type: string
           minLength: 8
@@ -1920,16 +2105,17 @@ components:
         history:
           type: array
           default: []
+          maxItems: 50
           description: |
             Riwayat percakapan. Hanya 3 pesan terakhir yang dipakai untuk
-            penulisan ulang query (FR-4); mengirim lebih banyak tidak menambah
-            ketepatan tetapi menaikkan biaya.
+            penulisan ulang query (FR-4); sisanya dibuang server, dan lebih dari
+            50 ditolak 422.
           items: { $ref: '#/components/schemas/TurnIn' }
         unit:
           type: [string, 'null']
           maxLength: 200
           description: |
-            `nama` dari `GET /api/units`. Retrieval -- vektor maupun fulltext --
+            `name` dari `GET /api/units`. Retrieval -- vektor maupun fulltext --
             hanya mencari di dokumen unit ini. Kosongkan atau kirim null untuk
             mencari di semua unit.
 
@@ -1943,21 +2129,21 @@ components:
 
     CitationOut:
       type: object
-      required: [judul, halaman, document_id, file_path]
+      required: [title, page, document_id, file_path]
       description: |
         Isi kartu sitasi FE-2. Cukup untuk membuka PDF tepat di halamannya:
-        `GET /api/documents/{document_id}/file#page={halaman}`.
+        `GET /api/documents/{document_id}/file#page={page}`.
       properties:
-        judul: { type: string }
-        halaman: { type: integer, minimum: 1 }
+        title: { type: string }
+        page: { type: integer, minimum: 1 }
         document_id: { type: string, format: uuid }
         file_path:
           type: string
           description: |
             Lintasan internal. Untuk ditampilkan, bukan untuk diakses langsung.
             Kosong bila sumbernya entri tanya jawab, yang memang tak berberkas.
-        jenis:
-          $ref: '#/components/schemas/JenisDokumen'
+        type:
+          $ref: '#/components/schemas/DocumentType'
           default: pdf
           description: |
             `tanya_jawab` berarti tidak ada PDF yang bisa dibuka dan nomor
@@ -1966,31 +2152,31 @@ components:
 
     ContactOut:
       type: object
-      required: [unit, jam_layanan, kontak]
+      required: [unit, service_hours, contact]
       description: Isi banner eskalasi FE-3.
       properties:
         unit: { type: string }
-        jam_layanan: { type: string }
-        kontak: { type: string }
+        service_hours: { type: string }
+        contact: { type: string }
 
     UnitOut:
       type: object
-      required: [nama]
+      required: [name]
       description: Satu pilihan di menu unit chatbot.
       properties:
-        nama:
+        name:
           type: string
           description: Dikirim kembali apa adanya sebagai `unit` pada `POST /api/chat`.
-        deskripsi:
+        description:
           type: [string, 'null']
           description: Kepanjangan atau cakupan layanan, untuk teks bantu di menu.
 
     FaqQuestion:
       type: object
-      required: [pertanyaan]
+      required: [question]
       description: Satu pertanyaan siap klik di menu topik chatbot.
       properties:
-        pertanyaan:
+        question:
           type: string
           description: |
             Dikirim apa adanya sebagai `question` pada `POST /api/chat`, bersama
@@ -2045,13 +2231,13 @@ components:
       properties:
         message_id: { type: string, format: uuid }
         helpful: { type: boolean, description: 'true = 👍, false = 👎' }
-        catatan: { type: [string, 'null'], maxLength: 1000 }
+        comment: { type: [string, 'null'], maxLength: 1000 }
 
     Suggestion:
       type: object
-      required: [teks]
+      required: [text]
       properties:
-        teks: { type: string }
+        text: { type: string }
 
     HealthResponse:
       type: object
@@ -2086,12 +2272,12 @@ components:
 
     Document:
       type: object
-      required: [id, judul, unit, updated_at, is_active, jumlah_chunk, stale]
+      required: [id, title, unit, updated_at, is_active, chunk_count, stale]
       properties:
         id: { type: string, format: uuid }
-        judul: { type: string }
+        title: { type: string }
         unit: { type: string }
-        tahun_berlaku: { type: [integer, 'null'] }
+        effective_year: { type: [integer, 'null'] }
         valid_until:
           type: [string, 'null']
           format: date
@@ -2101,7 +2287,7 @@ components:
             ada yang ingat menonaktifkannya.
         updated_at: { type: string, format: date-time }
         is_active: { type: boolean }
-        jumlah_chunk: { type: integer, minimum: 0 }
+        chunk_count: { type: integer, minimum: 0 }
         stale:
           type: boolean
           description: |
@@ -2115,7 +2301,7 @@ components:
 
     DocumentPage:
       type: object
-      required: [items, total, jumlah_stale]
+      required: [items, total, stale_count]
       properties:
         items:
           type: array
@@ -2124,7 +2310,7 @@ components:
           type: integer
           minimum: 0
           description: Jumlah dokumen yang cocok dengan filter, untuk paginasi.
-        jumlah_stale:
+        stale_count:
           type: integer
           minimum: 0
           description: |
@@ -2134,33 +2320,33 @@ components:
 
     DocumentUpload:
       type: object
-      required: [file, judul, unit]
+      required: [file, title, unit]
       properties:
         file: { type: string, format: binary, description: Berkas PDF. }
-        judul: { type: string, minLength: 3, maxLength: 500 }
+        title: { type: string, minLength: 3, maxLength: 500 }
         unit:
           type: string
           minLength: 2
           maxLength: 200
           description: |
-            Salah satu `nama` dari `GET /api/units`, tanpa peduli huruf besar.
+            Salah satu `name` dari `GET /api/units`, tanpa peduli huruf besar.
             Yang tersimpan selalu ejaan resmi; nama lain dijawab 422.
-        tahun_berlaku: { type: [integer, 'null'], minimum: 2000, maximum: 2100 }
+        effective_year: { type: [integer, 'null'], minimum: 2000, maximum: 2100 }
         valid_until: { type: [string, 'null'], format: date }
 
     DocumentUpdate:
       type: object
       description: Hanya field yang dikirim yang diubah.
       properties:
-        judul: { type: string, minLength: 3, maxLength: 500 }
+        title: { type: string, minLength: 3, maxLength: 500 }
         unit:
           type: string
           minLength: 2
           maxLength: 200
           description: |
-            Salah satu `nama` dari `GET /api/units`, tanpa peduli huruf besar.
+            Salah satu `name` dari `GET /api/units`, tanpa peduli huruf besar.
             Yang tersimpan selalu ejaan resmi; nama lain dijawab 422.
-        tahun_berlaku: { type: [integer, 'null'], minimum: 2000, maximum: 2100 }
+        effective_year: { type: [integer, 'null'], minimum: 2000, maximum: 2100 }
         valid_until:
           type: [string, 'null']
           format: date
@@ -2169,12 +2355,12 @@ components:
 
     IngestionResult:
       type: object
-      required: [document_id, jumlah_halaman, jumlah_chunk]
+      required: [document_id, page_count, chunk_count]
       properties:
         document_id: { type: string, format: uuid }
-        jumlah_halaman: { type: integer, minimum: 1 }
-        jumlah_chunk: { type: integer, minimum: 1 }
-        peringatan:
+        page_count: { type: integer, minimum: 1 }
+        chunk_count: { type: integer, minimum: 1 }
+        warnings:
           type: array
           items: { type: string }
           description: |
@@ -2185,14 +2371,14 @@ components:
 
     Chunk:
       type: object
-      required: [id, konten, halaman, urutan]
+      required: [id, content, page, position]
       properties:
         id: { type: string, format: uuid }
-        konten: { type: string }
-        halaman: { type: integer, minimum: 1 }
-        urutan: { type: integer, minimum: 0 }
+        content: { type: string }
+        page: { type: integer, minimum: 1 }
+        position: { type: integer, minimum: 0 }
 
-    JenisDokumen:
+    DocumentType:
       type: string
       enum: [pdf, tanya_jawab]
       description: |
@@ -2203,13 +2389,13 @@ components:
 
     FaqEntry:
       type: object
-      required: [id, pertanyaan, jawaban, unit, updated_at, is_active, jumlah_chunk, stale]
+      required: [id, question, answer, unit, updated_at, is_active, chunk_count, stale]
       properties:
         id: { type: string, format: uuid }
-        pertanyaan:
+        question:
           type: string
           description: Sekaligus judul sumber pada kartu sitasi yang dilihat mahasiswa.
-        jawaban: { type: string }
+        answer: { type: string }
         unit: { type: string }
         valid_until:
           type: [string, 'null']
@@ -2219,7 +2405,7 @@ components:
             terambil retrieval secara otomatis (FR-2).
         updated_at: { type: string, format: date-time }
         is_active: { type: boolean }
-        jumlah_chunk:
+        chunk_count:
           type: integer
           minimum: 0
           description: |
@@ -2248,16 +2434,16 @@ components:
 
     FaqEntryCreate:
       type: object
-      required: [pertanyaan, jawaban, unit]
+      required: [question, answer, unit]
       properties:
-        pertanyaan: { type: string, minLength: 5, maxLength: 500 }
-        jawaban: { type: string, minLength: 10, maxLength: 5000 }
+        question: { type: string, minLength: 5, maxLength: 500 }
+        answer: { type: string, minLength: 10, maxLength: 5000 }
         unit:
           type: string
           minLength: 2
           maxLength: 200
           description: |
-            Salah satu `nama` dari `GET /api/units`, tanpa peduli huruf besar.
+            Salah satu `name` dari `GET /api/units`, tanpa peduli huruf besar.
             Yang tersimpan selalu ejaan resmi; nama lain dijawab 422.
         valid_until: { type: [string, 'null'], format: date }
 
@@ -2265,14 +2451,14 @@ components:
       type: object
       description: Hanya field yang dikirim yang diubah.
       properties:
-        pertanyaan: { type: string, minLength: 5, maxLength: 500 }
-        jawaban: { type: string, minLength: 10, maxLength: 5000 }
+        question: { type: string, minLength: 5, maxLength: 500 }
+        answer: { type: string, minLength: 10, maxLength: 5000 }
         unit:
           type: string
           minLength: 2
           maxLength: 200
           description: |
-            Salah satu `nama` dari `GET /api/units`, tanpa peduli huruf besar.
+            Salah satu `name` dari `GET /api/units`, tanpa peduli huruf besar.
             Yang tersimpan selalu ejaan resmi; nama lain dijawab 422.
         valid_until:
           type: [string, 'null']
@@ -2288,31 +2474,31 @@ components:
 
     UnansweredGroup:
       type: object
-      required: [ids, contoh_pertanyaan, jumlah, terakhir_ditanyakan, resolved]
+      required: [ids, sample_question, count, last_asked_at, resolved]
       properties:
         ids:
           type: array
           minItems: 1
           items: { type: string, format: uuid }
           description: |
-            Seluruh baris `unanswered` dalam kelompok. Menandai kelompok selesai
+            Seluruh baris `unanswered_questions` dalam kelompok. Menandai kelompok selesai
             berarti PATCH `/api/admin/unanswered/{id}` untuk setiap id.
-        contoh_pertanyaan:
+        sample_question:
           type: string
           description: Satu pertanyaan mewakili kelompok, apa adanya seperti diketik.
-        jumlah: { type: integer, minimum: 1 }
-        top_score_rata2:
+        count: { type: integer, minimum: 1 }
+        avg_top_score:
           type: [number, 'null']
           description: |
             Rata-rata skor tertinggi kelompok ini. Nilai yang mendekati ambang
             menandakan dokumennya mungkin sudah ada tetapi retrieval-nya meleset;
             nilai sangat rendah menandakan dokumennya memang belum ada.
-        terakhir_ditanyakan: { type: string, format: date-time }
+        last_asked_at: { type: string, format: date-time }
         resolved: { type: boolean }
 
     FeedbackItem:
       type: object
-      required: [id, message_id, helpful, created_at, jawaban]
+      required: [id, message_id, helpful, created_at, answer]
       description: Satu penilaian FE-5 beserta pasangan pertanyaan-jawaban yang dinilai.
       properties:
         id: { type: string, format: uuid }
@@ -2322,13 +2508,13 @@ components:
           description: Baris `messages` yang dinilai, selalu jawaban chatbot.
         helpful: { type: boolean }
         created_at: { type: string, format: date-time }
-        jawaban: { type: string, description: Isi jawaban chatbot apa adanya. }
-        catatan:
+        answer: { type: string, description: Isi jawaban chatbot apa adanya. }
+        comment:
           type: [string, 'null']
           description: |
             Isian bebas mahasiswa. FE-5 satu klik tanpa modal, jadi sebagian
             besar umpan balik tidak memilikinya.
-        pertanyaan:
+        question:
           type: [string, 'null']
           description: |
             Pesan mahasiswa terakhir sebelum jawaban ini. Null bila pesannya
@@ -2345,7 +2531,7 @@ components:
 
     FeedbackPage:
       type: object
-      required: [items, total, jumlah_positif, jumlah_negatif]
+      required: [items, total, positive_count, negative_count]
       properties:
         items:
           type: array
@@ -2354,8 +2540,8 @@ components:
           type: integer
           minimum: 0
           description: Jumlah baris yang cocok dengan seluruh filter, untuk penomoran halaman.
-        jumlah_positif: { type: integer, minimum: 0 }
-        jumlah_negatif:
+        positive_count: { type: integer, minimum: 0 }
+        negative_count:
           type: integer
           minimum: 0
           description: |
@@ -2364,17 +2550,17 @@ components:
 
     RetrievedChunk:
       type: object
-      required: [chunk_id, judul, halaman, konten, rrf_score, raw_scores, ranks]
+      required: [chunk_id, title, page, content, rrf_score, raw_scores, ranks]
       description: Rincian diagnosa AD-6.
       properties:
         chunk_id: { type: string, format: uuid }
         document_id: { type: [string, 'null'], format: uuid }
-        judul: { type: string }
-        jenis:
-          $ref: '#/components/schemas/JenisDokumen'
+        title: { type: string }
+        type:
+          $ref: '#/components/schemas/DocumentType'
           default: pdf
-        halaman: { type: integer }
-        konten: { type: string }
+        page: { type: integer }
+        content: { type: string }
         rrf_score:
           type: number
           description: Skor gabungan. Berbasis peringkat -- jangan pakai untuk menilai relevansi.
@@ -2423,7 +2609,7 @@ components:
 
     TestQueryResponse:
       type: object
-      required: [kind, text, retrieved, decision, ambang, contacts, escalated, latency_ms]
+      required: [kind, text, retrieved, decision, thresholds, contacts, escalated, latency_ms]
       properties:
         kind: { $ref: '#/components/schemas/OutcomeKind' }
         text: { type: string }
@@ -2441,7 +2627,7 @@ components:
             reason: { type: string, enum: [ok, no_results, below_threshold] }
             top_vector_score: { type: [number, 'null'] }
             top_lexical_score: { type: [number, 'null'] }
-        ambang: { $ref: '#/components/schemas/ThresholdValues' }
+        thresholds: { $ref: '#/components/schemas/ThresholdValues' }
         contacts:
           type: array
           description: Kontak yang akan dilihat mahasiswa untuk pertanyaan yang sama (FE-3, FE-4).
@@ -2457,22 +2643,22 @@ components:
 
     DailyVolume:
       type: object
-      required: [tanggal, jumlah]
+      required: [date, count]
       properties:
-        tanggal: { type: string, format: date }
-        jumlah: { type: integer, minimum: 0 }
+        date: { type: string, format: date }
+        count: { type: integer, minimum: 0 }
 
     TopicCount:
       type: object
-      required: [topik, jumlah]
+      required: [topic, count]
       properties:
-        topik:
+        topic:
           type: string
           description: |
             Nilai `RiskTopic` (FR-6): `deadline`, `syarat_kelulusan`,
             `pembayaran`, `sanksi`, `drop_out`. Label tampilan diserahkan ke
             frontend.
-        jumlah: { type: integer, minimum: 1 }
+        count: { type: integer, minimum: 1 }
 
     KindBreakdown:
       type: object
@@ -2496,60 +2682,60 @@ components:
     Stats:
       type: object
       required:
-        - sejak
-        - sampai
-        - total_percakapan
-        - total_pertanyaan
-        - rincian_jenis
-        - jumlah_feedback
-        - rasio_feedback_positif
-        - rasio_tak_terjawab
-        - volume_harian
-        - topik_populer
-        - biaya_usd_berjalan
-        - pesan_tanpa_estimasi_biaya
+        - since
+        - until
+        - total_conversations
+        - total_questions
+        - kind_breakdown
+        - feedback_count
+        - positive_feedback_ratio
+        - unanswered_ratio
+        - daily_volume
+        - top_topics
+        - running_cost_usd
+        - messages_without_cost_estimate
         - latency_p95_ms
       properties:
-        sejak: { type: string, format: date }
-        sampai: { type: string, format: date }
-        total_percakapan:
+        since: { type: string, format: date }
+        until: { type: string, format: date }
+        total_conversations:
           type: integer
           description: |
             Konteks, BUKAN ukuran keberhasilan. PRD §3 menetapkannya sebagai
             anti-metrik: volume tinggi bisa berarti jawabannya buruk sehingga
             mahasiswa bertanya berulang kali. Satu percakapan = pesan dari
             `session_id` yang sama dengan jeda di bawah 30 menit.
-        total_pertanyaan: { type: integer }
-        rincian_jenis: { $ref: '#/components/schemas/KindBreakdown' }
-        jumlah_feedback: { type: integer, minimum: 0 }
-        rasio_feedback_positif:
+        total_questions: { type: integer }
+        kind_breakdown: { $ref: '#/components/schemas/KindBreakdown' }
+        feedback_count: { type: integer, minimum: 0 }
+        positive_feedback_ratio:
           type: [number, 'null']
           minimum: 0
           maximum: 1
           description: Target PRD §3 >= 0.75. null bila belum ada umpan balik.
-        rasio_tak_terjawab:
+        unanswered_ratio:
           type: [number, 'null']
           minimum: 0
           maximum: 1
           description: Target PRD §3 < 0.15. null bila belum ada pertanyaan.
-        volume_harian:
+        daily_volume:
           type: array
           description: Satu entri per hari dalam rentang, termasuk hari tanpa pertanyaan.
           items: { $ref: '#/components/schemas/DailyVolume' }
-        topik_populer:
+        top_topics:
           type: array
           maxItems: 10
           items: { $ref: '#/components/schemas/TopicCount' }
-        biaya_usd_berjalan:
+        running_cost_usd:
           type: number
           description: Estimasi dari token terpakai, bukan dari API penagihan.
-        pesan_tanpa_estimasi_biaya:
+        messages_without_cost_estimate:
           type: integer
           minimum: 0
           description: |
             Jawaban yang memanggil LLM tetapi modelnya belum punya tarif di
             `app/observability/costs.py`. Lebih dari nol berarti
-            `biaya_usd_berjalan` KURANG dari biaya sebenarnya -- tampilkan
+            `running_cost_usd` KURANG dari biaya sebenarnya -- tampilkan
             sebagai peringatan, jangan sebagai biaya nol.
         latency_p95_ms:
           type: [integer, 'null']
@@ -2559,122 +2745,117 @@ components:
 
     CostByModel:
       type: object
-      required: [jenis, model, jumlah_panggilan, input_tokens, output_tokens, tokens, biaya_usd]
+      required: [type, model, call_count, input_tokens, output_tokens, tokens, cost_usd]
       properties:
-        jenis:
+        type:
           type: string
-          enum: [llm_chat, embedding_chat, embedding_ingestion]
+          enum: [llm_chat, embedding_chat]
         model: { type: string }
-        jumlah_panggilan: { type: integer, minimum: 0 }
+        call_count: { type: integer, minimum: 0 }
         input_tokens: { type: integer, minimum: 0 }
         output_tokens: { type: integer, minimum: 0 }
         tokens: { type: integer, minimum: 0 }
-        biaya_usd: { type: number, minimum: 0 }
+        cost_usd: { type: number, minimum: 0 }
 
     DailyCost:
       type: object
-      required: [tanggal, jumlah_panggilan, llm_tokens, embed_tokens, biaya_llm_usd, biaya_embedding_usd, biaya_ingestion_usd, biaya_usd]
+      required: [date, call_count, llm_tokens, embed_tokens, llm_cost_usd, embedding_cost_usd, cost_usd]
       properties:
-        tanggal: { type: string, format: date }
-        jumlah_panggilan: { type: integer, minimum: 0 }
+        date: { type: string, format: date }
+        call_count: { type: integer, minimum: 0 }
         llm_tokens: { type: integer, minimum: 0 }
         embed_tokens: { type: integer, minimum: 0 }
-        biaya_llm_usd: { type: number, minimum: 0 }
-        biaya_embedding_usd: { type: number, minimum: 0 }
-        biaya_ingestion_usd: { type: number, minimum: 0 }
-        biaya_usd: { type: number, minimum: 0 }
+        llm_cost_usd: { type: number, minimum: 0 }
+        embedding_cost_usd: { type: number, minimum: 0 }
+        cost_usd: { type: number, minimum: 0 }
 
     Costs:
       type: object
-      required: [sejak, sampai, jumlah_panggilan_llm, input_tokens, output_tokens, total_tokens, biaya_usd, biaya_llm_usd, embed_chat_tokens, biaya_embed_chat_usd, jumlah_embed_chat, usage_log_tokens, biaya_usage_log_usd, jumlah_usage_log, llm_tanpa_biaya, embed_chat_tanpa_biaya, usage_log_tanpa_biaya, rincian_model, biaya_harian]
+      required: [since, until, llm_call_count, input_tokens, output_tokens, total_tokens, cost_usd, llm_cost_usd, chat_embed_tokens, chat_embed_cost_usd, chat_embed_count, llm_calls_without_cost, chat_embeds_without_cost, model_breakdown, daily_costs]
       properties:
-        sejak: { type: string, format: date }
-        sampai: { type: string, format: date }
-        jumlah_panggilan_llm: { type: integer, minimum: 0 }
+        since: { type: string, format: date }
+        until: { type: string, format: date }
+        llm_call_count: { type: integer, minimum: 0 }
         input_tokens: { type: integer, minimum: 0 }
         output_tokens: { type: integer, minimum: 0 }
         total_tokens: { type: integer, minimum: 0 }
-        biaya_usd: { type: number, minimum: 0 }
-        biaya_llm_usd: { type: number, minimum: 0 }
-        embed_chat_tokens: { type: integer, minimum: 0 }
-        biaya_embed_chat_usd: { type: number, minimum: 0 }
-        jumlah_embed_chat: { type: integer, minimum: 0 }
-        usage_log_tokens: { type: integer, minimum: 0 }
-        biaya_usage_log_usd: { type: number, minimum: 0 }
-        jumlah_usage_log: { type: integer, minimum: 0 }
-        llm_tanpa_biaya: { type: integer, minimum: 0 }
-        embed_chat_tanpa_biaya: { type: integer, minimum: 0 }
-        usage_log_tanpa_biaya: { type: integer, minimum: 0 }
-        rincian_model:
+        cost_usd: { type: number, minimum: 0 }
+        llm_cost_usd: { type: number, minimum: 0 }
+        chat_embed_tokens: { type: integer, minimum: 0 }
+        chat_embed_cost_usd: { type: number, minimum: 0 }
+        chat_embed_count: { type: integer, minimum: 0 }
+        llm_calls_without_cost: { type: integer, minimum: 0 }
+        chat_embeds_without_cost: { type: integer, minimum: 0 }
+        model_breakdown:
           type: array
           items: { $ref: '#/components/schemas/CostByModel' }
-        biaya_harian:
+        daily_costs:
           type: array
           items: { $ref: '#/components/schemas/DailyCost' }
 
     LogSummary:
       type: object
-      required: [sejak, sampai, jumlah_giliran, p50_total_ms, p95_total_ms, giliran_error, rasio_error, diblokir_jev, rasio_diblokir_jev, log_error, per_node, titik_keluar, per_jam]
+      required: [since, until, turn_count, p50_total_ms, p95_total_ms, error_turn_count, error_ratio, jev_blocked_count, jev_blocked_ratio, error_log_count, per_node, exit_points, per_hour]
       properties:
-        sejak: { type: string }
-        sampai: { type: string }
-        jumlah_giliran: { type: integer, minimum: 0 }
+        since: { type: string }
+        until: { type: string }
+        turn_count: { type: integer, minimum: 0 }
         p50_total_ms: { type: [number, 'null'] }
         p95_total_ms: { type: [number, 'null'] }
-        giliran_error: { type: integer, minimum: 0 }
-        rasio_error: { type: number, minimum: 0 }
-        diblokir_jev: { type: integer, minimum: 0 }
-        rasio_diblokir_jev: { type: number, minimum: 0 }
-        log_error: { type: integer, minimum: 0, description: 'Log ERROR ke atas. Untuk role admin, log audit tidak dihitung.' }
+        error_turn_count: { type: integer, minimum: 0 }
+        error_ratio: { type: number, minimum: 0 }
+        jev_blocked_count: { type: integer, minimum: 0 }
+        jev_blocked_ratio: { type: number, minimum: 0 }
+        error_log_count: { type: integer, minimum: 0, description: 'Log ERROR ke atas. Untuk role admin, log audit tidak dihitung.' }
         per_node:
           type: array
           items: { $ref: '#/components/schemas/NodeStat' }
-        titik_keluar:
+        exit_points:
           type: array
           items: { $ref: '#/components/schemas/ExitPoint' }
-        per_jam:
+        per_hour:
           type: array
           items: { $ref: '#/components/schemas/HourlyLogStat' }
 
     NodeStat:
       type: object
-      required: [node, jumlah, p50_ms, p95_ms, error]
+      required: [node, count, p50_ms, p95_ms, error]
       properties:
         node: { type: string }
-        jumlah: { type: integer, minimum: 0 }
+        count: { type: integer, minimum: 0 }
         p50_ms: { type: [number, 'null'] }
         p95_ms: { type: [number, 'null'] }
         error: { type: integer, minimum: 0 }
 
     ExitPoint:
       type: object
-      required: [node, jumlah]
+      required: [node, count]
       properties:
         node: { type: string, description: 'Node terakhir yang berjalan, yaitu tempat giliran berhenti.' }
-        jumlah: { type: integer, minimum: 0 }
+        count: { type: integer, minimum: 0 }
 
     HourlyLogStat:
       type: object
-      required: [jam, giliran, p95_total_ms, giliran_error, log_error]
+      required: [hour, turn_count, p95_total_ms, error_turn_count, error_log_count]
       properties:
-        jam: { type: string, description: 'Awal jam, UTC, mis. `2026-09-25T03:00:00Z`.' }
-        giliran: { type: integer, minimum: 0 }
+        hour: { type: string, description: 'Awal jam, UTC, mis. `2026-09-25T03:00:00Z`.' }
+        turn_count: { type: integer, minimum: 0 }
         p95_total_ms: { type: [number, 'null'] }
-        giliran_error: { type: integer, minimum: 0 }
-        log_error: { type: integer, minimum: 0 }
+        error_turn_count: { type: integer, minimum: 0 }
+        error_log_count: { type: integer, minimum: 0 }
 
     TurnOut:
       type: object
-      required: [turn_id, waktu, endpoint, session_id, message_id, unit, hasil, node_terakhir, total_ms, ttft_ms, status, langsmith_run_id]
+      required: [turn_id, timestamp, endpoint, session_id, message_id, unit, outcome, last_node, total_ms, ttft_ms, status, langsmith_run_id]
       properties:
         turn_id: { type: string }
-        waktu: { type: string }
+        timestamp: { type: string }
         endpoint: { type: string, enum: [chat, chat_stream] }
         session_id: { type: [string, 'null'] }
         message_id: { type: [string, 'null'], description: 'Tautan ke `messages` di Postgres; teks percakapan hanya ada di sana.' }
         unit: { type: [string, 'null'] }
-        hasil: { type: [string, 'null'] }
-        node_terakhir: { type: [string, 'null'] }
+        outcome: { type: [string, 'null'] }
+        last_node: { type: [string, 'null'] }
         total_ms: { type: [integer, 'null'] }
         ttft_ms: { type: [integer, 'null'], description: 'Waktu sampai token pertama; hanya untuk chat_stream yang memanggil LLM.' }
         status: { type: string, enum: [ok, error, dibatalkan] }
@@ -2691,43 +2872,43 @@ components:
 
     NodeRunOut:
       type: object
-      required: [node, urutan, mulai, durasi_ms, status, error_tipe, error_pesan, detail]
+      required: [node, position, started_at, duration_ms, status, error_type, error_message, detail]
       properties:
         node: { type: string }
-        urutan: { type: integer }
-        mulai: { type: string }
-        durasi_ms: { type: number }
+        position: { type: integer }
+        started_at: { type: string }
+        duration_ms: { type: number }
         status: { type: string, enum: [ok, error] }
-        error_tipe: { type: [string, 'null'] }
-        error_pesan: { type: [string, 'null'] }
+        error_type: { type: [string, 'null'] }
+        error_message: { type: [string, 'null'] }
         detail: { type: object, additionalProperties: true }
 
     AppLogOut:
       type: object
-      required: [id, waktu, level, logger, pesan, lokasi, traceback, turn_id]
+      required: [id, timestamp, level, logger, message, location, traceback, turn_id]
       properties:
         id: { type: integer }
-        waktu: { type: string }
+        timestamp: { type: string }
         level: { type: string }
         logger: { type: string }
-        pesan: { type: string }
-        lokasi: { type: [string, 'null'] }
+        message: { type: string }
+        location: { type: [string, 'null'] }
         traceback: { type: [string, 'null'] }
         turn_id: { type: [string, 'null'] }
 
     TurnDetail:
       type: object
-      required: [turn_id, waktu, endpoint, session_id, message_id, unit, hasil, node_terakhir, total_ms, ttft_ms, status, langsmith_run_id, nodes, logs]
+      required: [turn_id, timestamp, endpoint, session_id, message_id, unit, outcome, last_node, total_ms, ttft_ms, status, langsmith_run_id, nodes, logs]
       description: TurnOut ditambah node dan log giliran itu.
       properties:
         turn_id: { type: string }
-        waktu: { type: string }
+        timestamp: { type: string }
         endpoint: { type: string, enum: [chat, chat_stream] }
         session_id: { type: [string, 'null'] }
         message_id: { type: [string, 'null'], description: 'Tautan ke `messages` di Postgres; teks percakapan hanya ada di sana.' }
         unit: { type: [string, 'null'] }
-        hasil: { type: [string, 'null'] }
-        node_terakhir: { type: [string, 'null'] }
+        outcome: { type: [string, 'null'] }
+        last_node: { type: [string, 'null'] }
         total_ms: { type: [integer, 'null'] }
         ttft_ms: { type: [integer, 'null'], description: 'Waktu sampai token pertama; hanya untuk chat_stream yang memanggil LLM.' }
         status: { type: string, enum: [ok, error, dibatalkan] }
@@ -2757,7 +2938,7 @@ components:
       required: [engaged]
       properties:
         engaged: { type: boolean }
-        alasan:
+        reason:
           type: [string, 'null']
           maxLength: 500
           description: Wajib diisi (bukan spasi saja) saat `engaged` true. Diabaikan saat false.
@@ -2781,7 +2962,7 @@ components:
       required:
         [retrieval_candidates, retrieval_top_n, rrf_k, rrf_weight_vector,
          rrf_weight_fulltext, vector_threshold, lexical_threshold, chunk_size,
-         chunk_overlap]
+         chunk_overlap, chat_daily_limit]
       description: |
         Parameter yang dapat disetel dari dashboard. Namanya sengaja sama persis
         dengan variabel di `.env` dan field `app.config.Settings`.
@@ -2813,6 +2994,12 @@ components:
         chunk_overlap:
           type: integer
           description: Tumpang tindih antar potongan saat satu bagian harus dipecah.
+        chat_daily_limit:
+          type: integer
+          description: |
+            Pertanyaan per hari dari semua sumber (zona `TIMEZONE`). Terlampaui =
+            kill switch menyala otomatis sampai superadmin menyalakan layanan
+            lagi. 0 = tanpa batas.
 
     RuntimeConfigUpdate:
       type: object
@@ -2831,18 +3018,19 @@ components:
         lexical_threshold: { type: [number, 'null'], minimum: 0, maximum: 1 }
         chunk_size: { type: [integer, 'null'], minimum: 200, maximum: 4000 }
         chunk_overlap: { type: [integer, 'null'], minimum: 0, maximum: 1000 }
+        chat_daily_limit: { type: [integer, 'null'], minimum: 0, maximum: 1000000 }
 
     RuntimeConfig:
       type: object
-      required: [nilai, nilai_env, diubah, chat_model, embed_model, api_key_terisi]
+      required: [values, env_values, overridden, chat_model, embed_model, api_key_set]
       properties:
-        nilai:
+        values:
           allOf: [{ $ref: '#/components/schemas/RuntimeConfigValues' }]
           description: Yang dipakai layanan saat ini.
-        nilai_env:
+        env_values:
           allOf: [{ $ref: '#/components/schemas/RuntimeConfigValues' }]
           description: Yang tertulis di `.env` server.
-        diubah:
+        overridden:
           type: array
           items: { type: string }
           description: Nama parameter yang sedang ditimpa dari dashboard.
@@ -2851,12 +3039,12 @@ components:
         base_url:
           type: [string, 'null']
           description: Endpoint OpenAI-compatible; kosong berarti OpenAI resmi.
-        api_key_terisi:
+        api_key_set:
           type: boolean
           description: Kuncinya sendiri tidak pernah dikirim ke peramban.
-        diperbarui_at: { type: [string, 'null'], format: date-time }
-        diperbarui_oleh: { type: [string, 'null'] }
-        peringatan:
+        updated_at: { type: [string, 'null'], format: date-time }
+        updated_by: { type: [string, 'null'] }
+        warning:
           type: [string, 'null']
           description: |
             Terisi bila nilai tersimpan tidak dapat dipakai (mis. `.env` berubah
@@ -2880,7 +3068,7 @@ components:
         email: { type: string, format: email }
         role: { $ref: '#/components/schemas/AdminRole' }
         is_active: { type: boolean }
-        nama: { type: [string, 'null'] }
+        name: { type: [string, 'null'] }
         unit:
           type: [string, 'null']
           description: |
@@ -2895,70 +3083,70 @@ components:
       properties:
         email: { type: string, format: email }
         role: { $ref: '#/components/schemas/AdminRole' }
-        nama: { type: [string, 'null'], maxLength: 200 }
+        name: { type: [string, 'null'], maxLength: 200 }
         unit:
           type: [string, 'null']
           maxLength: 200
           description: |
-            Wajib bila `role` bernilai `staf`. Salah satu `nama` dari
+            Wajib bila `role` bernilai `staf`. Salah satu `name` dari
             `GET /api/units`; nama lain dijawab 422.
 
     AdminUserUpdate:
       type: object
       description: Hanya field yang dikirim yang diubah. Field tak dikenal ditolak.
       properties:
-        nama: { type: [string, 'null'], maxLength: 200 }
+        name: { type: [string, 'null'], maxLength: 200 }
         role: { $ref: '#/components/schemas/AdminRole' }
         unit:
           type: [string, 'null']
           maxLength: 200
-          description: Salah satu `nama` dari `GET /api/units`; nama lain dijawab 422.
+          description: Salah satu `name` dari `GET /api/units`; nama lain dijawab 422.
         is_active: { type: boolean }
 
     AdminUserCreated:
       type: object
-      required: [user, password_sementara]
+      required: [user, temporary_password]
       properties:
         user: { $ref: '#/components/schemas/AdminUser' }
-        password_sementara:
+        temporary_password:
           type: string
           description: Ditampilkan SEKALI dan tidak dapat diambil lagi.
 
     TemporaryPassword:
       type: object
-      required: [password_sementara]
+      required: [temporary_password]
       properties:
-        password_sementara: { type: string }
+        temporary_password: { type: string }
 
     AdminUnit:
       type: object
-      required: [nama, urutan, is_active, jumlah_dokumen, jumlah_akun]
+      required: [name, sort_order, is_active, document_count, account_count]
       description: Satu unit layanan, termasuk yang nonaktif.
       properties:
-        nama:
+        name:
           type: string
           description: Kunci utama; nilai yang tersimpan di `documents.unit` dan `admins.unit`.
-        deskripsi:
+        description:
           type: [string, 'null']
           description: Teks bantu di menu chatbot.
-        urutan: { type: integer, description: Urutan tampil di menu; kecil lebih dulu. }
+        sort_order: { type: integer, description: Urutan tampil di menu; kecil lebih dulu. }
         is_active:
           type: boolean
           description: false = tersembunyi dari menu chatbot dan pilihan isian baru.
-        jumlah_dokumen: { type: integer }
-        jumlah_akun: { type: integer }
+        document_count: { type: integer }
+        account_count: { type: integer }
 
     AdminUnitCreate:
       type: object
-      required: [nama]
+      required: [name]
       properties:
-        nama:
+        name:
           type: string
           minLength: 1
           maxLength: 200
           description: Spasi berlebih dirapikan; tidak boleh memuat `/`.
-        deskripsi: { type: [string, 'null'], maxLength: 500 }
-        urutan:
+        description: { type: [string, 'null'], maxLength: 500 }
+        sort_order:
           type: [integer, 'null']
           minimum: 0
           maximum: 10000
@@ -2968,17 +3156,79 @@ components:
       type: object
       description: Hanya field yang dikirim yang diubah. Field tak dikenal ditolak.
       properties:
-        nama: { type: string, minLength: 1, maxLength: 200 }
-        deskripsi: { type: [string, 'null'], maxLength: 500 }
-        urutan: { type: integer, minimum: 0, maximum: 10000 }
+        name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: [string, 'null'], maxLength: 500 }
+        sort_order: { type: integer, minimum: 0, maximum: 10000 }
+        is_active: { type: boolean }
+
+    EmbedKeyInfo:
+      type: object
+      required: [allowed_origins]
+      properties:
+        allowed_origins:
+          type: array
+          items: { type: string }
+          description: Menjadi `frame-ancestors` halaman `/embed`. Kosong = situs mana pun.
+
+    EmbedKey:
+      type: object
+      required: [key, name, allowed_origins, is_active, created_at, questions_30d]
+      description: Satu kunci sematan beserta pemakaiannya.
+      properties:
+        key:
+          type: string
+          description: '`emb_` + 24 karakter. Bukan rahasia: tertulis di kode sumber situs penyemat.'
+        name: { type: string, description: Nama situs, hanya untuk dashboard. }
+        allowed_origins:
+          type: array
+          items: { type: string }
+          description: Situs yang boleh memuat panel. Kosong = situs mana pun.
+        is_active: { type: boolean }
+        created_by: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
+        questions_30d:
+          type: integer
+          description: Pertanyaan mahasiswa dari situs ini, 30 hari terakhir.
+        last_used_at:
+          type: [string, 'null']
+          format: date-time
+          description: Pertanyaan terakhir dari situs ini; null = belum pernah dipakai.
+        embed_code:
+          type: [string, 'null']
+          description: Baris `<script>` siap tempel; null bila `PORTAL_URL` API belum diisi.
+
+    EmbedKeyCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        allowed_origins:
+          type: array
+          maxItems: 20
+          items: { type: string }
+          description: |
+            Alamat situs lengkap tanpa path, mis. `https://pmb.instiki.ac.id`.
+            Wildcard subdomain `https://*.instiki.ac.id` diterima. Garis miring
+            akhir, huruf besar, dan port bawaan dirapikan; duplikat dibuang.
+            Kosong = situs mana pun.
+
+    EmbedKeyUpdate:
+      type: object
+      description: Hanya field yang dikirim yang diubah. Field tak dikenal ditolak.
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        allowed_origins:
+          type: array
+          maxItems: 20
+          items: { type: string }
         is_active: { type: boolean }
 
     PasswordChange:
       type: object
-      required: [password_lama, password_baru]
+      required: [current_password, new_password]
       properties:
-        password_lama: { type: string, minLength: 1, maxLength: 256 }
-        password_baru:
+        current_password: { type: string, minLength: 1, maxLength: 256 }
+        new_password:
           type: string
           minLength: 12
           maxLength: 72

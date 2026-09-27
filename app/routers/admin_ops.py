@@ -24,7 +24,7 @@ audit = logging.getLogger("app.audit")
 
 router = APIRouter(
     prefix="/api/admin",
-    tags=["admin-operasional"],
+    tags=["admin-ops"],
     dependencies=[Depends(require_admin)],
     responses={401: {"model": Error}},
 )
@@ -42,24 +42,24 @@ RENTANG_MAKS_HARI = 366
 async def admin_stats(
     session: SessionDep,
     settings: BaseSettingsDep,
-    sejak: date | None = None,
-    sampai: date | None = None,
+    since: date | None = None,
+    until: date | None = None,
 ) -> Stats:
     """AD-5. Tanpa parameter: 30 hari terakhir sampai hari ini (zona `TIMEZONE`)."""
-    sampai = sampai or await today(session, settings.timezone)
-    sejak = sejak or sampai - timedelta(days=RENTANG_DEFAULT_HARI - 1)
-    if sejak > sampai:
+    until = until or await today(session, settings.timezone)
+    since = since or until - timedelta(days=RENTANG_DEFAULT_HARI - 1)
+    if since > until:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "Tanggal awal tidak boleh setelah tanggal akhir.",
         )
-    if (sampai - sejak).days >= RENTANG_MAKS_HARI:
+    if (until - since).days >= RENTANG_MAKS_HARI:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"Rentang tanggal paling panjang {RENTANG_MAKS_HARI} hari.",
         )
     return Stats(
-        **await compute_stats(session, sejak=sejak, sampai=sampai, timezone=settings.timezone)
+        **await compute_stats(session, since=since, until=until, timezone=settings.timezone)
     )
 
 
@@ -72,23 +72,25 @@ async def admin_stats(
 async def admin_costs(
     session: SessionDep,
     settings: BaseSettingsDep,
-    sejak: date | None = None,
-    sampai: date | None = None,
+    since: date | None = None,
+    until: date | None = None,
 ) -> Costs:
     """Rincian token dan estimasi biaya dari `messages.meta`."""
-    sampai = sampai or await today(session, settings.timezone)
-    sejak = sejak or sampai - timedelta(days=RENTANG_DEFAULT_HARI - 1)
-    if sejak > sampai:
+    until = until or await today(session, settings.timezone)
+    since = since or until - timedelta(days=RENTANG_DEFAULT_HARI - 1)
+    if since > until:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "Tanggal awal tidak boleh setelah tanggal akhir.",
         )
-    if (sampai - sejak).days >= RENTANG_MAKS_HARI:
+    if (until - since).days >= RENTANG_MAKS_HARI:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"Rentang tanggal paling panjang {RENTANG_MAKS_HARI} hari.",
         )
-    return Costs(**await compute_costs(session, sejak=sejak, sampai=sampai, timezone=settings.timezone))
+    return Costs(
+        **await compute_costs(session, since=since, until=until, timezone=settings.timezone)
+    )
 
 
 @router.get("/kill-switch", response_model=KillSwitchState)
@@ -109,7 +111,7 @@ def set_kill_switch(
     """FR-9. Setiap perubahan dicatat ke log audit beserta pelakunya."""
     pelaku = admin.email
     if payload.engaged:
-        switch.engage(payload.alasan or "", by=pelaku)
+        switch.engage(payload.reason or "", by=pelaku)
         audit.warning("Kill switch DINYALAKAN oleh %s: %s", pelaku, switch.reason)
     else:
         if switch.engaged:

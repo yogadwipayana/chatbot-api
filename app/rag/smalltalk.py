@@ -3,7 +3,7 @@
 "hai" tidak punya jawaban di dokumen resmi mana pun. Tanpa penanganan khusus,
 pesan seperti itu menempuh seluruh alur retrieval lalu keluar sebagai penolakan
 FR-3 -- mahasiswa yang baru menyapa langsung disuruh datang ke loket biro. Baris
-itu juga masuk tabel `unanswered` dan mengotori AD-4 dengan "pertanyaan" yang
+itu juga masuk tabel `unanswered_questions` dan mengotori AD-4 dengan "pertanyaan" yang
 tidak pernah berupa pertanyaan.
 
 Pemeriksaan ini berjalan SETELAH FR-7: "halo, saya stres berat" harus tetap
@@ -30,7 +30,7 @@ class SmallTalkKind(StrEnum):
 
 REPLIES: dict[SmallTalkKind, str] = {
     SmallTalkKind.GREETING: (
-        "Halo! Saya asisten administrasi akademik. Silakan tanyakan urusan "
+        "Halo! Saya asisten administrasi akademik INSTIKI. Silakan tanyakan urusan "
         "administrasi Anda -- jawaban saya bersumber dari dokumen resmi kampus "
         "dan selalu menyertakan sumbernya."
     ),
@@ -80,6 +80,9 @@ _FRASA: dict[str, SmallTalkKind] = {
     "terima kasih banyak": SmallTalkKind.THANKS,
     "makasih banyak": SmallTalkKind.THANKS,
     "matur suksma": SmallTalkKind.THANKS,
+    # Salam pembuka Bali, lazim di pengumuman dan acara kampus INSTIKI.
+    "om swastyastu": SmallTalkKind.GREETING,
+    "om swastiastu": SmallTalkKind.GREETING,
     "thank you": SmallTalkKind.THANKS,
     "sampai jumpa": SmallTalkKind.CLOSING,
     "sudah cukup": SmallTalkKind.CLOSING,
@@ -104,6 +107,8 @@ _KATA_KUNCI: dict[str, SmallTalkKind] = {
     "permisi": SmallTalkKind.GREETING,
     "punten": SmallTalkKind.GREETING,
     "misi": SmallTalkKind.GREETING,
+    "swastyastu": SmallTalkKind.GREETING,
+    "swastiastu": SmallTalkKind.GREETING,
     # Terima kasih
     "makasih": SmallTalkKind.THANKS,
     "makasi": SmallTalkKind.THANKS,

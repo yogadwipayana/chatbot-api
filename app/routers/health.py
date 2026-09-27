@@ -8,7 +8,7 @@ from app.deps import KillSwitchDep
 from app.observability.tracing import sedang_menjejak
 from app.schemas.common import HealthResponse
 
-router = APIRouter(tags=["sistem"])
+router = APIRouter(tags=["health"])
 
 
 @router.get("/health", response_model=HealthResponse)

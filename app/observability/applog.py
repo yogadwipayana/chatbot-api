@@ -143,12 +143,12 @@ class SQLiteLogHandler(logging.Handler):
             self.writer.kirim(
                 "app",
                 {
-                    "waktu": waktu_iso(datetime.fromtimestamp(record.created, UTC)),
+                    "timestamp": waktu_iso(datetime.fromtimestamp(record.created, UTC)),
                     "level": record.levelname,
                     "levelno": record.levelno,
                     "logger": record.name,
-                    "pesan": record.getMessage(),
-                    "lokasi": f"{record.module}:{record.lineno}",
+                    "message": record.getMessage(),
+                    "location": f"{record.module}:{record.lineno}",
                     "traceback": tb,
                     # Dibaca saat emit, yaitu di task yang menulis log -- di situ
                     # contextvar giliran masih terpasang.
@@ -228,42 +228,42 @@ def ringkas_node(node: str, keluaran: Any) -> dict[str, Any]:
     """Isi kolom `detail` untuk satu node. Tidak pernah memuat teks mahasiswa."""
     out = keluaran if isinstance(keluaran, dict) else {}
     if node == "sanitize":
-        return {"panjang": len(out.get("clean") or "")}
+        return {"length": len(out.get("clean") or "")}
     if node == "sensitive":
         s = out.get("sensitivity")
         if s is None:
             return {}
-        return {"level": _nilai(s.level), "dialihkan": bool(s.bypasses_rag)}
+        return {"level": _nilai(s.level), "redirected": bool(s.bypasses_rag)}
     if node == "smalltalk":
-        return {"ditangani": "outcome" in out}
+        return {"handled": "outcome" in out}
     if node == "jev_gate":
         g = out.get("gate")
         if g is None:
-            return {"dimatikan": True}
+            return {"disabled": True}
         return {
             "label": _nilai(g.label),
             "confidence": g.confidence,
             "blocked": g.blocked,
-            "biaya_usd": g.cost_usd,
+            "cost_usd": g.cost_usd,
             "error": g.error,
         }
     if node == "rewrite":
-        return {"query_berubah": out.get("rewritten") is not None}
+        return {"query_rewritten": out.get("rewritten") is not None}
     if node == "retrieve":
-        return {"jumlah_dokumen": len(out.get("documents") or [])}
+        return {"document_count": len(out.get("documents") or [])}
     if node == "validate_context":
         d = out.get("decision")
         if d is None:
             return {}
         return {
-            "keputusan": _nilai(d.decision),
-            "alasan": _nilai(d.reason),
+            "decision": _nilai(d.decision),
+            "reason": _nilai(d.reason),
             "top_score": d.top_score,
             "top_rerank_score": d.top_rerank_score,
         }
     if node == "refuse":
         o = out.get("outcome")
-        return {"jumlah_kontak": len(o.contacts) if o is not None else 0}
+        return {"contact_count": len(o.contacts) if o is not None else 0}
     return {}
 
 
@@ -327,20 +327,20 @@ class NodeRecorder(AsyncCallbackHandler):
         self._simpan(
             jalan,
             "error",
-            error_tipe=type(error).__name__,
-            error_pesan=str(error)[:PESAN_MAKS],
+            error_type=type(error).__name__,
+            error_message=str(error)[:PESAN_MAKS],
         )
 
     def _simpan(self, jalan: _NodeBerjalan, status: str, **lain: Any) -> None:
         self.nodes.append(
             {
                 "node": jalan.node,
-                "urutan": jalan.urutan,
-                "mulai": waktu_iso(jalan.mulai),
-                "durasi_ms": round((time.perf_counter() - jalan.t0) * 1000, 2),
+                "position": jalan.urutan,
+                "started_at": waktu_iso(jalan.mulai),
+                "duration_ms": round((time.perf_counter() - jalan.t0) * 1000, 2),
                 "status": status,
-                "error_tipe": None,
-                "error_pesan": None,
+                "error_type": None,
+                "error_message": None,
                 "detail": {},
                 **lain,
             }
@@ -350,7 +350,7 @@ class NodeRecorder(AsyncCallbackHandler):
     def node_terakhir(self) -> str | None:
         if not self.nodes:
             return None
-        return max(self.nodes, key=lambda n: n["urutan"])["node"]
+        return max(self.nodes, key=lambda n: n["position"])["node"]
 
 
 # --- Satu giliran chat ------------------------------------------------------
@@ -403,7 +403,7 @@ class Giliran:
             "model": model,
             "input_tokens": masuk,
             "output_tokens": keluar,
-            "biaya_usd": biaya,
+            "cost_usd": biaya,
         }
 
     def tulis(self, status: str) -> None:
@@ -418,13 +418,13 @@ class Giliran:
                 "turn",
                 {
                     "turn_id": self.turn_id,
-                    "waktu": waktu_iso(self.waktu),
+                    "timestamp": waktu_iso(self.waktu),
                     "endpoint": self.endpoint,
                     "session_id": self.session_id,
                     "message_id": self.message_id,
                     "unit": self.unit,
-                    "hasil": self.hasil,
-                    "node_terakhir": self.recorder.node_terakhir,
+                    "outcome": self.hasil,
+                    "last_node": self.recorder.node_terakhir,
                     "total_ms": round((time.perf_counter() - self.t0) * 1000),
                     "ttft_ms": self.ttft_ms,
                     "status": status,

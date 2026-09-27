@@ -16,6 +16,8 @@ from typing import Literal
 from pydantic import Field, PostgresDsn, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.security.ratelimit import BatasLaju, parse_batas
+
 PLACEHOLDER_JWT_SECRET = "GANTI-NILAI-INI-SEBELUM-DEPLOY-KE-PRODUKSI-0000"
 """Nilai sengaja panjang agar lolos syarat 32 byte saat pengembangan lokal,
 tetapi ditolak mentah-mentah di produksi oleh validator di bawah."""
@@ -210,7 +212,26 @@ class Settings(BaseSettings):
     admin_jwt_secret: SecretStr = SecretStr(PLACEHOLDER_JWT_SECRET)
     admin_token_ttl_minutes: int = 480
     rate_limit_per_session: str = "20/minute"
+    """Per `X-Session-Id` (satu tab). Bentuk `N/second|minute|hour|day`; `0` = mati."""
     rate_limit_per_ip: str = "60/minute"
+    """Per IP -- yang menahan skrip dan Postman. IP kampus dipakai bersama
+    ratusan mahasiswa: naikkan bila mahasiswa di jaringan kampus kena 429."""
+    rate_limit_per_embed_site: str = "60/minute"
+    """Per kunci sematan: seluruh pengunjung satu situs penyemat bersama-sama."""
+    client_ip_header: str = "X-Forwarded-For"
+    """Dari mana IP pengunjung dibaca untuk batas per IP (`ratelimit.client_ip`).
+
+    `X-Forwarded-For` (entri terakhir) untuk API di balik satu reverse proxy
+    seperti Caddy; `CF-Connecting-IP` di balik Cloudflare; kosong bila API
+    langsung menghadap internet. Salah pilih berakibat salah satu dari dua:
+    semua pengunjung tampak ber-IP sama dan berbagi satu jatah, atau IP dapat
+    dipalsukan dan batasnya tidak berguna. Header hanya dapat dipercaya bila
+    port API tidak terjangkau tanpa melewati proxy."""
+    chat_daily_limit: int = Field(default=3000, ge=0)
+    """Pertanyaan per hari (zona `TIMEZONE`) dari semua sumber. Terlampaui =
+    kill switch menyala otomatis sampai superadmin menyalakan layanan lagi.
+    `0` = tanpa batas. Bawaan 2x beban puncak musim KRS di PRD §11 (500/hari,
+    3x lipat). Dapat diubah dari halaman Konfigurasi."""
     kill_switch_enabled: bool = False
     """True = layanan chat dimatikan sejak proses mulai, endpoint mengembalikan 503.
     Jalur cadangan bila dashboard admin tidak bisa diakses; jalur utamanya
@@ -227,6 +248,13 @@ class Settings(BaseSettings):
     Kosong saat `ENVIRONMENT=local` berarti semua asal diizinkan; asal localhost
     tetap ditambahkan saat local meski daftar produksi sudah diisi, supaya
     `admin/` dan `client/` versi dev tidak ikut terkunci."""
+
+    portal_url: str = ""
+    """Alamat portal mahasiswa (`client/`) sebagaimana dibuka peramban, mis.
+    `https://sads.instiki.ac.id`. Dipakai menyusun kode sematan yang ditampilkan
+    di halaman Sematan dashboard. Kosong saat `ENVIRONMENT=local` berarti
+    `http://localhost:3001`; kosong di lingkungan lain berarti dashboard tidak
+    menampilkan kode sematan siap tempel."""
 
     max_upload_mb: int = 50
     """Batas ukuran PDF yang diunggah admin (AD-3). Batas keras ukuran body
@@ -247,6 +275,12 @@ class Settings(BaseSettings):
         if not asal:
             return ["*"]
         return list(dict.fromkeys([*asal, *ORIGIN_LOKAL]))
+
+    def url_portal(self) -> str | None:
+        """PORTAL_URL tanpa garis miring akhir, atau None bila belum diketahui."""
+        if self.portal_url.strip():
+            return self.portal_url.strip().rstrip("/")
+        return "http://localhost:3001" if self.environment == "local" else None
 
     @model_validator(mode="after")
     def _model_ai_valid(self) -> Settings:
@@ -397,6 +431,23 @@ class Settings(BaseSettings):
     @classmethod
     def _rapikan_base_url(cls, v: str | None) -> str | None:
         return v.rstrip("/") if v else v
+
+    @field_validator(
+        "rate_limit_per_session", "rate_limit_per_ip", "rate_limit_per_embed_site"
+    )
+    @classmethod
+    def _batas_laju_sah(cls, v: str) -> str:
+        """Salah ketik ditolak saat start, bukan diam-diam menjadi tanpa batas."""
+        parse_batas(v)
+        return v
+
+    def batas_laju(self) -> dict[str, BatasLaju | None]:
+        """Batas per sesi, IP, dan kunci sematan; None = tidak dibatasi."""
+        return {
+            "sesi": parse_batas(self.rate_limit_per_session),
+            "ip": parse_batas(self.rate_limit_per_ip),
+            "kunci": parse_batas(self.rate_limit_per_embed_site),
+        }
 
     @field_validator("admin_jwt_secret")
     @classmethod

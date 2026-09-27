@@ -30,7 +30,7 @@ class TestDaftarUnit:
     def test_berisi_unit_aktif_sesuai_urutan(self, client):
         r = client.get("/api/units")
         assert r.status_code == 200
-        assert [u["nama"] for u in r.json()] == list(UNIT_RESMI)
+        assert [u["name"] for u in r.json()] == list(UNIT_RESMI)
 
     def test_tanpa_login(self, client):
         """Menu chatbot mahasiswa memuatnya tanpa akun apa pun."""
@@ -55,7 +55,7 @@ class TestPertanyaanPerTopik:
     def test_hanya_pertanyaan_unit_itu(self, client):
         r = client.get("/api/faq/questions", params={"unit": "Keuangan"})
         assert r.status_code == 200
-        assert [q["pertanyaan"] for q in r.json()] == [
+        assert [q["question"] for q in r.json()] == [
             "Bagaimana cara membayar UKT?",
             "Kapan batas pembayaran UKT?",
         ]
@@ -191,7 +191,7 @@ class TestIsianUnitAdmin:
             "/api/admin/documents",
             headers=admin_headers,
             files={"file": ("panduan.pdf", b"%PDF-1.4 isi", "application/pdf")},
-            data={"judul": "Panduan Akademik", "unit": "Biro Administrasi Akademik"},
+            data={"title": "Panduan Akademik", "unit": "Biro Administrasi Akademik"},
         )
         assert r.status_code == 422
         assert "BAAK" in r.json()["detail"]
@@ -200,8 +200,8 @@ class TestIsianUnitAdmin:
         r = client.post(
             "/api/admin/faq",
             json={
-                "pertanyaan": "Bagaimana cara mengurus KTM yang hilang?",
-                "jawaban": "Bawa surat kehilangan dari kepolisian ke loket 3.",
+                "question": "Bagaimana cara mengurus KTM yang hilang?",
+                "answer": "Bawa surat kehilangan dari kepolisian ke loket 3.",
                 "unit": "Loket 3",
             },
             headers=admin_headers,

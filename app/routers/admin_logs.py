@@ -29,7 +29,7 @@ from app.schemas.logs import (
 
 router = APIRouter(
     prefix="/api/admin/logs",
-    tags=["admin-log"],
+    tags=["admin-logs"],
     dependencies=[Depends(require_admin)],
     responses={401: {"model": Error}, 403: {"model": Error}},
 )
@@ -64,19 +64,19 @@ def list_turns(
     admin: AdminDep,
     store: LogStoreDep,
     rentang: RentangQuery = "24h",
-    hasil: str | None = None,
+    outcome: str | None = None,
     status_: Annotated[StatusGiliran | None, Query(alias="status")] = None,
     unit: str | None = None,
-    node_terakhir: str | None = None,
+    last_node: str | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> Any:
     total, items = store.daftar_giliran(
         _sejak(rentang),
-        hasil=hasil,
+        outcome=outcome,
         status=status_,
         unit=unit,
-        node_terakhir=node_terakhir,
+        last_node=last_node,
         limit=limit,
         offset=offset,
     )

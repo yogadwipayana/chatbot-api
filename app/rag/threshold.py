@@ -81,12 +81,13 @@ class ThresholdDecision:
 
     @property
     def should_log_unanswered(self) -> bool:
-        """FR-3: pertanyaan yang ditolak masuk tabel `unanswered`."""
+        """FR-3: pertanyaan yang ditolak masuk tabel `unanswered_questions`."""
         return self.decision is Decision.REFUSE
 
     @property
     def top_score(self) -> float:
-        """Nilai yang disimpan ke kolom `messages.top_score` / `unanswered.top_score`."""
+        """Nilai yang disimpan ke kolom `messages.top_score` /
+        `unanswered_questions.top_score`."""
         return max(
             (s for s in (self.top_vector_score, self.top_lexical_score) if s is not None),
             default=0.0,

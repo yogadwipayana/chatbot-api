@@ -183,7 +183,7 @@ class TestSkemaCocokDenganModel:
     def test_citation_membawa_semua_yang_dibutuhkan_FE2(self, spec):
         """Kartu sitasi harus cukup untuk membuka PDF di halaman yang tepat."""
         wajib = set(spec["components"]["schemas"]["CitationOut"]["required"])
-        assert {"judul", "halaman", "document_id"} <= wajib
+        assert {"title", "page", "document_id"} <= wajib
 
     def test_citation_out_cocok_dengan_model(self, spec, live_spec):
         milik_kita = set(spec["components"]["schemas"]["CitationOut"]["required"])
@@ -265,12 +265,12 @@ class TestJanjiPerilaku:
     def test_contoh_penolakan_tidak_membawa_sitasi(self, spec):
         """FE-4: penolakan harus terlihat berbeda dari jawaban. Contoh yang
         memuat sitasi akan menuntun frontend membangunnya dengan keliru."""
-        for nama in ("Penolakan", "Dukungan"):
+        for nama in ("Refusal", "Support"):
             contoh = spec["components"]["examples"][nama]["value"]
             assert contoh["citations"] == [], f"contoh {nama} tidak boleh punya sitasi"
 
     def test_contoh_jawaban_membawa_sitasi(self, spec):
-        contoh = spec["components"]["examples"]["JawabanNormal"]["value"]
+        contoh = spec["components"]["examples"]["NormalAnswer"]["value"]
         assert contoh["citations"]
 
     def test_nilai_kind_pada_contoh_sah(self, spec):

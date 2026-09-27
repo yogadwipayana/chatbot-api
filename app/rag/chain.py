@@ -68,11 +68,7 @@ REFUSAL_UNIT_HINT = (
 dan menyimpulkan informasinya memang tidak ada -- padahal yang membatasi adalah
 pilihannya sendiri."""
 
-DEFAULT_FALLBACK_CONTACT = risk_module.UnitContact(
-    unit="Biro Administrasi Akademik",
-    jam_layanan="Senin-Jumat, 08.00-15.00",
-    kontak="akademik@instiki.ac.id",
-)
+DEFAULT_FALLBACK_CONTACT = risk_module.FRONT_OFFICE
 
 SUPPORT_TEMPLATE = (
     "Terima kasih sudah menyampaikan ini. Yang Anda rasakan wajar dan Anda tidak "

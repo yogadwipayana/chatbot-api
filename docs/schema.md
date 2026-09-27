@@ -23,27 +23,27 @@ erDiagram
     documents ||--o{ chunks : "1..N (CASCADE)"
     conversations ||--o{ messages : "1..N (CASCADE)"
     messages ||--o{ feedback : "1..N (CASCADE)"
-    messages ||--o| unanswered : "0..1 (SET NULL)"
-    documents ||--o{ usage_log : "0..N (SET NULL)"
+    messages ||--o| unanswered_questions : "0..1 (SET NULL)"
     units ||--o{ documents : "1..N (ON UPDATE CASCADE)"
     units |o--o{ admins : "0..N (ON UPDATE CASCADE)"
+    embed_keys |o--o{ conversations : "0..N (SET NULL)"
 
     units {
-        varchar  nama PK "200 — nama resmi yang tampil di menu"
-        varchar  deskripsi "500 — teks bantu menu chatbot"
-        int      urutan "NOT NULL, default 0 — urutan tampil"
+        varchar  name PK "200 — nama resmi yang tampil di menu"
+        varchar  description "500 — teks bantu menu chatbot"
+        int      sort_order "NOT NULL, default 0 — urutan tampil"
         boolean  is_active "NOT NULL, default true"
     }
 
     documents {
         uuid     id PK
-        varchar  judul "500, NOT NULL — pertanyaan bila jenis=tanya_jawab"
-        varchar  unit FK "200, NOT NULL → units.nama"
-        varchar  jenis "20, NOT NULL, default 'pdf'"
+        varchar  title "500, NOT NULL — pertanyaan bila type=tanya_jawab"
+        varchar  unit FK "200, NOT NULL → units.name"
+        varchar  type "20, NOT NULL, default 'pdf'"
         varchar  file_path "1000, NULL untuk tanya_jawab"
-        varchar  nama_file "255, nama asli unggahan PDF"
-        text     jawaban "NULL untuk pdf"
-        int      tahun_berlaku
+        varchar  original_filename "255, nama asli unggahan PDF"
+        text     answer "NULL untuk pdf"
+        int      effective_year
         date     valid_until "NULL = tanpa batas"
         varchar  uploaded_by "255"
         timestamptz updated_at "NOT NULL, default now()"
@@ -53,9 +53,9 @@ erDiagram
     chunks {
         uuid     id PK
         uuid     document_id FK "NOT NULL"
-        text     konten "NOT NULL"
-        int      halaman "NOT NULL"
-        int      urutan "NOT NULL"
+        text     content "NOT NULL"
+        int      page "NOT NULL"
+        int      position "NOT NULL"
         vector   embedding "1024 dim, NOT NULL"
         tsvector tsv "diisi trigger"
     }
@@ -64,6 +64,16 @@ erDiagram
         uuid     id PK
         varchar  session_id "128, NOT NULL"
         varchar  user_hash "64, anonim"
+        varchar  embed_key FK "64 → embed_keys.key; NULL = portal"
+        timestamptz created_at "NOT NULL, default now()"
+    }
+
+    embed_keys {
+        varchar  key PK "64 — emb_ + 24 karakter, bukan rahasia"
+        varchar  name "200, NOT NULL — nama situs"
+        varchar_arr allowed_origins "NOT NULL, default {} — kosong = situs mana pun"
+        boolean  is_active "NOT NULL, default true"
+        varchar  created_by "255 — email admin"
         timestamptz created_at "NOT NULL, default now()"
     }
 
@@ -71,12 +81,12 @@ erDiagram
         uuid     id PK
         uuid     conversation_id FK "NOT NULL"
         varchar  role "20, NOT NULL — user/assistant"
-        text     konten "NOT NULL"
+        text     content "NOT NULL"
         uuid_arr retrieved_chunk_ids "chunk yang dipakai"
         float    top_score "skor mentah tertinggi"
         int      latency_ms
         varchar  langsmith_run_id "64, akar trace; null bila tracing mati"
-        jsonb    meta "kind, topik, token, biaya"
+        jsonb    meta "kind, topics, token, biaya"
         timestamptz created_at "NOT NULL, default now()"
     }
 
@@ -84,13 +94,13 @@ erDiagram
         uuid     id PK
         uuid     message_id FK "NOT NULL"
         boolean  helpful "NOT NULL"
-        text     catatan
+        text     comment
         timestamptz created_at "NOT NULL, default now()"
     }
 
-    unanswered {
+    unanswered_questions {
         uuid     id PK
-        text     pertanyaan "NOT NULL"
+        text     question "NOT NULL"
         float    top_score
         boolean  resolved "NOT NULL, default false"
         uuid     message_id FK "NULL-able, SET NULL"
@@ -104,27 +114,13 @@ erDiagram
         varchar  updated_by "255 — email admin"
     }
 
-    usage_log {
-        uuid     id PK
-        timestamptz created_at "NOT NULL, default now()"
-        varchar  operasi "20, NOT NULL — ingest/reindex"
-        varchar  model "200, NOT NULL — model yang diminta"
-        varchar  model_dilaporkan "200, bila penyedia menyebut nama lain"
-        int      tokens "NULL = tidak dilaporkan"
-        float    biaya_usd "tanpa pembulatan"
-        varchar  biaya_sumber "20 — provider/estimasi"
-        boolean  is_byok
-        uuid     document_id FK "NULL-able, SET NULL"
-        varchar  keterangan "500 — judul dokumen saat itu"
-    }
-
     admins {
         uuid     id PK
         varchar  email "255, UNIQUE + unik lower()"
         varchar  password_hash "255, NOT NULL"
         varchar  role "50, NOT NULL — staf/admin/superadmin"
-        varchar  nama "200"
-        varchar  unit FK "200 → units.nama, wajib untuk staf"
+        varchar  name "200"
+        varchar  unit FK "200 → units.name, wajib untuk staf"
         boolean  is_active "NOT NULL, default true"
         timestamptz password_changed_at "pembatal token lama"
         timestamptz last_login_at
@@ -143,8 +139,8 @@ menghapus atau membuat NULL riwayat dokumen yang pernah diunggahnya.
 Dua CHECK constraint di `admins` menegakkan level akses di database:
 
 ```sql
-CONSTRAINT ck_admins_role      CHECK (role IN ('staf', 'admin', 'superadmin'))
-CONSTRAINT ck_admins_staf_unit CHECK (role <> 'staf' OR (unit IS NOT NULL AND btrim(unit) <> ''))
+CONSTRAINT ck_admins_role       CHECK (role IN ('staf', 'admin', 'superadmin'))
+CONSTRAINT ck_admins_staff_unit CHECK (role <> 'staf' OR (unit IS NOT NULL AND btrim(unit) <> ''))
 ```
 
 ### Kelompok tabel
@@ -153,19 +149,83 @@ CONSTRAINT ck_admins_staf_unit CHECK (role <> 'staf' OR (unit IS NOT NULL AND bt
 |---|---|---|---|
 | **Pengetahuan** | `documents`, `chunks` | `app/ingestion/`, `app/admin/faq.py` | retrieval FR-2 |
 | **Referensi** | `units` | migrasi `0009` (isi awal), `app/routers/admin_units.py` (halaman Unit, superadmin) | `app/units.py`: menu chatbot, validasi setiap isian unit, filter retrieval |
-| **Log** | `conversations`, `messages`, `feedback`, `unanswered` | `app/observability/chatlog.py`, `app/routers/chat.py` | dashboard AD-4, AD-5 |
+| **Log** | `conversations`, `messages`, `feedback`, `unanswered_questions` | `app/observability/chatlog.py`, `app/routers/chat.py` | dashboard AD-4, AD-5 |
 | **Akun** | `admins` | `app/admin/accounts.py`, `scripts/create_admin.py` | auth AD-1 |
 | **Setelan** | `runtime_config` | `app/routers/admin_config.py` | `get_effective_settings` di setiap permintaan |
-| **Biaya** | `usage_log` | belum ada (lihat status di bawah) | biaya AD-5 |
+| **Sematan** | `embed_keys` | `app/routers/admin_embed_keys.py` (halaman Sematan, superadmin) | `GET /api/embed/keys/{key}` (proxy portal), `deps.kunci_sematan` di setiap pertanyaan dari situs lain |
+
+Biaya model tidak punya tabel sendiri: seluruhnya menumpang `messages.meta`
+(lihat [`messages.meta`](#messagesmeta-jsonb) dan
+[Biaya embedding ingestion](#biaya-embedding-ingestion-tidak-dicatat)).
+
+---
+
+## Konvensi penamaan
+
+Berlaku untuk setiap identifier yang tersimpan atau lewat jaringan: tabel, kolom,
+constraint, index, trigger, kunci JSONB (`messages.meta`), tabel dan kolom log
+SQLite (`docs/logs.md`), serta field, query param, path param, dan nama schema
+di `api.yaml`.
+
+**Identifier berbahasa Inggris; nilai dan teks tetap bahasa Indonesia.**
+
+| Jenis | Bahasa | Contoh |
+|---|---|---|
+| Identifier | Inggris | `documents.title`, `meta->>'llm_cost_usd'`, `?since=` |
+| Nilai data dan kode enum | apa adanya | `type = 'tanya_jawab'`, `role = 'staf'`, `embed_cost_source = 'estimasi'`, unit `Keuangan` |
+| Teks untuk manusia | Indonesia | label UI, pesan galat `detail`, prompt, komentar, dokumen ini |
+
+Aturannya dibuat per lapisan, bukan per kolom. Kolom seperti `id`, `created_at`,
+`is_active`, dan `*_id` sudah pasti berbahasa Inggris karena konvensi framework.
+Aturan "kolom teknis Inggris, kolom domain Indonesia" menuntut penilaian untuk
+setiap kolom baru. Aturan itu pula yang dulu menghasilkan `dibuat_oleh`
+berdampingan dengan `updated_by` untuk konsep yang sama.
+
+### Pola nama
+
+| Unsur | Pola | Contoh |
+|---|---|---|
+| Tabel | snake_case, kata benda jamak; kata benda tak terhitung dan tabel setelan tunggal tetap tunggal | `documents`, `embed_keys`, `unanswered_questions`; `feedback`, `runtime_config` |
+| Kolom | snake_case | `title`, `allowed_origins` |
+| Primary key | `id` (UUID), kecuali kunci alami yang memang tampil ke pengguna | `units.name`, `embed_keys.key`, `runtime_config.key` |
+| Foreign key | `<tabel tunggal>_id` bila merujuk `id`; nama konsepnya bila merujuk kunci alami | `document_id`; `documents.unit` → `units.name` |
+| Boolean | dibaca sebagai pernyataan ya/tidak | `is_active`, `helpful`, `resolved`, `llm_called` |
+| Waktu | `<peristiwa>_at` (timestamptz); `valid_until` untuk batas tanggal | `created_at`, `last_login_at` |
+| Pelaku | `<peristiwa>_by`, berisi email admin sebagai teks, bukan FK | `created_by`, `updated_by`, `uploaded_by` |
+| Urutan | `sort_order` untuk urutan tampil yang diatur admin; `position` untuk urutan di dalam induknya | `units.sort_order`, `chunks.position` |
+| Jumlah, rasio | `<benda>_count`, `<benda>_ratio` | `chunk_count`, `error_ratio` |
+| Biaya, durasi | `<sumber>_cost_usd`, `<benda>_ms` | `llm_cost_usd`, `embed_cost_usd`, `latency_ms` |
+| Index | `ix_<tabel>_<kolom atau tujuan>` | `ix_documents_unit`, `ix_documents_active` |
+| CHECK | `ck_<tabel>_<aturan>` | `ck_documents_content_matches_type` |
+| Trigger | `trg_<tabel>_<kolom>` | `trg_chunks_tsv` |
+
+Kunci JSONB mengikuti pola kolom. Field API yang mencerminkan kolom memakai
+nama kolomnya. Pengecualiannya bila artinya berbeda bagi konsumen API: entri
+tanya jawab mengirim `question`/`answer`, yang tersimpan di
+`documents.title`/`documents.answer`.
+
+**Yang sengaja tidak mengikuti aturan ini:**
+
+- Nama berkas dan revisi migrasi (`0013_identifier_bahasa_inggris`). Keduanya
+  label riwayat, dan revisi lama tidak dapat diganti tanpa merusak
+  `alembic_version`.
+- Nama internal Python: fungsi, variabel, dan field dataclass yang tidak lewat
+  jaringan. Kalau lapisan ini juga mau diseragamkan, kerjakan sebagai langkah
+  terpisah. Pengecualiannya record yang dibangun langsung dari baris tabel
+  (`UnitRecord`, `KunciSematan`, `Account`). Field-nya sekaligus menjadi daftar
+  kolom SQL dan kunci perubahan dari API, jadi namanya mengikuti kolom.
+- Kunci yang ditentukan layanan luar, misalnya isi permintaan ke gerbang JEV
+  (`app/rag/gate.py`). Kontraknya milik layanan itu, jadi tidak dapat diganti
+  dari sisi kita.
 
 ---
 
 ## `documents` — satu tabel, dua jenis isi
 
 Baris `documents` adalah **sumber kebenaran yang dapat disunting**; `chunks`
-hanyalah turunannya. Kolom `jenis` menentukan dari mana isinya berasal:
+hanyalah turunannya. Kolom `type` menentukan dari mana isinya berasal:
 
-| `jenis` | Asal isi | `file_path` | `nama_file` | `jawaban` | `judul` |
+| `type` | Asal isi | `file_path` | `original_filename` | `answer` | `title` |
 |---|---|---|---|---|---|
 | `pdf` | Berkas resmi yang diunggah admin | kunci objek, **NOT NULL** | nama asli unggahan | **NULL** | judul dokumen |
 | `tanya_jawab` | Diketik admin di dashboard | **NULL** | **NULL** | isi jawaban, **NOT NULL** | pertanyaannya |
@@ -177,11 +237,11 @@ sitasi. Retrieval tidak perlu tahu bedanya.
 Aturan itu ditegakkan database, bukan hanya kode:
 
 ```sql
-CONSTRAINT ck_documents_jenis CHECK (jenis IN ('pdf', 'tanya_jawab'))
+CONSTRAINT ck_documents_type CHECK (type IN ('pdf', 'tanya_jawab'))
 
-CONSTRAINT ck_documents_isi_sesuai_jenis CHECK (
-     (jenis = 'pdf'         AND file_path IS NOT NULL AND jawaban IS NULL)
-  OR (jenis = 'tanya_jawab' AND file_path IS NULL     AND jawaban IS NOT NULL)
+CONSTRAINT ck_documents_content_matches_type CHECK (
+     (type = 'pdf'         AND file_path IS NOT NULL AND answer IS NULL)
+  OR (type = 'tanya_jawab' AND file_path IS NULL     AND answer IS NOT NULL)
 )
 ```
 
@@ -191,7 +251,7 @@ dapat disunting kembali.
 
 **`file_path` menyimpan kunci objek** (`documents/<uuid>.pdf`), bukan lintasan
 disk. Berpindah dari disk lokal ke S3/R2 karena itu tidak memaksa migrasi data.
-**`nama_file` menyimpan nama asli unggahan** untuk `Content-Disposition` saat
+**`original_filename` menyimpan nama asli unggahan** untuk `Content-Disposition` saat
 PDF dibuka atau diunduh. Nama ini tidak dipakai sebagai kunci objek, sehingga
 nama yang sama dari dua unggahan tidak saling menimpa.
 
@@ -218,7 +278,7 @@ unit itu. Filter tersebut hanya dapat dipercaya bila setiap dokumen memakai nama
 yang **persis** sama — selama `documents.unit` diketik bebas, dokumen berlabel
 "Bagian Keuangan" tidak pernah terambil untuk pilihan "Keuangan", dan mahasiswa
 menerima penolakan padahal jawabannya ada. Karena itu `documents.unit` dan
-`admins.unit` kini foreign key ke `units.nama`.
+`admins.unit` kini foreign key ke `units.name`.
 
 **Nama sebagai kunci utama, bukan kode terpisah.** Nilai yang tersimpan di
 `documents.unit` tetap nama yang tampil di dashboard, sehingga kontrak API admin
@@ -255,7 +315,35 @@ HNSW dan GIN berlipat sembilan, dan memindah unit sebuah dokumen berarti
 memindah seluruh chunk-nya antar-tabel.
 
 Isi awal (migrasi `0009`, dalam urutan menu): BAAK, FO (Front Office), Keuangan,
-Kemahasiswaan, Prodi, Fakultas, PLK, UPS (Unit Pelayanan Sertifikasi), Akademik.
+Kemahasiswaan, Prodi, Fakultas, PLK, UPS (Unit Pelaksana Sertifikasi — dieja
+"Pelayanan" di `0009`, dibetulkan `0012`), Akademik.
+
+---
+
+## `embed_keys` — situs lain yang memasang asisten
+
+Satu baris untuk setiap situs yang menempel `<script src=".../embed.js"
+data-key="emb_...">`. Portal (`client/src/proxy.ts`) menanyakan kuncinya ke
+`GET /api/embed/keys/{key}` setiap kali panel dimuat dan memasang
+`frame-ancestors` dari `allowed_origins`; setiap pertanyaan dari panel membawa
+kunci yang sama di header `X-Embed-Key`, dan kunci yang sudah dinonaktifkan
+ditolak 403 (`app/deps.py::kunci_sematan`).
+
+**Kunci disimpan apa adanya, tanpa hash.** Ia bukan rahasia -- tertulis di kode
+sumber situs penyemat. Yang membatasinya `allowed_origins` (ditegakkan peramban)
+dan `is_active`. Kuncinya dibuat server (`app/embed_keys.py::buat_kunci`,
+~143 bit) supaya kunci situs lain tidak dapat ditebak.
+
+**`allowed_origins` hanya berisi asal, bukan URL.** `normalisasi_asal`
+menolak path, query, dan kredensial, lalu merapikan huruf besar, garis miring
+akhir, dan port bawaan, sehingga satu situs tidak tercatat dua kali dan setiap
+nilai dapat langsung ditulis ke header CSP.
+
+**`conversations.embed_key`** menandai asal percakapan untuk jumlah pertanyaan
+per situs di dashboard. Pencarian percakapan aktif ikut mencocokkan kolom ini,
+jadi pertanyaan dari portal dan dari situs penyemat dengan `session_id` yang
+sama tidak pernah tergabung. `ON DELETE SET NULL`: menghapus kunci tidak
+menghapus log percakapannya.
 
 ---
 
@@ -267,29 +355,35 @@ metadata kustom dan pembuatan `tsvector` tidak terjangkau abstraksi VectorStore.
 
 | Kolom | Catatan |
 |---|---|
-| `embedding vector(1024)` | Dimensinya **harus** sama dengan keluaran `EMBED_MODEL` |
+| `embedding vector(1024)` | Keluaran `EMBED_MODEL` diisi nol sampai 1024; model yang lebih panjang ditolak |
 | `tsv tsvector` | Diisi trigger, bukan kode aplikasi |
-| `halaman` | Selalu `1` untuk entri tanya jawab — sitasi berformat `[Judul, hal. N]` |
-| `urutan` | Urutan chunk dalam dokumen, dipakai untuk merangkai konteks |
+| `page` | Selalu `1` untuk entri tanya jawab — sitasi berformat `[Judul, hal. N]` |
+| `position` | Urutan chunk dalam dokumen, dipakai untuk merangkai konteks |
 
 `EMBEDDING_DIM = 1024` muncul di `app/db/models.py` dan `alembic/versions/0001`.
-**Mengganti `EMBED_MODEL` ke model berdimensi lain bukan sekadar migrasi kolom** —
-seluruh dokumen harus di-index ulang. `embed_and_store` memeriksa dimensi
-sebelum `INSERT` supaya galatnya menyebut `EMBED_MODEL`, bukan `DBAPIError`
-generik dari pgvector.
+`EMBED_MODEL` saat ini `intfloat/multilingual-e5-small` (384 dimensi, self-hosted
+di balik gateway). Vektornya diisi nol sampai 1024 (`local_embeddings.pad`,
+dipakai `E5ApiEmbeddings` dan `embed_with_usage`). Cosine similarity tidak
+berubah oleh nol tambahan, sehingga kolomnya tidak perlu dimigrasi. Model yang
+menghasilkan lebih dari 1024 dimensi ditolak.
+
+**Mengganti `EMBED_MODEL` selalu berarti re-index seluruh dokumen**, meski
+dimensinya muat: vektor dari dua model berbeda tidak dapat dibandingkan.
+`embed_and_store` memeriksa dimensi sebelum `INSERT` supaya galatnya menyebut
+`EMBED_MODEL`, bukan `DBAPIError` generik dari pgvector.
 
 ### Trigger `tsv`
 
 ```sql
 CREATE FUNCTION chunks_tsv_update() RETURNS trigger AS $$
 BEGIN
-    NEW.tsv := to_tsvector('indonesian', COALESCE(NEW.konten, ''));
+    NEW.tsv := to_tsvector('indonesian', COALESCE(NEW.content, ''));
     RETURN NEW;
 END
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trg_chunks_tsv
-    BEFORE INSERT OR UPDATE OF konten ON chunks
+    BEFORE INSERT OR UPDATE OF content ON chunks
     FOR EACH ROW EXECUTE FUNCTION chunks_tsv_update();
 ```
 
@@ -306,18 +400,18 @@ diam-diam mematikan separuh retrieval hibrida.
 
 | Indeks | Tabel | Definisi | Untuk |
 |---|---|---|---|
-| `ix_documents_aktif` | `documents` | `(is_active, valid_until)` | filter dokumen aktif FR-2 |
+| `ix_documents_active` | `documents` | `(is_active, valid_until)` | filter dokumen aktif FR-2 |
 | `ix_documents_unit` | `documents` | `(unit)` | filter unit retrieval, daftar dokumen staf |
 | `ix_chunks_document_id` | `chunks` | `(document_id)` | JOIN retrieval, hitung chunk per dokumen |
 | `ix_chunks_tsv` | `chunks` | **GIN** `(tsv)` | full-text search |
 | `ix_chunks_embedding_hnsw` | `chunks` | **HNSW** `(embedding vector_cosine_ops)` | vector search |
 | `ix_conversations_session_id` | `conversations` | `(session_id)` | mencari percakapan aktif satu sesi |
+| `ix_conversations_embed_key` | `conversations` | `(embed_key)` | pencarian percakapan aktif per situs penyemat & hitungan per situs |
 | `ix_messages_conversation_id` | `messages` | `(conversation_id)` | merangkai riwayat |
 | `ix_messages_created_at` | `messages` | `(created_at)` | rentang tanggal AD-5 |
 | `ix_feedback_message_id` | `feedback` | `(message_id)` | agregasi kepuasan, JOIN daftar umpan balik |
-| `ix_unanswered_created_at` | `unanswered` | `(created_at)` | filter `sejak` AD-4 |
+| `ix_unanswered_questions_created_at` | `unanswered_questions` | `(created_at)` | filter `since` AD-4 |
 | `ix_admins_email_lower` | `admins` | **UNIQUE** `(lower(email))` | login tidak peka huruf besar |
-| `ix_usage_log_created_at` | `usage_log` | `(created_at)` | rentang bulan halaman Biaya AD-5 |
 
 `ix_documents_unit` dibuat terpisah karena foreign key di Postgres **tidak**
 otomatis ber-indeks; tanpa itu filter unit menjadi sequential scan.
@@ -355,13 +449,12 @@ dua akun berbeda.
 | `chunks.document_id` → `documents.id` | `CASCADE` | Chunk yatim tetap terambil retrieval tanpa induk dokumen yang sah |
 | `messages.conversation_id` → `conversations.id` | `CASCADE` | Pesan tanpa percakapan tidak punya arti |
 | `feedback.message_id` → `messages.id` | `CASCADE` | Umpan balik tanpa pesan tidak dapat ditafsirkan |
-| `unanswered.message_id` → `messages.id` | **`SET NULL`** | Log percakapan boleh dibersihkan, sinyal perbaikan AD-4 tidak ikut hilang |
-| `usage_log.document_id` → `documents.id` | **`SET NULL`** | Menghapus dokumen tidak boleh mengecilkan laporan biaya bulan yang sudah lewat |
-| `documents.unit` → `units.nama` | **`NO ACTION`**, `ON UPDATE CASCADE` | Unit yang masih dipakai tidak boleh hilang — nonaktifkan lewat `is_active` |
-| `admins.unit` → `units.nama` | **`NO ACTION`**, `ON UPDATE CASCADE` | Sama; `unit` NULL tetap sah untuk admin/superadmin |
+| `unanswered_questions.message_id` → `messages.id` | **`SET NULL`** | Log percakapan boleh dibersihkan, sinyal perbaikan AD-4 tidak ikut hilang |
+| `documents.unit` → `units.name` | **`NO ACTION`**, `ON UPDATE CASCADE` | Unit yang masih dipakai tidak boleh hilang — nonaktifkan lewat `is_active` |
+| `admins.unit` → `units.name` | **`NO ACTION`**, `ON UPDATE CASCADE` | Sama; `unit` NULL tetap sah untuk admin/superadmin |
 
-`unanswered` sengaja berbeda. Ia bukan turunan log, melainkan daftar pekerjaan
-admin — retensi log tidak boleh mengosongkannya.
+`unanswered_questions` sengaja berbeda. Ia bukan turunan log, melainkan daftar
+pekerjaan admin — retensi log tidak boleh mengosongkannya.
 
 ---
 
@@ -374,96 +467,89 @@ Hanya diisi pada baris `role = 'assistant'`.
 |---|---|---|
 | `kind` | string | `answer` \| `refusal` \| `support` \| `smalltalk` |
 | `escalated` | bool | Jawaban menyertakan kontak unit (FR-6) |
-| `topik` | array | Topik berisiko tinggi yang terdeteksi |
-| `sensitivitas` | string \| null | Tingkat sensitif (FR-7) |
-| `llm_dipanggil` | bool | Penolakan FR-3 dan FR-7 bernilai `false` |
+| `topics` | array | Topik berisiko tinggi yang terdeteksi |
+| `sensitivity` | string \| null | Tingkat sensitif (FR-7) |
+| `llm_called` | bool | Penolakan FR-3 dan FR-7 bernilai `false` |
 | `model` | string \| null | Hanya diisi bila LLM benar-benar dipanggil |
 | `input_tokens` / `output_tokens` | int \| null | Dari `usage_metadata` LangChain |
-| `biaya_usd` | float \| null | `null` bila tarif modelnya tidak dikenal |
+| `llm_cost_usd` | float \| null | `null` bila tarif modelnya tidak dikenal |
 | `rewritten_query` | string \| null | Hasil penulisan ulang query (FR-4) |
 | `unit` | string \| null | Unit pilihan mahasiswa di menu; `null` = semua unit. Membedakan penolakan akibat salah pilih unit dari dokumen yang memang belum ada |
-| `embed_dipanggil` | bool | `false` untuk FR-7 dan smalltalk — keduanya berhenti sebelum retrieval |
+| `embed_called` | bool | `false` untuk FR-7 dan smalltalk — keduanya berhenti sebelum retrieval |
 | `embed_model` | string \| null | Model yang **diminta**, bukan yang dilaporkan gateway |
 | `embed_tokens` | int \| null | `usage.prompt_tokens`; `null` bila endpoint tidak melaporkannya |
-| `embed_biaya_usd` | float \| null | Biaya meng-embed pertanyaan, **tanpa pembulatan** |
-| `embed_biaya_sumber` | string \| null | `provider` atau `estimasi` |
+| `embed_cost_usd` | float \| null | Biaya meng-embed pertanyaan, **tanpa pembulatan** |
+| `embed_cost_source` | string \| null | `provider` atau `estimasi` |
+| `gate_label` | string \| null | Label gerbang JEV, terisi juga untuk pesan yang diteruskan; `null` bila JEV tidak berjalan |
+| `gate_confidence` | float \| null | Keyakinan label itu |
+| `gate_error` | string \| null | Galat panggilan JEV (pesan tetap diteruskan, fail-open) |
+| `gate_cost_usd` | float \| null | Biaya panggilan JEV |
+| `top_rerank_score` | float \| null | Skor reranker tertinggi; `null` bila reranker mati atau tidak ada retrieval |
 
 Struktur ini bukan sekadar catatan — statistik AD-5 memfilter langsung atasnya
-(`m.meta->>'kind'`, `m.meta->'topik'`). Menambah nilai `kind` baru tanpa
+(`m.meta->>'kind'`, `m.meta->'topics'`). Menambah nilai `kind` baru tanpa
 menyesuaikan `app/admin/stats.py` membuat pesan itu hilang dari semua hitungan.
 
-**`biaya_usd = null` ≠ biaya nol.** Jawaban dari model yang tarifnya belum ada di
+**`llm_cost_usd = null` ≠ biaya nol.** Jawaban dari model yang tarifnya belum ada di
 `app/observability/costs.py` dilaporkan terpisah sebagai
-`pesan_tanpa_estimasi_biaya`, bukan dianggap gratis.
+`messages_without_cost_estimate`, bukan dianggap gratis.
 
-**`biaya_usd` adalah biaya LLM saja, bukan total.** Biaya embedding berdiri di
-kunci `embed_biaya_usd` dan sengaja tidak dijumlahkan ke dalamnya: `biaya_usd`
-sudah berarti "biaya LLM" di seluruh baris yang tercatat sebelumnya dan di setiap
-query `app/admin/stats.py`. Mengubah artinya diam-diam membuat baris sebelum dan
-sesudah perubahan tidak lagi sebanding. Penjumlahan keduanya dilakukan saat
-menyajikan, bukan saat menyimpan.
+**`llm_cost_usd` hanya biaya LLM.** Biaya embedding disimpan terpisah di
+`embed_cost_usd` dan tidak dijumlahkan ke dalamnya. Penjumlahan keduanya
+dilakukan saat menyajikan, bukan saat menyimpan.
 
-**Penolakan FR-3 berbiaya embedding meskipun `llm_dipanggil = false`.** Retrieval
+**Penolakan FR-3 berbiaya embedding meskipun `llm_called = false`.** Retrieval
 berjalan lebih dulu (`app/rag/chain.py:141`), baru ambangnya memutuskan menolak —
 pertanyaannya sudah terlanjur di-embed. Karena itu penjumlahan biaya embedding
-**tidak boleh** menumpang filter `meta->>'llm_dipanggil' = 'true'` yang dipakai
-query biaya LLM; pakai syaratnya sendiri, `meta->>'embed_tokens' IS NOT NULL`.
+**tidak boleh** menumpang filter `meta->>'llm_called' = 'true'` yang dipakai
+query biaya LLM; pakai syaratnya sendiri, `meta->>'embed_called' = 'true'`.
 Menyaringnya dengan filter yang salah akan menghapus seluruh penolakan dari
 laporan — padahal pertanyaan yang banyak ditolak justru yang paling perlu terlihat
 (sinyal AD-4).
 
-Bedakan tiga keadaan: `embed_dipanggil = false` berarti benar-benar tidak ada
+Bedakan tiga keadaan: `embed_called = false` berarti benar-benar tidak ada
 panggilan (FR-7 dan smalltalk); `true` dengan `embed_tokens = null` berarti
 panggilannya nyata dan berbiaya tetapi endpoint tidak melaporkan pemakaian; `true`
 dengan angka lengkap berarti terhitung penuh. Hanya yang pertama yang gratis.
 
+**Biaya penyedia mengalahkan taksiran.** Bila endpoint mengembalikan `usage.cost`
+(bukan bagian spesifikasi OpenAI; OpenRouter menambahkannya), angka itulah yang
+dipakai dan `embed_cost_source = 'provider'`. `costs.PRICES_PER_MTOK` hanyalah
+salinan tarif yang bisa tertinggal, dipakai hanya bila `cost` tidak dilaporkan
+(`estimasi`). Angka biaya tanpa asal-usul tidak dapat ditafsirkan lagi setelah
+beberapa bulan.
+
+**`embed_cost_usd` disimpan tanpa pembulatan.** `costs.estimate_cost` membulatkan
+ke enam desimal, sementara embedding satu pertanyaan pada model berbayar (sembilan
+token `text-embedding-3-small`) berharga $0,00000018 — `round(…, 6)` menjadikannya
+nol bulat. Jalur embedding memakai `costs.estimate_input_cost` yang tidak
+membulatkan; pembulatan baru terjadi di `app/admin/stats.py` setelah dijumlahkan.
+
+**Dengan `EMBED_MODEL` self-hosted, `embed_cost_usd` bernilai `0` bersumber
+`estimasi`.** Gateway melaporkan `prompt_tokens` untuk e5-small tetapi tidak
+`cost`, dan tarifnya terdaftar nol di `costs.PRICES_PER_MTOK`. Entri tarif nol itu
+wajib ada: tanpanya `costs.biaya_embedding` mengembalikan `null`, dan setiap
+pertanyaan muncul sebagai "tanpa biaya" di kartu Cakupan estimasi halaman Biaya.
+
 ---
 
-## `usage_log` — biaya yang tidak punya baris pesan
+## Biaya embedding ingestion tidak dicatat
 
-Biaya chat menumpang `messages.meta`. Embedding saat ingestion tidak bisa: ia
-terjadi ketika tidak ada mahasiswa yang bertanya sama sekali, jadi tidak ada
-baris yang dapat dititipi. Tanpa tabel ini halaman Biaya AD-5 diam-diam hanya
-melaporkan sebagian dari yang benar-benar dibelanjakan.
+Embedding saat ingestion dan reindex terjadi ketika tidak ada mahasiswa yang
+bertanya, sehingga tidak ada baris `messages` untuk dititipi. Tabel `usage_log`
+(migrasi `0008`) pernah disiapkan untuk itu, tetapi tidak pernah punya penulis,
+dan dihapus di `0010`. Dengan model self-hosted, tarif per tokennya nol, dan ongkos
+server embedding adalah biaya tetap yang tidak dapat dibagi per panggilan.
+Karena itu halaman Biaya AD-5 hanya memuat LLM chat dan embedding pertanyaan.
 
-Kolom di `documents` sempat dipertimbangkan dan ditolak. Menghapus dokumen akan
-mengecilkan total bulan yang sudah lewat, dan menyunting entri tanya jawab akan
-menimpa biaya ingestion pertamanya — buku biaya yang berubah surut tidak dapat
-menjawab "bulan lalu habis berapa". Karena itu tabelnya **append-only** dan
-`document_id` memakai `SET NULL`, alasan yang sama dengan `unanswered.message_id`.
-`keterangan` menyimpan judul dokumen saat panggilan terjadi supaya barisnya tetap
-terbaca setelah induknya hilang.
-
-### Biaya penyedia mengalahkan taksiran
-
-Gateway proyek ini mengembalikan `usage.cost` — biaya sebenarnya, bukan hitungan
-kita. Angka itu selalu menang; `costs.PRICES_PER_MTOK` hanyalah salinan tarif yang
-bisa tertinggal, dan dipakai hanya untuk endpoint yang tidak melaporkan biaya
-(`cost` bukan bagian spesifikasi OpenAI). `biaya_sumber` mencatat yang mana yang
-terpakai, ditegakkan database:
-
-```sql
-CONSTRAINT ck_usage_log_biaya_lengkap CHECK ((biaya_usd IS NULL) = (biaya_sumber IS NULL))
-```
-
-Angka biaya tanpa asal-usul tidak dapat ditafsirkan lagi setelah beberapa bulan,
-dan asal-usul tanpa angka tidak ada artinya.
-
-### `biaya_usd` disimpan tanpa pembulatan
-
-Ini bukan kerapian, melainkan syarat agar kolomnya berguna. `costs.estimate_cost`
-membulatkan ke enam desimal, sementara embedding satu pertanyaan (sembilan token
-pada `text-embedding-3-small`) berharga **$0,00000018** — `round(…, 6)`
-menjadikannya nol bulat. Ribuan pertanyaan yang seluruhnya berbiaya nol bukan
-laporan biaya. Karena itu jalur embedding memakai `costs.estimate_input_cost`
-yang tidak membulatkan, dan pembulatan baru terjadi di `app/admin/stats.py`
-setelah dijumlahkan.
-
-> **Status:** embedding pertanyaan mahasiswa sudah tercatat di `messages.meta`
-> dan ditampilkan halaman Biaya. `app/admin/stats.py` juga sudah membaca
-> `usage_log`, tetapi tabel itu **belum punya penulis** — `app/ingestion/` dan
-> `app/admin/faq.py` belum mengisinya. Karena itu bagian ingestion/reindex masih
-> nol sampai jalur penulisannya diterapkan.
+Bila `EMBED_MODEL` kembali ke model berbayar, biaya ingestion **harus** dicatat
+lagi — tanpa itu halaman Biaya diam-diam melaporkan hanya sebagian dari yang
+dibelanjakan. Buat ulang buku biaya append-only seperti di `0008`, lalu panggil
+`embed_with_usage` dari `app/ingestion/embedder.py` (bukan `aembed_documents`)
+supaya laporan pemakaiannya tidak dibuang. Kolom biaya di `documents` sudah pernah
+dipertimbangkan dan ditolak: menghapus dokumen atau menyunting entri tanya jawab
+akan mengubah surut total bulan yang sudah lewat. Mengganti model sudah berarti
+re-index seluruh dokumen, jadi pekerjaan ini ikut di dalamnya.
 
 ---
 
@@ -474,7 +560,7 @@ Ini bagian skema yang paling mudah dilanggar tanpa sadar (PRD §11):
 - **Identitas mahasiswa.** `conversations.user_hash` adalah hash anonim dan tidak
   boleh dapat dikembalikan ke identitas. `session_id` berasal dari localStorage
   peramban, bukan dari NIM.
-- **Isi pertanyaan sensitif (FR-7).** `messages.konten` untuk pertanyaan sensitif
+- **Isi pertanyaan sensitif (FR-7).** `messages.content` untuk pertanyaan sensitif
   diganti penanda tetap: `[disembunyikan: pertanyaan sensitif, dialihkan ke
   layanan konseling]`. Jumlahnya tetap tercatat untuk statistik, tetapi curahan
   hati mahasiswa tidak ikut terbaca siapa pun yang membuka database.
@@ -497,7 +583,7 @@ dipilih agar kegagalan menghasilkan objek yatim (hanya memakan tempat), bukan
 baris yatim (kartu sitasi menunjuk ke ketiadaan — terlihat mahasiswa). Bila
 transaksi DB gagal, objeknya dihapus lagi.
 
-**Suntingan tanya jawab memicu re-index.** Mengubah `judul` atau `jawaban` pada
+**Suntingan tanya jawab memicu re-index.** Mengubah `title` atau `answer` pada
 entri `tanya_jawab` membuang chunk lama dan menghitung ulang embedding. Indeks
 yang masih memuat kalimat versi lama akan menjawab mahasiswa dengan aturan yang
 sudah dicabut.
@@ -530,13 +616,17 @@ pertanyaan hari sebelumnya.
 |---|---|
 | `0001_skema_awal` | Extension `vector`, tujuh tabel, indeks HNSW + GIN, trigger `tsv` |
 | `0002_selaraskan_not_null` | Tujuh kolom NOT NULL yang tertinggal — termasuk `chunks.embedding` |
-| `0003_log_dashboard_admin` | `unanswered.message_id`, indeks `created_at` untuk AD-4/AD-5 |
-| `0004_level_akses_admin` | `nama`, `unit`, `is_active`, `password_changed_at`, `last_login_at`; `editor` → `admin`; unik `lower(email)` |
-| `0005_entri_tanya_jawab` | `jenis`, `jawaban`; `file_path` menjadi nullable; dua CHECK constraint |
-| `0006_nama_file_asli` | `nama_file` untuk nama tab browser dan nama unduhan PDF |
+| `0003_log_dashboard_admin` | `unanswered.message_id` (kini `unanswered_questions`), indeks `created_at` untuk AD-4/AD-5 |
+| `0004_level_akses_admin` | `nama` (kini `name`), `unit`, `is_active`, `password_changed_at`, `last_login_at`; `editor` → `admin`; unik `lower(email)` |
+| `0005_entri_tanya_jawab` | `jenis`, `jawaban` (kini `type`, `answer`); `file_path` menjadi nullable; dua CHECK constraint |
+| `0006_nama_file_asli` | `nama_file` (kini `original_filename`) untuk nama tab browser dan nama unduhan PDF |
 | `0007_konfigurasi_runtime` | `runtime_config` — parameter `.env` yang dapat ditimpa dari dashboard |
 | `0008_buku_biaya_pemakaian` | `usage_log` — biaya embedding yang tidak punya baris pesan untuk ditumpangi |
 | `0009_tabel_unit` | `units` + isi awal; nilai `unit` lama dipetakan ke nama resmi; FK dari `documents`/`admins`; `ix_documents_unit` |
+| `0010_hapus_buku_biaya` | Menghapus `usage_log` — embedding self-hosted bertarif nol, dan tabelnya tidak pernah punya penulis |
+| `0011_kunci_sematan` | `embed_keys` — satu kunci per situs yang memasang asisten; `conversations.embed_key` + indeks |
+| `0012_nama_resmi_ups` | Deskripsi unit UPS: "Unit Pelayanan Sertifikasi" → "Unit Pelaksana Sertifikasi" (nama resmi di FAQ kampus); deskripsi yang sudah disunting admin dibiarkan |
+| `0013_identifier_bahasa_inggris` | Seluruh identifier Indonesia → Inggris: tabel `unanswered` → `unanswered_questions`, kolom, constraint, index, fungsi trigger `tsv`, dan kunci `messages.meta` di baris lama |
 
 Catatan per migrasi:
 
@@ -554,6 +644,14 @@ Catatan per migrasi:
   justru hilang dari menu unit yang benar.
 - **0009 downgrade tidak mengembalikan nama lama.** Pemetaan ke nama resmi
   tetap berlaku; nilai aslinya tidak disimpan di mana pun.
+- **0010 downgrade hanya mengembalikan struktur `usage_log`.** Tidak ada baris
+  yang hilang: tabel itu memang selalu kosong.
+- **0011 downgrade menghapus seluruh kunci sematan** dan penanda asal
+  percakapan. Situs yang memasang asisten berhenti mendapat panel sampai kunci
+  dibuat ulang — dengan nilai kunci baru.
+- **0013 downgrade** mengembalikan seluruh nama lama, termasuk kunci
+  `messages.meta` pada baris yang sudah ada. Fungsi `chunks_tsv_update()` dibuat
+  ulang di kedua arah — `RENAME COLUMN` tidak menyentuh isi fungsi plpgsql.
 
 ```bash
 alembic upgrade head          # terapkan

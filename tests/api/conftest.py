@@ -6,6 +6,8 @@ koneksi database, tidak ada panggilan API LLM maupun embedding.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -18,6 +20,7 @@ from app.deps import (
     build_rewrite_call,
     get_account_store,
     get_chat_logger,
+    get_embed_key_store,
     get_embeddings,
     get_log_sink,
     get_log_store,
@@ -29,17 +32,21 @@ from app.deps import (
 from app.main import create_app
 from app.observability.logstore import LogStore
 from app.security.auth import create_access_token
+from app.security.batas_harian import PenghitungHarian, get_daily_counter
 from app.security.killswitch import KillSwitch, get_kill_switch
 from app.security.ratelimit import (
     LOGIN_MAX_FAILURES,
     LOGIN_WINDOW_SECONDS,
     FailureLimiter,
+    SlidingWindowLimiter,
+    get_chat_limiter,
     get_login_limiter,
 )
 from tests.fixtures.fakes import (
     FakeAccountStore,
     FakeChatLogger,
     FakeEmbeddings,
+    FakeEmbedKeyStore,
     FakeLogSink,
     FakeRetriever,
     FakeRuntimeConfigStore,
@@ -101,6 +108,22 @@ def login_limiter() -> FailureLimiter:
 
 
 @pytest.fixture
+def chat_limiter() -> SlidingWindowLimiter:
+    """Baru per test, supaya pertanyaan satu test tidak menghabiskan jatah test lain."""
+    return SlidingWindowLimiter()
+
+
+@pytest.fixture
+def daily_counter() -> PenghitungHarian:
+    """Hari yang masih kosong: log Postgres tidak disentuh."""
+
+    async def tanpa_log(_zona: str) -> tuple[int, datetime]:
+        return 0, datetime.max.replace(tzinfo=UTC)
+
+    return PenghitungHarian(tanpa_log)
+
+
+@pytest.fixture
 def runtime_config() -> FakeRuntimeConfigStore:
     """Tanpa penimpaan: setiap test berangkat dari nilai `.env`."""
     return FakeRuntimeConfigStore()
@@ -112,10 +135,16 @@ def units() -> FakeUnitDirectory:
 
 
 @pytest.fixture
+def embed_keys() -> FakeEmbedKeyStore:
+    """Tanpa kunci: setiap test menyiapkan situs penyematnya sendiri."""
+    return FakeEmbedKeyStore()
+
+
+@pytest.fixture
 def accounts() -> FakeAccountStore:
     """Satu akun untuk setiap level, semuanya dengan kata sandi `SANDI`."""
     store = FakeAccountStore()
-    store.add(ADMIN_EMAIL, AdminRole.SUPERADMIN, password=SANDI, nama="Super Admin")
+    store.add(ADMIN_EMAIL, AdminRole.SUPERADMIN, password=SANDI, name="Super Admin")
     store.add(ADMIN_BIASA_EMAIL, AdminRole.ADMIN, password=SANDI)
     store.add(STAF_EMAIL, AdminRole.STAF, password=SANDI, unit=STAF_UNIT)
     return store
@@ -128,9 +157,12 @@ def make_client(
     api_rewriter,
     chat_logger,
     login_limiter,
+    chat_limiter,
+    daily_counter,
     accounts,
     runtime_config,
     units,
+    embed_keys,
     log_sink,
     log_store,
 ):
@@ -154,11 +186,14 @@ def make_client(
         app.dependency_overrides[get_session] = lambda: session
         app.dependency_overrides[get_chat_logger] = lambda: chat_logger
         app.dependency_overrides[get_login_limiter] = lambda: login_limiter
+        app.dependency_overrides[get_chat_limiter] = lambda: chat_limiter
+        app.dependency_overrides[get_daily_counter] = lambda: daily_counter
         app.dependency_overrides[get_account_store] = lambda: accounts
         app.dependency_overrides[get_runtime_config_store] = lambda: runtime_config
         app.dependency_overrides[get_embeddings] = lambda: FakeEmbeddings()
         app.dependency_overrides[get_storage] = lambda: None
         app.dependency_overrides[get_unit_directory] = lambda: units
+        app.dependency_overrides[get_embed_key_store] = lambda: embed_keys
         app.dependency_overrides[get_log_sink] = lambda: log_sink
         app.dependency_overrides[get_log_store] = lambda: log_store
         return TestClient(app)

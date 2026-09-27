@@ -16,13 +16,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.permissions import normalize_unit
-from app.db.models import JenisDokumen
+from app.db.models import DocumentType
 from app.rag.filters import active_document_clause
 
 _PERTANYAAN_SQL = text(
     f"""
-    SELECT d.judul FROM documents d
-    WHERE d.jenis = :jenis
+    SELECT d.title FROM documents d
+    WHERE d.type = :type
       AND {active_document_clause("d")}
       AND (CAST(:unit AS text) IS NULL OR d.unit = CAST(:unit AS text))
     ORDER BY d.updated_at DESC, d.id
@@ -33,20 +33,20 @@ _PERTANYAAN_SQL = text(
 
 @dataclass(frozen=True)
 class UnitInfo:
-    nama: str
-    deskripsi: str | None = None
+    name: str
+    description: str | None = None
 
 
 @dataclass(frozen=True)
 class UnitRecord:
     """Satu baris `units` lengkap, untuk halaman kelola unit di dashboard."""
 
-    nama: str
-    deskripsi: str | None
-    urutan: int
+    name: str
+    description: str | None
+    sort_order: int
     is_active: bool
-    jumlah_dokumen: int = 0
-    jumlah_akun: int = 0
+    document_count: int = 0
+    account_count: int = 0
     """Akun dashboard berunit ini -- menonaktifkan unit tidak mengeluarkan
     mereka, tetapi staf tidak lagi dapat memilih unitnya untuk isian baru."""
 
@@ -55,12 +55,12 @@ class DuplicateUnitError(ValueError):
     """Nama unit bentrok dengan unit lain setelah dinormalisasi."""
 
 
-EDITABLE_FIELDS = ("nama", "deskripsi", "urutan", "is_active")
+EDITABLE_FIELDS = ("name", "description", "sort_order", "is_active")
 
 _SEMUA_SQL = """
-    SELECT u.nama, u.deskripsi, u.urutan, u.is_active,
-           (SELECT count(*) FROM documents d WHERE d.unit = u.nama) AS jumlah_dokumen,
-           (SELECT count(*) FROM admins a WHERE a.unit = u.nama) AS jumlah_akun
+    SELECT u.name, u.description, u.sort_order, u.is_active,
+           (SELECT count(*) FROM documents d WHERE d.unit = u.name) AS document_count,
+           (SELECT count(*) FROM admins a WHERE a.unit = u.name) AS account_count
     FROM units u
 """
 
@@ -76,7 +76,7 @@ def bentrok(
     """
     kunci = normalize_unit(nama)
     return next(
-        (u.nama for u in units if u.nama != kecuali and normalize_unit(u.nama) == kunci),
+        (u.name for u in units if u.name != kecuali and normalize_unit(u.name) == kunci),
         None,
     )
 
@@ -91,7 +91,7 @@ def cocokkan(units: Iterable[UnitInfo], nama: str | None) -> str | None:
     kunci = normalize_unit(nama)
     if not kunci:
         return None
-    return next((u.nama for u in units if normalize_unit(u.nama) == kunci), None)
+    return next((u.name for u in units if normalize_unit(u.name) == kunci), None)
 
 
 class SqlUnitDirectory:
@@ -102,9 +102,11 @@ class SqlUnitDirectory:
 
     async def list(self) -> list[UnitInfo]:
         rows = await self.session.execute(
-            text("SELECT nama, deskripsi FROM units WHERE is_active ORDER BY urutan, nama")
+            text(
+                "SELECT name, description FROM units WHERE is_active ORDER BY sort_order, name"
+            )
         )
-        return [UnitInfo(r.nama, r.deskripsi) for r in rows]
+        return [UnitInfo(r.name, r.description) for r in rows]
 
     async def pertanyaan(self, unit: str | None, limit: int) -> list[str]:
         """Pertanyaan entri tanya jawab yang sedang berlaku, terbaru lebih dulu.
@@ -115,7 +117,7 @@ class SqlUnitDirectory:
         """
         rows = await self.session.execute(
             _PERTANYAAN_SQL,
-            {"jenis": JenisDokumen.TANYA_JAWAB.value, "unit": unit, "limit": limit},
+            {"type": DocumentType.TANYA_JAWAB.value, "unit": unit, "limit": limit},
         )
         return list(rows.scalars())
 
@@ -129,56 +131,59 @@ class SqlUnitDirectory:
 
     async def semua(self) -> list[UnitRecord]:
         """Termasuk unit nonaktif, beserta pemakaiannya."""
-        rows = await self.session.execute(text(_SEMUA_SQL + " ORDER BY u.urutan, u.nama"))
+        rows = await self.session.execute(text(_SEMUA_SQL + " ORDER BY u.sort_order, u.name"))
         return [UnitRecord(**r) for r in rows.mappings()]
 
-    async def ambil(self, nama: str) -> UnitRecord | None:
+    async def ambil(self, name: str) -> UnitRecord | None:
         """Persis menurut kunci utama: path API membawa ejaan resmi dari `semua`."""
-        sql = text(_SEMUA_SQL + " WHERE u.nama = :nama")
-        row = (await self.session.execute(sql, {"nama": nama})).mappings().first()
+        sql = text(_SEMUA_SQL + " WHERE u.name = :name")
+        row = (await self.session.execute(sql, {"name": name})).mappings().first()
         return UnitRecord(**row) if row else None
 
     async def buat(
-        self, *, nama: str, deskripsi: str | None, urutan: int | None
+        self, *, name: str, description: str | None, sort_order: int | None
     ) -> UnitRecord:
-        if bentrok(await self.semua(), nama):
-            raise DuplicateUnitError(nama)
+        if bentrok(await self.semua(), name):
+            raise DuplicateUnitError(name)
         try:
             await self.session.execute(
                 text(
-                    "INSERT INTO units (nama, deskripsi, urutan, is_active)"
-                    " VALUES (:nama, :deskripsi,"
-                    " COALESCE(:urutan, (SELECT COALESCE(max(urutan), 0) + 1 FROM units)),"
+                    "INSERT INTO units (name, description, sort_order, is_active)"
+                    " VALUES (:name, :description,"
+                    " COALESCE(:sort_order,"
+                    " (SELECT COALESCE(max(sort_order), 0) + 1 FROM units)),"
                     " true)"
                 ),
-                {"nama": nama, "deskripsi": deskripsi, "urutan": urutan},
+                {"name": name, "description": description, "sort_order": sort_order},
             )
         except IntegrityError:
             # Balapan dua pembuatan dengan nama sama.
             await self.session.rollback()
-            raise DuplicateUnitError(nama) from None
+            raise DuplicateUnitError(name) from None
         await self.session.commit()
-        unit = await self.ambil(nama)
+        unit = await self.ambil(name)
         assert unit is not None
         return unit
 
-    async def ubah(self, nama: str, changes: dict[str, Any]) -> UnitRecord | None:
+    async def ubah(self, name: str, changes: dict[str, Any]) -> UnitRecord | None:
         """Ganti nama ikut mengalir ke `documents.unit` dan `admins.unit` lewat
-        `ON UPDATE CASCADE` -- satu UPDATE di sini cukup."""
+        `ON UPDATE CASCADE` -- satu UPDATE di sini cukup.
+
+        `changes` memakai nama kolom (`EDITABLE_FIELDS`), sama dengan field API."""
         kolom = [k for k in EDITABLE_FIELDS if k in changes]
         if not kolom:
-            return await self.ambil(nama)
-        baru = changes.get("nama", nama)
-        if baru != nama and bentrok(await self.semua(), baru, kecuali=nama):
+            return await self.ambil(name)
+        baru = changes.get("name", name)
+        if baru != name and bentrok(await self.semua(), baru, kecuali=name):
             raise DuplicateUnitError(baru)
         try:
             row = (
                 await self.session.execute(
                     text(
                         f"UPDATE units SET {', '.join(f'{k} = :{k}' for k in kolom)}"
-                        " WHERE nama = :lama RETURNING nama"
+                        " WHERE name = :lama RETURNING name"
                     ),
-                    {**{k: changes[k] for k in kolom}, "lama": nama},
+                    {**{k: changes[k] for k in kolom}, "lama": name},
                 )
             ).first()
         except IntegrityError:

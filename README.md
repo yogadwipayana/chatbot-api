@@ -103,7 +103,7 @@ Dua backend, dipilih lewat `STORAGE_BACKEND`:
 
 Kolom `documents.file_path` menyimpan **kunci objek** (`documents/<uuid>.pdf`),
 bukan lintasan disk — pindah dari lokal ke R2 tidak memaksa migrasi data.
-Kolom `documents.nama_file` menyimpan nama asli unggahan untuk nama tab browser
+Kolom `documents.original_filename` menyimpan nama asli unggahan untuk nama tab browser
 dan nama berkas saat PDF dilihat atau diunduh. Key objek tetap berbasis UUID agar
 nama file tidak dapat menimpa unggahan lain.
 
@@ -307,7 +307,7 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" localhost:8000/api/admin/config
 
 PRD menuntut ambang ditentukan empiris, bukan ditebak. Butuh dua kumpulan:
 set evaluasi (pertanyaan yang memang terjawab) dan kumpulan negatif
-(pertanyaan yang seharusnya ditolak — ambil dari tabel `unanswered` setelah
+(pertanyaan yang seharusnya ditolak — ambil dari tabel `unanswered_questions` setelah
 uji terbatas, jangan dikarang).
 
 ```bash
@@ -400,7 +400,7 @@ seolah-olah front-end tidak pernah memanggil.
 |---|---|
 | `staf` (Staf/Dosen) | Kelola dokumen dan tanya jawab **unitnya sendiri**, uji coba jawaban, lihat pertanyaan tak terjawab |
 | `admin` | + dokumen dan tanya jawab semua unit, tandai pertanyaan selesai, statistik, umpan balik mahasiswa |
-| `superadmin` | + kill switch, konfigurasi retrieval dan chunking, kelola akun (`/api/admin/users`) dan unit (`/api/admin/units`) |
+| `superadmin` | + kill switch, konfigurasi retrieval, chunking, dan batas harian, kelola akun (`/api/admin/users`), unit (`/api/admin/units`), dan kunci sematan (`/api/admin/embed-keys`) |
 
 Aturannya ada di `app/admin/permissions.py` (tanpa impor pihak ketiga). Setiap
 operasi admin di `api.yaml` mencatat `x-min-role`, dan
@@ -439,7 +439,7 @@ python -m scripts.seed_demo --hapus
 Beberapa hal yang tidak terlihat dari kontrak:
 
 - Setiap jawaban `/api/chat` dan `/api/chat/stream` dicatat ke
-  `conversations`/`messages`, dan penolakan juga ke `unanswered` -- sumber data
+  `conversations`/`messages`, dan penolakan juga ke `unanswered_questions` -- sumber data
   AD-4 dan AD-5. Pencatatan yang gagal tidak menggagalkan jawaban.
 - Isi pertanyaan sensitif (FR-7) tidak disimpan; jumlahnya tetap tercatat.
 - Uji coba admin (AD-6) tidak dicatat dan tidak tunduk pada kill switch.
@@ -447,12 +447,28 @@ Beberapa hal yang tidak terlihat dari kontrak:
   kata tanya dibuang, bukan embedding, dan tanpa impor pihak ketiga.
 - Estimasi biaya AD-5 hanya menghitung model yang tarifnya ada di
   `PRICES_PER_MTOK`. Jawaban dari model tanpa tarif dilaporkan sebagai
-  `pesan_tanpa_estimasi_biaya`, bukan sebagai biaya nol.
-- Kill switch dan pembatas login tersimpan di memori proses: benar untuk satu
-  worker uvicorn (Dockerfile), harus dipindah ke Postgres bila worker ditambah.
+  `messages_without_cost_estimate`, bukan sebagai biaya nol.
+- Endpoint mahasiswa publik tanpa login, jadi dapat dipanggil langsung lewat
+  Postman atau skrip. Yang menahannya (`app/security/ratelimit.py`,
+  `app/security/batas_harian.py`, `app/deps.py`):
+  - batas laju per IP, per `X-Session-Id`, dan per kunci sematan
+    (`RATE_LIMIT_*`), dijawab 429 + `Retry-After`. Permintaan yang ditolak
+    tidak menghabiskan jatah; umpan balik punya jatah terpisah dari pertanyaan.
+  - batas pertanyaan harian dari semua sumber (`CHAT_DAILY_LIMIT`, dapat diubah
+    dari halaman Konfigurasi): terlampaui = kill switch menyala otomatis. "Hari"
+    dihitung Postgres dalam zona `TIMEZONE`.
+  - pertanyaan maksimal 500 karakter; riwayat dipangkas ke 3 giliran terakhir,
+    masing-masing 2000 karakter.
+- IP untuk batas per IP dibaca dari `CLIENT_IP_HEADER`: entri terakhir
+  `X-Forwarded-For` di balik satu proxy seperti Caddy, `CF-Connecting-IP` di
+  balik Cloudflare, atau alamat koneksi bila kosong. Port API tidak boleh
+  terjangkau tanpa melewati proxy itu -- kalau terjangkau, header dapat
+  dipalsukan dan batas per IP tidak berguna.
+- Kill switch, batas laju, penghitung harian, dan pembatas login tersimpan di
+  memori proses: benar untuk satu worker uvicorn (Dockerfile), harus dipindah ke
+  Postgres bila worker ditambah.
 
 ## Belum diimplementasikan
 
-Rate limiter untuk endpoint chat (login admin sudah dibatasi), saran pertanyaan
-(FE-6, menunggu hasil survei), dan chain penulisan ulang query yang benar-benar
+Saran pertanyaan (FE-6, menunggu hasil survei), dan chain penulisan ulang query yang benar-benar
 memanggil LLM (fungsi pembantunya sudah ada dan teruji).

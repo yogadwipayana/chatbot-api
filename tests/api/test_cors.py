@@ -68,6 +68,21 @@ class TestPreflight:
         diizinkan = {h.strip().lower() for h in izin.split(",")}
         assert {"content-type", "x-session-id"} <= diizinkan
 
+    def test_kunci_sematan_diizinkan(self, client_produksi):
+        """Panel `/embed` yang dimuat situs lain membawa `X-Embed-Key` dari asal portal."""
+        resp = client_produksi.options(
+            "/api/chat/stream",
+            headers={
+                "Origin": PORTAL,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type,x-session-id,x-embed-key",
+            },
+        )
+        assert resp.status_code == 200
+        izin_mentah = resp.headers["access-control-allow-headers"]
+        izin = {h.strip().lower() for h in izin_mentah.split(",")}
+        assert "x-embed-key" in izin
+
     def test_authorization_diizinkan_untuk_dashboard(self, client_produksi):
         """Dashboard mengirim bearer token di setiap permintaan."""
         resp = client_produksi.options(

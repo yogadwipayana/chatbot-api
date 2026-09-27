@@ -95,7 +95,7 @@ class TestPerubahanAkun:
 
     def test_mengubah_nama_sendiri_boleh(self):
         diri = Akun(SUPER)
-        assert check_account_change(pelaku(id_=diri.id), diri, {"nama": "Baru"}, 1) is None
+        assert check_account_change(pelaku(id_=diri.id), diri, {"name": "Baru"}, 1) is None
 
     @pytest.mark.parametrize("perubahan", [{"role": ADMIN}, {"is_active": False}])
     def test_superadmin_aktif_terakhir_tidak_bisa_disingkirkan(self, perubahan):

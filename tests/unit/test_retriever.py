@@ -19,11 +19,13 @@ from contextlib import asynccontextmanager
 
 import pytest
 
+from app.rag.glossary import fulltext_variants
 from app.rag.retriever import (
     FULLTEXT_SQL,
     ITERATIVE_SCAN_SQL,
     VECTOR_SQL,
     PostgresHybridRetriever,
+    fulltext_sql,
     vector_literal,
 )
 
@@ -31,10 +33,10 @@ from app.rag.retriever import (
 def baris(chunk_id: str, skor: float, judul: str = "Panduan Akademik 2025") -> dict:
     return {
         "chunk_id": chunk_id,
-        "konten": f"isi {chunk_id}",
-        "halaman": 12,
+        "content": f"isi {chunk_id}",
+        "page": 12,
         "document_id": "d1",
-        "judul": judul,
+        "title": judul,
         "file_path": "documents/d1.pdf",
         "score": skor,
     }
@@ -162,6 +164,66 @@ class TestParameterQuery:
     async def test_jumlah_kandidat_diteruskan(self, pabrik):
         await retriever_dengan(pabrik, candidates=7).ainvoke("pengisian KRS")
         assert all(p["limit"] == 7 for s in pabrik.sesi for _, p in s.panggilan)
+
+
+class TestKamusSinonim:
+    def panggilan_fulltext(self, pabrik) -> list[tuple]:
+        return [
+            (q, p)
+            for s in pabrik.sesi
+            for q, p in s.panggilan
+            if q is not VECTOR_SQL and q is not ITERATIVE_SCAN_SQL
+        ]
+
+    async def test_istilah_kampus_mengirim_semua_varian(self, pabrik):
+        await retriever_dengan(pabrik).ainvoke("akreditasi STIKI", unit="BAAK")
+        [(sql, params)] = self.panggilan_fulltext(pabrik)
+        varian = fulltext_variants("akreditasi STIKI")
+        assert sql is fulltext_sql(len(varian))
+        assert params["query"] == "akreditasi STIKI"
+        assert [params[f"query_{i}"] for i in range(1, len(varian))] == varian[1:]
+        assert params["unit"] == "BAAK"
+
+    async def test_jalur_vektor_tetap_memakai_query_asli(self, pabrik):
+        """Teks tambahan di query embedding akan menggeser skor vektor yang
+        dipakai kalibrasi threshold."""
+        teks: list[str] = []
+
+        async def rekam(q: str) -> list[float]:
+            teks.append(q)
+            return [0.1] * 1024
+
+        await PostgresHybridRetriever(session_factory=pabrik, embed_query=rekam).ainvoke(
+            "akreditasi STIKI"
+        )
+        assert teks == ["akreditasi STIKI"]
+
+
+class TestSqlFulltext:
+    def test_satu_varian_sama_dengan_sql_lama(self):
+        assert fulltext_sql(1) is FULLTEXT_SQL
+        assert "GREATEST" not in str(FULLTEXT_SQL)
+        assert "||" not in str(FULLTEXT_SQL)
+
+    def test_banyak_varian_digabung_dan_skor_terbaik(self):
+        """Skor `ts_rank` atas tsquery gabungan anjlok untuk chunk yang cocok
+        dengan query asli; skor harus diambil per varian lalu yang terbaik."""
+        sql = str(fulltext_sql(3))
+        assert sql.count("websearch_to_tsquery") == 6  # 3 di skor, 3 di WHERE
+        assert "GREATEST(ts_rank" in sql
+        assert "|| websearch_to_tsquery" in sql
+        for nama in (":query)", ":query_1)", ":query_2)"):
+            assert sql.count(nama) == 2
+
+    def test_banyak_varian_tetap_menyaring_dokumen(self):
+        sql = str(fulltext_sql(4))
+        assert "is_active" in sql
+        assert "valid_until" in sql
+        assert ":unit" in sql
+
+    def test_nol_varian_ditolak(self):
+        with pytest.raises(ValueError, match="minimal 1"):
+            fulltext_sql(0)
 
 
 class TestFilterUnit:

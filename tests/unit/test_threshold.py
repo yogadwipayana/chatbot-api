@@ -63,7 +63,7 @@ class TestInvarianLLM:
         assert evaluate([hit(vector=0.01)], POLICY).should_call_llm is False
 
     def test_ditolak_berarti_dicatat_ke_unanswered(self):
-        """FR-3: pertanyaan yang ditolak masuk tabel unanswered (sumber AD-4)."""
+        """FR-3: pertanyaan yang ditolak masuk tabel unanswered_questions (sumber AD-4)."""
         assert evaluate([hit(vector=0.01)], POLICY).should_log_unanswered is True
 
     def test_lolos_tidak_dicatat_sebagai_unanswered(self):

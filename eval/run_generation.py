@@ -77,7 +77,7 @@ def build_record(case: GenerationCase, outcome: PipelineOutcome, latency_ms: int
         "kind": outcome.kind.value,
         "unit": case.unit,
         "sources": [
-            {"judul": d.metadata.get("judul"), "halaman": d.metadata.get("halaman")}
+            {"title": d.metadata.get("judul"), "page": d.metadata.get("halaman")}
             for d in outcome.documents
         ],
         "top_score": decision.top_score if decision else None,

@@ -7,11 +7,13 @@ menyentuh jaringan.
 
 from __future__ import annotations
 
+import logging
+import math
 from collections.abc import AsyncIterator
 from functools import lru_cache
 from typing import Annotated, Any
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,8 +22,23 @@ from app.config import Settings, get_settings
 from app.db.session import get_session
 from app.observability.tracing import id_run, konfigurasi_run
 from app.security.auth import decode_access_token
+from app.security.batas_harian import (
+    OLEH_BATAS_HARIAN,
+    PenghitungHarian,
+    alasan_batas_harian,
+    get_daily_counter,
+)
 from app.security.killswitch import KillSwitch, get_kill_switch
-from app.security.ratelimit import FailureLimiter, get_login_limiter
+from app.security.ratelimit import (
+    BatasLaju,
+    FailureLimiter,
+    SlidingWindowLimiter,
+    client_ip,
+    get_chat_limiter,
+    get_login_limiter,
+)
+
+audit = logging.getLogger("app.audit")
 
 BaseSettingsDep = Annotated[Settings, Depends(get_settings)]
 """Isi `.env` apa adanya, tanpa penimpaan dari dashboard.
@@ -85,7 +102,7 @@ async def unit_terdaftar(units: Any, nama: str) -> str:
     """
     resmi = await units.resolve(nama)
     if resmi is None:
-        pilihan = ", ".join(u.nama for u in await units.list())
+        pilihan = ", ".join(u.name for u in await units.list())
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"Unit '{nama}' tidak terdaftar. Pilih salah satu: {pilihan}.",
@@ -105,6 +122,147 @@ def pastikan_unit(admin: CurrentAdmin, unit: str | None, *, apa: str) -> None:
             f"{apa.capitalize()} ini milik unit lain. Akun Anda hanya dapat "
             f"mengelola {apa} unit {admin.unit}.",
         )
+
+
+def get_embed_key_store(session: SessionDep) -> Any:
+    """Tabel kunci sematan (`app.embed_keys`). Di-override di test."""
+    from app.embed_keys import SqlEmbedKeyStore
+
+    return SqlEmbedKeyStore(session)
+
+
+EmbedKeyStoreDep = Annotated[Any, Depends(get_embed_key_store)]
+
+KUNCI_TIDAK_BERLAKU = (
+    "Asisten tidak tersedia di situs ini. Silakan hubungi pengelola situs, "
+    "atau ajukan pertanyaan lewat portal akademik."
+)
+"""Dibaca mahasiswa di panel situs penyemat, jadi tanpa istilah teknis."""
+
+
+async def kunci_sematan(
+    store: EmbedKeyStoreDep,
+    x_embed_key: Annotated[
+        str | None,
+        Header(
+            max_length=64,
+            description="Kunci situs penyemat; hanya dikirim panel `/embed` portal.",
+        ),
+    ] = None,
+) -> str | None:
+    """Kunci situs penyemat yang masih berlaku, atau None untuk portal sendiri.
+
+    Tanpa header = permintaan dari portal, dilayani seperti biasa. Header yang
+    dikirim tetapi kuncinya tidak dikenal atau sudah dinonaktifkan ditolak 403:
+    situs yang dicabut harus berhenti bertanya saat itu juga, termasuk panel
+    yang terlanjur terbuka.
+    """
+    if not x_embed_key:
+        return None
+    if await store.aktif(x_embed_key) is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, KUNCI_TIDAK_BERLAKU)
+    return x_embed_key
+
+
+EmbedKeyDep = Annotated[str | None, Depends(kunci_sematan)]
+
+ChatLimiterDep = Annotated[SlidingWindowLimiter, Depends(get_chat_limiter)]
+DailyCounterDep = Annotated[PenghitungHarian, Depends(get_daily_counter)]
+
+TERLALU_BANYAK_PERTANYAAN = (
+    "Terlalu banyak pertanyaan dalam waktu singkat. Coba lagi sebentar lagi."
+)
+TERLALU_BANYAK_PENILAIAN = (
+    "Terlalu banyak penilaian dalam waktu singkat. Coba lagi sebentar lagi."
+)
+
+
+def _batasi(
+    request: Request,
+    settings: Settings,
+    limiter: SlidingWindowLimiter,
+    embed_key: str | None,
+    *,
+    ruang: str,
+    pesan: str,
+) -> None:
+    """429 + `Retry-After` bila salah satu batas (sesi, IP, kunci) sudah penuh.
+
+    `ruang` memisahkan jatah: menilai jawaban tidak boleh memakan jatah bertanya.
+    """
+    batas = settings.batas_laju()
+    kunci: list[tuple[str, BatasLaju]] = []
+    if batas["ip"]:
+        ip = client_ip(request, settings.client_ip_header)
+        kunci.append((f"{ruang}:ip:{ip}", batas["ip"]))
+    sesi = request.headers.get("X-Session-Id")
+    if sesi and batas["sesi"]:
+        kunci.append((f"{ruang}:sesi:{sesi[:128]}", batas["sesi"]))
+    if embed_key and batas["kunci"]:
+        kunci.append((f"{ruang}:kunci:{embed_key}", batas["kunci"]))
+    tunggu = limiter.coba(kunci)
+    if tunggu is not None:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            pesan,
+            headers={"Retry-After": str(max(1, math.ceil(tunggu)))},
+        )
+
+
+def batasi_pertanyaan(
+    request: Request,
+    settings: BaseSettingsDep,
+    limiter: ChatLimiterDep,
+    embed_key: EmbedKeyDep,
+) -> None:
+    """Batas laju `/api/chat` dan `/api/chat/stream` (FR-9)."""
+    _batasi(
+        request, settings, limiter, embed_key, ruang="chat", pesan=TERLALU_BANYAK_PERTANYAAN
+    )
+
+
+def batasi_penilaian(
+    request: Request,
+    settings: BaseSettingsDep,
+    limiter: ChatLimiterDep,
+    embed_key: EmbedKeyDep,
+) -> None:
+    """Batas laju `/api/feedback`, dengan jatah terpisah dari pertanyaan."""
+    _batasi(
+        request,
+        settings,
+        limiter,
+        embed_key,
+        ruang="umpan-balik",
+        pesan=TERLALU_BANYAK_PENILAIAN,
+    )
+
+
+async def batas_harian(
+    settings: SettingsDep,
+    switch: KillSwitchDep,
+    penghitung: DailyCounterDep,
+) -> None:
+    """Nyalakan kill switch begitu pertanyaan hari ini melewati `CHAT_DAILY_LIMIT`.
+
+    Dijalankan SETELAH batas laju: permintaan yang ditolak 429 tidak ikut
+    menghabiskan jatah harian. Batasnya dibaca dari setelan efektif, jadi
+    menaikkannya di halaman Konfigurasi langsung berlaku tanpa restart.
+    """
+    batas = settings.chat_daily_limit
+    if batas <= 0:
+        return
+    jumlah = await penghitung.tambah(settings.timezone)
+    if jumlah <= batas:
+        return
+    if not switch.engaged:
+        switch.engage(alasan_batas_harian(batas), by=OLEH_BATAS_HARIAN)
+        audit.warning(
+            "Kill switch dinyalakan otomatis: %d pertanyaan hari ini melewati batas harian %d",
+            jumlah,
+            batas,
+        )
+    raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, switch.message)
 
 
 def guard_kill_switch(switch: KillSwitchDep) -> None:

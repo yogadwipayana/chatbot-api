@@ -22,6 +22,18 @@ class TestDikenali:
         assert detect(teks).kind is SmallTalkKind.GREETING
 
     @pytest.mark.parametrize(
+        "teks", ["Om Swastyastu", "om swastiastu kak", "Om Swastyastu 🙏", "swastyastu"]
+    )
+    def test_salam_bali(self, teks):
+        assert detect(teks).kind is SmallTalkKind.GREETING
+
+    def test_salam_bali_bersama_pertanyaan_bukan_basa_basi(self):
+        assert not detect("om swastyastu, kapan KRS dibuka?").handled
+
+    def test_sapaan_menyebut_nama_kampus(self):
+        assert "INSTIKI" in detect("halo").reply
+
+    @pytest.mark.parametrize(
         "teks", ["terima kasih", "makasih ya", "makasih banyak", "thanks", "suksma"]
     )
     def test_terima_kasih(self, teks):

@@ -53,7 +53,7 @@ def format_citation(judul: str, halaman: int) -> str:
 
     Args:
         judul: judul dokumen apa adanya, mis. "Panduan Akademik 2025".
-        halaman: nomor halaman 1-based dari `chunks.halaman`.
+        halaman: nomor halaman 1-based dari `chunks.page`.
     """
     judul = judul.strip()
     if not judul:

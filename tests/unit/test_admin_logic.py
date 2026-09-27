@@ -38,14 +38,14 @@ class TestKillSwitchRequest:
     @pytest.mark.parametrize("alasan", [None, "", "   "])
     def test_menyalakan_tanpa_alasan_ditolak(self, alasan):
         with pytest.raises(ValidationError, match="alasan"):
-            KillSwitchRequest(engaged=True, alasan=alasan)
+            KillSwitchRequest(engaged=True, reason=alasan)
 
     def test_mematikan_tanpa_alasan_boleh(self):
         assert KillSwitchRequest(engaged=False).engaged is False
 
 
 class TestDocumentUpdate:
-    @pytest.mark.parametrize("nama", ["judul", "unit", "is_active"])
+    @pytest.mark.parametrize("nama", ["title", "unit", "is_active"])
     def test_field_wajib_tidak_boleh_null(self, nama):
         with pytest.raises(ValidationError, match="tidak boleh kosong"):
             DocumentUpdate(**{nama: None})
@@ -61,9 +61,9 @@ class TestDocumentUpdate:
             DocumentUpdate(is_aktif=False)
 
     def test_spasi_dirapikan_sebelum_panjang_diperiksa(self):
-        assert DocumentUpdate(judul="  Panduan 2026  ").judul == "Panduan 2026"
+        assert DocumentUpdate(title="  Panduan 2026  ").title == "Panduan 2026"
         with pytest.raises(ValidationError):
-            DocumentUpdate(judul="  ab  ")
+            DocumentUpdate(title="  ab  ")
 
     def test_tanggal_diurai(self):
         assert DocumentUpdate(valid_until="2027-01-31").valid_until == date(2027, 1, 31)

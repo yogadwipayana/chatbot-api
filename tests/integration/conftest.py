@@ -94,13 +94,13 @@ async def seed(session):
         chunk_id = uuid.uuid4()
         await session.execute(
             text(
-                "INSERT INTO documents (id, judul, unit, file_path, is_active, valid_until,"
-                " updated_at) VALUES (:id, :judul, 'Biro Akademik', :path, :aktif,"
+                "INSERT INTO documents (id, title, unit, file_path, is_active, valid_until,"
+                " updated_at) VALUES (:id, :title, 'Biro Akademik', :path, :aktif,"
                 " :valid_until, now())"
             ),
             {
                 "id": doc_id,
-                "judul": judul,
+                "title": judul,
                 "path": f"storage/documents/{doc_id}.pdf",
                 "aktif": is_active,
                 "valid_until": valid_until,
@@ -108,15 +108,15 @@ async def seed(session):
         )
         await session.execute(
             text(
-                "INSERT INTO chunks (id, document_id, konten, halaman, urutan, embedding, tsv)"
-                " VALUES (:id, :doc, :konten, :halaman, 0, (:emb)::vector,"
-                " to_tsvector('indonesian', :konten))"
+                "INSERT INTO chunks (id, document_id, content, page, position, embedding, tsv)"
+                " VALUES (:id, :doc, :content, :page, 0, (:emb)::vector,"
+                " to_tsvector('indonesian', :content))"
             ),
             {
                 "id": chunk_id,
                 "doc": doc_id,
-                "konten": konten,
-                "halaman": halaman,
+                "content": konten,
+                "page": halaman,
                 "emb": embedding,
             },
         )

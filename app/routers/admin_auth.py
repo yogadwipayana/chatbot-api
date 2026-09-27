@@ -68,7 +68,7 @@ async def admin_login(
     status itu tidak bocor ke orang yang sekadar menebak email.
     """
     email = payload.email.strip().lower()
-    kunci = (f"ip:{client_ip(request)}", f"email:{email}")
+    kunci = (f"ip:{client_ip(request, settings.client_ip_header)}", f"email:{email}")
 
     tunggu = max((limiter.retry_after(k) or 0.0) for k in kunci)
     if tunggu > 0:
@@ -134,17 +134,17 @@ async def change_my_password(
     account = await store.get(admin.id)
     assert account is not None
     if not await anyio.to_thread.run_sync(
-        verify_password, payload.password_lama, account.password_hash
+        verify_password, payload.current_password, account.password_hash
     ):
         limiter.record_failure(kunci)
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Kata sandi lama salah.")
     limiter.reset(kunci)
 
-    if payload.password_baru == payload.password_lama:
+    if payload.new_password == payload.current_password:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "Kata sandi baru harus berbeda dari kata sandi lama."
         )
 
-    password_hash = await anyio.to_thread.run_sync(hash_password, payload.password_baru)
+    password_hash = await anyio.to_thread.run_sync(hash_password, payload.new_password)
     await store.set_password(account.id, password_hash, datetime.now(UTC))
     return _token(account.email, account.role.value, settings)

@@ -9,14 +9,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.permissions import normalize_unit
-from app.db.models import JenisDokumen
+from app.db.models import DocumentType
 
 STALE_AFTER_MONTHS = 6
 
 UNIT_MATCH = r"lower(regexp_replace(btrim(d.unit), '\s+', ' ', 'g')) = :unit"
 """Sepadan dengan `permissions.normalize_unit`: huruf kecil, spasi dirapikan."""
 
-PDF_SAJA = "d.jenis = :jenis"
+PDF_SAJA = "d.type = :type"
 """Tabel `documents` juga menampung entri tanya jawab (lihat `admin.faq`)."""
 
 
@@ -39,15 +39,15 @@ def stale_clause(alias: str = "d") -> str:
 _STALE = stale_clause("d")
 
 _KOLOM = f"""
-    d.id::text AS id, d.judul, d.unit, d.jenis, d.tahun_berlaku, d.valid_until, d.updated_at,
+    d.id::text AS id, d.title, d.unit, d.type, d.effective_year, d.valid_until, d.updated_at,
     d.is_active, d.uploaded_by, d.file_path,
-    (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) AS jumlah_chunk,
+    (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) AS chunk_count,
     {_STALE} AS stale
 """
 
-EDITABLE_FIELDS = ("judul", "unit", "tahun_berlaku", "valid_until", "is_active")
+EDITABLE_FIELDS = ("title", "unit", "effective_year", "valid_until", "is_active")
 
-CONTENT_FIELDS = frozenset({"judul", "unit", "tahun_berlaku", "valid_until"})
+CONTENT_FIELDS = frozenset({"title", "unit", "effective_year", "valid_until"})
 """Mengubah salah satunya memperbarui `updated_at`. `is_active` tidak: menyalakan
 ulang dokumen lama tidak boleh menghapus badge 'perlu ditinjau'-nya."""
 
@@ -63,14 +63,14 @@ async def list_documents(
 ) -> tuple[list[dict[str, Any]], int, int]:
     """Return: (baris, total sesuai filter, jumlah dokumen aktif yang perlu ditinjau).
 
-    `unit` membatasi seluruh angka -- termasuk `jumlah_stale` -- pada satu unit;
+    `unit` membatasi seluruh angka -- termasuk `stale_count` -- pada satu unit;
     dipakai untuk staf/dosen. None berarti semua unit.
 
     Entri tanya jawab tidak ikut: ia berbagi tabel ini, tetapi dikelola di menu
     sendiri dan tidak punya berkas yang bisa dibuka di halaman dokumen.
     """
     lingkup: list[str] = [PDF_SAJA]
-    params: dict[str, Any] = {"jenis": JenisDokumen.PDF.value}
+    params: dict[str, Any] = {"type": DocumentType.PDF.value}
     if unit is not None:
         lingkup.append(UNIT_MATCH)
         params["unit"] = normalize_unit(unit)
@@ -109,7 +109,7 @@ async def get_document(session: AsyncSession, document_id: uuid.UUID) -> dict[st
         (
             await session.execute(
                 text(f"SELECT {_KOLOM} FROM documents d WHERE d.id = :id AND {PDF_SAJA}"),
-                {"id": document_id, "jenis": JenisDokumen.PDF.value},
+                {"id": document_id, "type": DocumentType.PDF.value},
             )
         )
         .mappings()
@@ -139,7 +139,7 @@ async def update_document(
             f"UPDATE documents d SET {', '.join(set_clause)}"
             f" WHERE d.id = :id AND {PDF_SAJA} RETURNING d.id"
         ),
-        {**{k: changes[k] for k in kolom}, "id": document_id, "jenis": JenisDokumen.PDF.value},
+        {**{k: changes[k] for k in kolom}, "id": document_id, "type": DocumentType.PDF.value},
     )
     if hasil.first() is None:
         await session.rollback()
@@ -156,7 +156,7 @@ async def delete_document(session: AsyncSession, document_id: uuid.UUID) -> str 
                 f"DELETE FROM documents d WHERE d.id = :id AND {PDF_SAJA}"
                 " RETURNING file_path"
             ),
-            {"id": document_id, "jenis": JenisDokumen.PDF.value},
+            {"id": document_id, "type": DocumentType.PDF.value},
         )
     ).first()
     if row is None:
@@ -181,8 +181,8 @@ async def list_chunks(
 ) -> list[dict[str, Any]]:
     rows = await session.execute(
         text(
-            "SELECT id::text AS id, konten, halaman, urutan FROM chunks"
-            " WHERE document_id = :id ORDER BY urutan LIMIT :limit OFFSET :offset"
+            "SELECT id::text AS id, content, page, position FROM chunks"
+            " WHERE document_id = :id ORDER BY position LIMIT :limit OFFSET :offset"
         ),
         {"id": document_id, "limit": limit, "offset": offset},
     )

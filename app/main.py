@@ -16,6 +16,7 @@ from app.routers import (
     admin_auth,
     admin_config,
     admin_documents,
+    admin_embed_keys,
     admin_faq,
     admin_logs,
     admin_ops,
@@ -24,6 +25,7 @@ from app.routers import (
     admin_users,
     chat,
     documents,
+    embed,
     health,
     units,
 )
@@ -87,13 +89,15 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.cors_origin_list(),
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
-        allow_headers=["Authorization", "Content-Type", "X-Session-Id"],
+        # X-Embed-Key: panel `/embed` portal yang dimuat situs lain.
+        allow_headers=["Authorization", "Content-Type", "X-Session-Id", "X-Embed-Key"],
         expose_headers=["Retry-After"],
     )
     app.add_exception_handler(InvalidQuestion, invalid_question_handler)
     app.include_router(health.router)
     app.include_router(chat.router)
     app.include_router(units.router)
+    app.include_router(embed.router)
     app.include_router(documents.router)
     app.include_router(admin_auth.router)
     app.include_router(admin_documents.router)
@@ -104,6 +108,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_config.router)
     app.include_router(admin_users.router)
     app.include_router(admin_units.router)
+    app.include_router(admin_embed_keys.router)
     return app
 
 

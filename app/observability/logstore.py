@@ -51,62 +51,74 @@ dari endpoint mana pun."""
 SKEMA = """
 CREATE TABLE IF NOT EXISTS turns (
     turn_id          TEXT PRIMARY KEY,
-    waktu            TEXT NOT NULL,
+    timestamp        TEXT NOT NULL,
     endpoint         TEXT NOT NULL,
     session_id       TEXT,
     message_id       TEXT,
     unit             TEXT,
-    hasil            TEXT,
-    node_terakhir    TEXT,
+    outcome          TEXT,
+    last_node        TEXT,
     total_ms         INTEGER,
     ttft_ms          INTEGER,
     status           TEXT NOT NULL,
     langsmith_run_id TEXT
 );
-CREATE INDEX IF NOT EXISTS ix_turns_waktu ON turns (waktu);
+CREATE INDEX IF NOT EXISTS ix_turns_timestamp ON turns (timestamp);
 
 CREATE TABLE IF NOT EXISTS node_runs (
-    id          INTEGER PRIMARY KEY,
-    turn_id     TEXT NOT NULL,
-    urutan      INTEGER NOT NULL,
-    node        TEXT NOT NULL,
-    mulai       TEXT NOT NULL,
-    durasi_ms   REAL NOT NULL,
-    status      TEXT NOT NULL,
-    error_tipe  TEXT,
-    error_pesan TEXT,
-    detail      TEXT
+    id            INTEGER PRIMARY KEY,
+    turn_id       TEXT NOT NULL,
+    position      INTEGER NOT NULL,
+    node          TEXT NOT NULL,
+    started_at    TEXT NOT NULL,
+    duration_ms   REAL NOT NULL,
+    status        TEXT NOT NULL,
+    error_type    TEXT,
+    error_message TEXT,
+    detail        TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_node_runs_turn ON node_runs (turn_id);
-CREATE INDEX IF NOT EXISTS ix_node_runs_mulai ON node_runs (mulai);
+CREATE INDEX IF NOT EXISTS ix_node_runs_started_at ON node_runs (started_at);
 
 CREATE TABLE IF NOT EXISTS app_logs (
     id        INTEGER PRIMARY KEY,
-    waktu     TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
     level     TEXT NOT NULL,
     levelno   INTEGER NOT NULL,
     logger    TEXT NOT NULL,
-    pesan     TEXT NOT NULL,
-    lokasi    TEXT,
+    message   TEXT NOT NULL,
+    location  TEXT,
     traceback TEXT,
     turn_id   TEXT
 );
-CREATE INDEX IF NOT EXISTS ix_app_logs_waktu ON app_logs (waktu);
+CREATE INDEX IF NOT EXISTS ix_app_logs_timestamp ON app_logs (timestamp);
 CREATE INDEX IF NOT EXISTS ix_app_logs_turn ON app_logs (turn_id);
 """
+
+VERSI_SKEMA = 1
+"""Disimpan di `PRAGMA user_version`. Naikkan setiap kali `SKEMA` berubah.
+
+`CREATE TABLE IF NOT EXISTS` tidak pernah mengubah tabel yang sudah ada, jadi
+berkas lama akan tetap memakai kolom lama dan setiap INSERT gagal. Berkas
+dengan versi lebih tua dibuang tabelnya lalu dibuat ulang: isinya log yang
+memang berumur pendek (`LOG_RETENTION_DAYS`), bukan data yang perlu dimigrasi.
+Versi 0 (bawaan SQLite) adalah skema berkolom bahasa Indonesia sebelum versi
+ini ada."""
+
+_TABEL = ("turns", "node_runs", "app_logs")
 
 _KOLOM = {
     "turn": (
         "turns",
         (
             "turn_id",
-            "waktu",
+            "timestamp",
             "endpoint",
             "session_id",
             "message_id",
             "unit",
-            "hasil",
-            "node_terakhir",
+            "outcome",
+            "last_node",
             "total_ms",
             "ttft_ms",
             "status",
@@ -117,19 +129,28 @@ _KOLOM = {
         "node_runs",
         (
             "turn_id",
-            "urutan",
+            "position",
             "node",
-            "mulai",
-            "durasi_ms",
+            "started_at",
+            "duration_ms",
             "status",
-            "error_tipe",
-            "error_pesan",
+            "error_type",
+            "error_message",
             "detail",
         ),
     ),
     "app": (
         "app_logs",
-        ("waktu", "level", "levelno", "logger", "pesan", "lokasi", "traceback", "turn_id"),
+        (
+            "timestamp",
+            "level",
+            "levelno",
+            "logger",
+            "message",
+            "location",
+            "traceback",
+            "turn_id",
+        ),
     ),
 }
 
@@ -155,6 +176,19 @@ def _bulat(x: float | None) -> float | None:
     return None if x is None else round(x, 1)
 
 
+def _siapkan_skema(conn: sqlite3.Connection) -> None:
+    """Buat tabel; buang dulu tabel berskema lama (lihat `VERSI_SKEMA`)."""
+    versi = conn.execute("PRAGMA user_version").fetchone()[0]
+    if versi < VERSI_SKEMA:
+        for tabel in _TABEL:
+            conn.execute(f"DROP TABLE IF EXISTS {tabel}")
+    conn.executescript(SKEMA)
+    if versi < VERSI_SKEMA:
+        # PRAGMA tidak menerima parameter terikat; nilainya konstanta modul.
+        conn.execute(f"PRAGMA user_version = {VERSI_SKEMA}")
+    conn.commit()
+
+
 def _escape_like(teks: str) -> str:
     return teks.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
@@ -177,8 +211,7 @@ class LogStore:
                     try:
                         # WAL: pembaca (dashboard) tidak menahan penulis, dan sebaliknya.
                         conn.execute("PRAGMA journal_mode=WAL")
-                        conn.executescript(SKEMA)
-                        conn.commit()
+                        _siapkan_skema(conn)
                     finally:
                         conn.close()
                     self._siap = True
@@ -223,9 +256,9 @@ class LogStore:
         conn = self._connect()
         try:
             with conn:
-                n = conn.execute("DELETE FROM turns WHERE waktu < ?", (b,)).rowcount
-                n += conn.execute("DELETE FROM node_runs WHERE mulai < ?", (b,)).rowcount
-                n += conn.execute("DELETE FROM app_logs WHERE waktu < ?", (b,)).rowcount
+                n = conn.execute("DELETE FROM turns WHERE timestamp < ?", (b,)).rowcount
+                n += conn.execute("DELETE FROM node_runs WHERE started_at < ?", (b,)).rowcount
+                n += conn.execute("DELETE FROM app_logs WHERE timestamp < ?", (b,)).rowcount
             return n
         finally:
             conn.close()
@@ -239,15 +272,16 @@ class LogStore:
         conn = self._connect()
         try:
             turns = conn.execute(
-                "SELECT waktu, total_ms, status, node_terakhir FROM turns WHERE waktu >= ?",
+                "SELECT timestamp, total_ms, status, last_node FROM turns"
+                " WHERE timestamp >= ?",
                 (s,),
             ).fetchall()
             nodes = conn.execute(
-                "SELECT node, durasi_ms, status FROM node_runs WHERE mulai >= ?", (s,)
+                "SELECT node, duration_ms, status FROM node_runs WHERE started_at >= ?", (s,)
             ).fetchall()
             log_error = conn.execute(
-                "SELECT substr(waktu, 1, 13) AS jam, count(*) AS n FROM app_logs"
-                f" WHERE waktu >= ? AND levelno >= 40{filter_audit} GROUP BY jam",
+                "SELECT substr(timestamp, 1, 13) AS jam, count(*) AS n FROM app_logs"
+                f" WHERE timestamp >= ? AND levelno >= 40{filter_audit} GROUP BY jam",
                 (s,),
             ).fetchall()
         finally:
@@ -256,19 +290,19 @@ class LogStore:
         total = [r["total_ms"] for r in turns if r["total_ms"] is not None]
         jumlah = len(turns)
         gagal = sum(1 for r in turns if r["status"] == "error")
-        diblokir_jev = sum(1 for r in turns if r["node_terakhir"] == "jev_gate")
+        diblokir_jev = sum(1 for r in turns if r["last_node"] == "jev_gate")
 
         durasi: dict[str, list[float]] = defaultdict(list)
         error_node: Counter[str] = Counter()
         for r in nodes:
-            durasi[r["node"]].append(r["durasi_ms"])
+            durasi[r["node"]].append(r["duration_ms"])
             if r["status"] == "error":
                 error_node[r["node"]] += 1
         urutan = {n: i for i, n in enumerate(NODE_ORDER)}
         per_node = [
             {
                 "node": node,
-                "jumlah": len(d),
+                "count": len(d),
                 "p50_ms": _bulat(persentil(d, 0.5)),
                 "p95_ms": _bulat(persentil(d, 0.95)),
                 "error": error_node[node],
@@ -276,9 +310,9 @@ class LogStore:
             for node, d in sorted(durasi.items(), key=lambda kv: urutan.get(kv[0], 99))
         ]
 
-        keluar = Counter(r["node_terakhir"] for r in turns if r["node_terakhir"])
+        keluar = Counter(r["last_node"] for r in turns if r["last_node"])
         titik_keluar = [
-            {"node": node, "jumlah": n}
+            {"node": node, "count": n}
             for node, n in sorted(keluar.items(), key=lambda kv: -kv[1])
         ]
 
@@ -286,7 +320,7 @@ class LogStore:
         per_jam_giliran: Counter[str] = Counter()
         per_jam_gagal: Counter[str] = Counter()
         for r in turns:
-            jam = r["waktu"][:13]
+            jam = r["timestamp"][:13]
             per_jam_giliran[jam] += 1
             if r["total_ms"] is not None:
                 per_jam_total[jam].append(r["total_ms"])
@@ -301,49 +335,49 @@ class LogStore:
             k = jam.strftime("%Y-%m-%dT%H")
             per_jam.append(
                 {
-                    "jam": f"{k}:00:00Z",
-                    "giliran": per_jam_giliran[k],
+                    "hour": f"{k}:00:00Z",
+                    "turn_count": per_jam_giliran[k],
                     "p95_total_ms": _bulat(persentil(per_jam_total[k], 0.95)),
-                    "giliran_error": per_jam_gagal[k],
-                    "log_error": per_jam_log.get(k, 0),
+                    "error_turn_count": per_jam_gagal[k],
+                    "error_log_count": per_jam_log.get(k, 0),
                 }
             )
             jam += timedelta(hours=1)
 
         return {
-            "sejak": waktu_iso(sejak),
-            "sampai": waktu_iso(sampai),
-            "jumlah_giliran": jumlah,
+            "since": waktu_iso(sejak),
+            "until": waktu_iso(sampai),
+            "turn_count": jumlah,
             "p50_total_ms": _bulat(persentil(total, 0.5)),
             "p95_total_ms": _bulat(persentil(total, 0.95)),
-            "giliran_error": gagal,
-            "rasio_error": round(gagal / jumlah, 4) if jumlah else 0.0,
-            "diblokir_jev": diblokir_jev,
-            "rasio_diblokir_jev": round(diblokir_jev / jumlah, 4) if jumlah else 0.0,
-            "log_error": sum(per_jam_log.values()),
+            "error_turn_count": gagal,
+            "error_ratio": round(gagal / jumlah, 4) if jumlah else 0.0,
+            "jev_blocked_count": diblokir_jev,
+            "jev_blocked_ratio": round(diblokir_jev / jumlah, 4) if jumlah else 0.0,
+            "error_log_count": sum(per_jam_log.values()),
             "per_node": per_node,
-            "titik_keluar": titik_keluar,
-            "per_jam": per_jam,
+            "exit_points": titik_keluar,
+            "per_hour": per_jam,
         }
 
     def daftar_giliran(
         self,
         sejak: datetime,
         *,
-        hasil: str | None = None,
+        outcome: str | None = None,
         status: str | None = None,
         unit: str | None = None,
-        node_terakhir: str | None = None,
+        last_node: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[int, list[dict[str, Any]]]:
-        syarat = ["waktu >= ?"]
+        syarat = ["timestamp >= ?"]
         arg: list[Any] = [waktu_iso(sejak)]
         for kolom, nilai in (
-            ("hasil", hasil),
+            ("outcome", outcome),
             ("status", status),
             ("unit", unit),
-            ("node_terakhir", node_terakhir),
+            ("last_node", last_node),
         ):
             if nilai is not None:
                 syarat.append(f"{kolom} = ?")
@@ -355,7 +389,7 @@ class LogStore:
                 0
             ]
             rows = conn.execute(
-                f"SELECT * FROM turns WHERE {where} ORDER BY waktu DESC LIMIT ? OFFSET ?",
+                f"SELECT * FROM turns WHERE {where} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
                 [*arg, limit, offset],
             ).fetchall()
         finally:
@@ -370,8 +404,8 @@ class LogStore:
             if turn is None:
                 return None
             nodes = conn.execute(
-                "SELECT node, urutan, mulai, durasi_ms, status, error_tipe, error_pesan,"
-                " detail FROM node_runs WHERE turn_id = ? ORDER BY urutan",
+                "SELECT node, position, started_at, duration_ms, status, error_type,"
+                " error_message, detail FROM node_runs WHERE turn_id = ? ORDER BY position",
                 (turn_id,),
             ).fetchall()
             logs = conn.execute(
@@ -400,7 +434,7 @@ class LogStore:
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[int, list[dict[str, Any]]]:
-        syarat = ["waktu >= ?", "levelno >= ?"]
+        syarat = ["timestamp >= ?", "levelno >= ?"]
         arg: list[Any] = [waktu_iso(sejak), level_min]
         if not audit:
             syarat.append(_TANPA_AUDIT)
@@ -408,7 +442,7 @@ class LogStore:
             syarat.append("(logger = ? OR logger LIKE ? ESCAPE '\\')")
             arg += [logger, _escape_like(logger) + ".%"]
         if cari:
-            syarat.append("pesan LIKE ? ESCAPE '\\'")
+            syarat.append("message LIKE ? ESCAPE '\\'")
             arg.append(f"%{_escape_like(cari)}%")
         where = " AND ".join(syarat)
         conn = self._connect()
@@ -417,7 +451,7 @@ class LogStore:
                 f"SELECT count(*) FROM app_logs WHERE {where}", arg
             ).fetchone()[0]
             rows = conn.execute(
-                f"SELECT * FROM app_logs WHERE {where} ORDER BY waktu DESC, id DESC"
+                f"SELECT * FROM app_logs WHERE {where} ORDER BY timestamp DESC, id DESC"
                 " LIMIT ? OFFSET ?",
                 [*arg, limit, offset],
             ).fetchall()
@@ -431,7 +465,7 @@ class LogStore:
         conn = self._connect()
         try:
             rows = conn.execute(
-                f"SELECT DISTINCT logger FROM app_logs WHERE waktu >= ?{filter_audit}"
+                f"SELECT DISTINCT logger FROM app_logs WHERE timestamp >= ?{filter_audit}"
                 " ORDER BY logger",
                 (waktu_iso(sejak),),
             ).fetchall()

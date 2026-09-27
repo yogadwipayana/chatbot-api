@@ -28,7 +28,7 @@ UUID_CONTOH = "3f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8"
 def konkret(path: str) -> str:
     for parameter in ("{document_id}", "{turn_id}", "{unanswered_id}", "{user_id}"):
         path = path.replace(parameter, UUID_CONTOH)
-    return path.replace("{nama}", "Keuangan")
+    return path.replace("{name}", "Keuangan")
 
 
 def operasi_terlindungi():
@@ -143,7 +143,7 @@ class TestLogin:
 class TestKillSwitchAdmin:
     def nyalakan(self, client, headers, alasan="jawaban keliru soal UKT"):
         return client.post(
-            "/api/admin/kill-switch", json={"engaged": True, "alasan": alasan}, headers=headers
+            "/api/admin/kill-switch", json={"engaged": True, "reason": alasan}, headers=headers
         )
 
     def test_status_awal_mati(self, client, admin_headers):
@@ -167,7 +167,7 @@ class TestKillSwitchAdmin:
         assert data["engaged_at"]
         assert client.post("/api/chat", json=payload).status_code == 503
 
-    @pytest.mark.parametrize("body", [{"engaged": True}, {"engaged": True, "alasan": "   "}])
+    @pytest.mark.parametrize("body", [{"engaged": True}, {"engaged": True, "reason": "   "}])
     def test_alasan_wajib_saat_menyalakan(self, client, admin_headers, body, kill_switch):
         r = client.post("/api/admin/kill-switch", json=body, headers=admin_headers)
         assert r.status_code == 422
@@ -215,7 +215,7 @@ class TestUjiCoba:
         assert "fulltext" not in pertama["raw_scores"], (
             "sumber yang tidak menemukan chunk absen"
         )
-        assert pertama["konten"]
+        assert pertama["content"]
         assert data["decision"] == {
             "decision": "proceed",
             "reason": "ok",
@@ -226,7 +226,7 @@ class TestUjiCoba:
     def test_ambang_yang_dipakai_dilaporkan(self, client, admin_headers):
         settings = get_settings()
         data = self.uji(client, admin_headers).json()
-        assert data["ambang"] == {
+        assert data["thresholds"] == {
             "vector": pytest.approx(settings.vector_threshold),
             "fulltext": pytest.approx(settings.lexical_threshold),
         }
@@ -235,7 +235,7 @@ class TestUjiCoba:
         data = self.uji(client, admin_headers, vector_threshold=0.9).json()
         assert data["kind"] == OutcomeKind.REFUSAL
         assert data["decision"]["reason"] == "below_threshold"
-        assert data["ambang"]["vector"] == pytest.approx(0.9)
+        assert data["thresholds"]["vector"] == pytest.approx(0.9)
         assert data["retrieved"], (
             "chunk tetap ditampilkan walau ditolak -- itu gunanya diagnosa"
         )

@@ -21,7 +21,7 @@ audit = logging.getLogger("app.audit")
 
 router = APIRouter(
     prefix="/api/admin/units",
-    tags=["admin-unit"],
+    tags=["admin-units"],
     dependencies=[Depends(require_role(AdminRole.SUPERADMIN))],
     responses={401: {"model": Error}, 403: {"model": Error}},
 )
@@ -31,12 +31,12 @@ TIDAK_DITEMUKAN = "Unit tidak ditemukan."
 
 def unit_out(unit: UnitRecord) -> AdminUnit:
     return AdminUnit(
-        nama=unit.nama,
-        deskripsi=unit.deskripsi,
-        urutan=unit.urutan,
+        name=unit.name,
+        description=unit.description,
+        sort_order=unit.sort_order,
         is_active=unit.is_active,
-        jumlah_dokumen=unit.jumlah_dokumen,
-        jumlah_akun=unit.jumlah_akun,
+        document_count=unit.document_count,
+        account_count=unit.account_count,
     )
 
 
@@ -65,21 +65,23 @@ async def create_unit(
     """Unit baru langsung aktif: tampil di menu chatbot dan dapat dipilih di dashboard."""
     try:
         unit = await units.buat(
-            nama=payload.nama, deskripsi=payload.deskripsi or None, urutan=payload.urutan
+            name=payload.name,
+            description=payload.description or None,
+            sort_order=payload.sort_order,
         )
     except DuplicateUnitError as exc:
-        raise _bentrok(payload.nama) from exc
-    audit.warning("Unit %s dibuat oleh %s", unit.nama, actor.email)
+        raise _bentrok(payload.name) from exc
+    audit.warning("Unit %s dibuat oleh %s", unit.name, actor.email)
     return unit_out(unit)
 
 
 @router.patch(
-    "/{nama}",
+    "/{name}",
     response_model=AdminUnit,
     responses={404: {"model": Error}, 409: {"model": Error}, 422: {"model": Error}},
 )
 async def update_unit(
-    nama: str, payload: AdminUnitUpdate, actor: CurrentAdminDep, units: UnitDirectoryDep
+    name: str, payload: AdminUnitUpdate, actor: CurrentAdminDep, units: UnitDirectoryDep
 ) -> AdminUnit:
     """Ubah nama, deskripsi, urutan, atau status aktif.
 
@@ -88,13 +90,13 @@ async def update_unit(
     dan akunnya tetap ada.
     """
     changes = payload.model_dump(exclude_unset=True)
-    if "deskripsi" in changes:
-        changes["deskripsi"] = changes["deskripsi"] or None
+    if "description" in changes:
+        changes["description"] = changes["description"] or None
     try:
-        unit = await units.ubah(nama, changes)
+        unit = await units.ubah(name, changes)
     except DuplicateUnitError as exc:
-        raise _bentrok(changes["nama"]) from exc
+        raise _bentrok(changes["name"]) from exc
     if unit is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, TIDAK_DITEMUKAN)
-    audit.warning("Unit %s diubah oleh %s: %s", nama, actor.email, changes)
+    audit.warning("Unit %s diubah oleh %s: %s", name, actor.email, changes)
     return unit_out(unit)

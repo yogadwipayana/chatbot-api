@@ -205,8 +205,8 @@ async def seed_dokumen(maker: async_sessionmaker[AsyncSession]) -> None:
         async with maker() as session:
             ada = (
                 await session.execute(
-                    text("SELECT 1 FROM documents WHERE judul = :judul AND uploaded_by = :p"),
-                    {"judul": dok.judul, "p": PENANDA_DOKUMEN},
+                    text("SELECT 1 FROM documents WHERE title = :title AND uploaded_by = :p"),
+                    {"title": dok.judul, "p": PENANDA_DOKUMEN},
                 )
             ).scalar()
             if ada:
@@ -319,9 +319,9 @@ PERTANYAAN_SENSITIF = (
 _PESAN_SQL = text(
     """
     INSERT INTO messages
-        (id, conversation_id, role, konten, top_score, latency_ms, meta, created_at)
+        (id, conversation_id, role, content, top_score, latency_ms, meta, created_at)
     VALUES
-        (:id, :cid, :role, :konten, :top_score, :latency, CAST(:meta AS jsonb), :t)
+        (:id, :cid, :role, :content, :top_score, :latency, CAST(:meta AS jsonb), :t)
     """
 )
 
@@ -352,11 +352,11 @@ async def tulis_percakapan(
                 f"dokumen resmi [Panduan Akademik 2026 (Contoh), hal. {rng.randint(1, 4)}]."
             )
             meta_llm = {
-                "llm_dipanggil": True,
+                "llm_called": True,
                 "model": MODEL_CONTOH,
                 "input_tokens": token_masuk,
                 "output_tokens": token_keluar,
-                "biaya_usd": estimate_cost(MODEL_CONTOH, token_masuk, token_keluar).usd,
+                "llm_cost_usd": estimate_cost(MODEL_CONTOH, token_masuk, token_keluar).usd,
             }
             daftar_topik, tingkat = [x.value for x in topik.topics], "none"
         elif jenis == "refusal":
@@ -369,11 +369,11 @@ async def tulis_percakapan(
             latency, top_score = rng.randint(350, 950), rng.uniform(0.06, 0.31)
             teks = REFUSAL_TEMPLATE.format(contacts=render_contacts(kontak))
             meta_llm = {
-                "llm_dipanggil": False,
+                "llm_called": False,
                 "model": None,
                 "input_tokens": None,
                 "output_tokens": None,
-                "biaya_usd": None,
+                "llm_cost_usd": None,
             }
             daftar_topik, tingkat = [x.value for x in topik.topics], "none"
         else:
@@ -383,19 +383,19 @@ async def tulis_percakapan(
             latency, top_score = rng.randint(15, 60), None
             teks = SUPPORT_TEMPLATE.format(contacts=render_contacts(kontak))
             meta_llm = {
-                "llm_dipanggil": False,
+                "llm_called": False,
                 "model": None,
                 "input_tokens": None,
                 "output_tokens": None,
-                "biaya_usd": None,
+                "llm_cost_usd": None,
             }
             daftar_topik, tingkat = [], penilaian.level.value
 
         meta = {
             "kind": jenis,
             "escalated": bool(kontak),
-            "topik": daftar_topik,
-            "sensitivitas": tingkat,
+            "topics": daftar_topik,
+            "sensitivity": tingkat,
             "rewritten_query": None,
             "seed": True,
             **meta_llm,
@@ -409,7 +409,7 @@ async def tulis_percakapan(
                 "id": uuid.uuid4(),
                 "cid": cid,
                 "role": "user",
-                "konten": SENSITIVE_PLACEHOLDER if jenis == "support" else pertanyaan,
+                "content": SENSITIVE_PLACEHOLDER if jenis == "support" else pertanyaan,
                 "top_score": None,
                 "latency": None,
                 "meta": None,
@@ -422,7 +422,7 @@ async def tulis_percakapan(
                 "id": jawaban_id,
                 "cid": cid,
                 "role": "assistant",
-                "konten": teks,
+                "content": teks,
                 "top_score": top_score,
                 "latency": latency,
                 "meta": json.dumps(meta),
@@ -433,8 +433,8 @@ async def tulis_percakapan(
         if kelompok is not None:
             await session.execute(
                 text(
-                    "INSERT INTO unanswered (id, pertanyaan, top_score, created_at, resolved,"
-                    " message_id) VALUES (:id, :q, :skor, :t, :resolved, :mid)"
+                    "INSERT INTO unanswered_questions (id, question, top_score, created_at,"
+                    " resolved, message_id) VALUES (:id, :q, :skor, :t, :resolved, :mid)"
                 ),
                 {
                     "id": uuid.uuid4(),
@@ -451,14 +451,14 @@ async def tulis_percakapan(
             membantu = rng.random() < (0.82 if jenis == "answer" else 0.3)
             await session.execute(
                 text(
-                    "INSERT INTO feedback (id, message_id, helpful, catatan, created_at)"
-                    " VALUES (:id, :mid, :helpful, :catatan, :t)"
+                    "INSERT INTO feedback (id, message_id, helpful, comment, created_at)"
+                    " VALUES (:id, :mid, :helpful, :comment, :t)"
                 ),
                 {
                     "id": uuid.uuid4(),
                     "mid": jawaban_id,
                     "helpful": membantu,
-                    "catatan": (
+                    "comment": (
                         rng.choice(CATATAN_UMPAN_BALIK)
                         if not membantu and rng.random() < 0.4
                         else None
@@ -524,7 +524,7 @@ async def hapus(maker: async_sessionmaker[AsyncSession]) -> None:
     async with maker() as session:
         tak_terjawab = await session.execute(
             text(
-                "DELETE FROM unanswered WHERE message_id IN ("
+                "DELETE FROM unanswered_questions WHERE message_id IN ("
                 " SELECT m.id FROM messages m JOIN conversations c ON c.id = m.conversation_id"
                 " WHERE c.session_id LIKE :a)"
             ),

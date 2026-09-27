@@ -20,6 +20,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from app.rag.risk import KONTAK_FRONT_OFFICE
+
 
 @dataclass
 class KillSwitch:
@@ -55,7 +57,7 @@ class KillSwitch:
         """Pesan yang ditampilkan ke mahasiswa saat layanan dimatikan."""
         return (
             "Layanan chat sedang dinonaktifkan sementara. "
-            "Silakan hubungi Biro Administrasi Akademik pada jam kerja."
+            f"Silakan hubungi Front Office INSTIKI: {KONTAK_FRONT_OFFICE}."
         )
 
 

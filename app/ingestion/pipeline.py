@@ -69,7 +69,8 @@ async def ingest_document(
     membekukan event loop untuk seluruh mahasiswa yang sedang bertanya.
 
     Raises:
-        ScannedPdfError: PDF hasil scan tanpa lapisan teks (FR-1).
+        ScannedPdfError: PDF tanpa lapisan teks, mis. hasil scan atau Print to
+            PDF (FR-1).
         UnreadablePdfError: berkas rusak atau bukan PDF.
         EmptyDocumentError: tidak ada chunk yang dihasilkan.
         FileNotFoundError: berkas tidak ada.
@@ -149,18 +150,18 @@ async def _catat_dokumen(
 ) -> IngestionResult:
     await session.execute(
         text(
-            "INSERT INTO documents (id, judul, unit, file_path, nama_file, tahun_berlaku,"
-            " valid_until, uploaded_by, updated_at, is_active)"
-            " VALUES (:id, :judul, :unit, :file_path, :nama_file, :tahun_berlaku,"
+            "INSERT INTO documents (id, title, unit, file_path, original_filename,"
+            " effective_year, valid_until, uploaded_by, updated_at, is_active)"
+            " VALUES (:id, :title, :unit, :file_path, :original_filename, :effective_year,"
             " :valid_until, :uploaded_by, now(), true)"
         ),
         {
             "id": document_id,
-            "judul": judul,
+            "title": judul,
             "unit": unit,
             "file_path": key,
-            "nama_file": nama_file,
-            "tahun_berlaku": tahun_berlaku,
+            "original_filename": nama_file,
+            "effective_year": tahun_berlaku,
             "valid_until": valid_until,
             "uploaded_by": uploaded_by,
         },

@@ -59,7 +59,7 @@ async def jalankan(args: argparse.Namespace, email: str) -> int:
                 units = SqlUnitDirectory(conn)
                 resmi = await units.resolve(unit)
                 if resmi is None:
-                    pilihan = ", ".join(u.nama for u in await units.list())
+                    pilihan = ", ".join(u.name for u in await units.list())
                     print(f"Unit '{unit}' tidak terdaftar. Pilih salah satu: {pilihan}.")
                     return 1
                 unit = resmi
@@ -69,14 +69,14 @@ async def jalankan(args: argparse.Namespace, email: str) -> int:
                 await conn.execute(
                     text(
                         "UPDATE admins SET password_hash = :hash, role = :role, unit = :unit,"
-                        " nama = coalesce(:nama, nama), is_active = true,"
+                        " name = coalesce(:name, name), is_active = true,"
                         " password_changed_at = :waktu WHERE lower(email) = :email"
                     ),
                     {
                         "hash": password_hash,
                         "role": role,
                         "unit": unit,
-                        "nama": args.nama,
+                        "name": args.nama,
                         "waktu": datetime.now(UTC),
                         "email": email,
                     },
@@ -84,13 +84,13 @@ async def jalankan(args: argparse.Namespace, email: str) -> int:
             else:
                 await conn.execute(
                     text(
-                        "INSERT INTO admins (id, email, nama, role, unit, password_hash)"
-                        " VALUES (:id, :email, :nama, :role, :unit, :hash)"
+                        "INSERT INTO admins (id, email, name, role, unit, password_hash)"
+                        " VALUES (:id, :email, :name, :role, :unit, :hash)"
                     ),
                     {
                         "id": uuid.uuid4(),
                         "email": email,
-                        "nama": args.nama,
+                        "name": args.nama,
                         "role": role,
                         "unit": unit,
                         "hash": password_hash,

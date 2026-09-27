@@ -39,7 +39,7 @@ audit = logging.getLogger("app.audit")
 
 router = APIRouter(
     prefix="/api/admin/users",
-    tags=["admin-pengguna"],
+    tags=["admin-users"],
     dependencies=[Depends(require_role(AdminRole.SUPERADMIN))],
     responses={401: {"model": Error}, 403: {"model": Error}},
 )
@@ -53,7 +53,7 @@ def user_out(account: Account) -> AdminUser:
         email=account.email,
         role=account.role,
         is_active=account.is_active,
-        nama=account.nama,
+        name=account.name,
         unit=account.unit,
         created_at=account.created_at,
         last_login_at=account.last_login_at,
@@ -108,7 +108,7 @@ async def create_user(
     try:
         account = await store.create(
             email=str(payload.email).lower(),
-            nama=payload.nama or None,
+            name=payload.name or None,
             role=payload.role,
             unit=unit,
             password_hash=password_hash,
@@ -119,7 +119,7 @@ async def create_user(
     audit.warning(
         "Akun %s (%s, unit %s) dibuat oleh %s", account.email, account.role, unit, actor.email
     )
-    return AdminUserCreated(user=user_out(account), password_sementara=sandi)
+    return AdminUserCreated(user=user_out(account), temporary_password=sandi)
 
 
 @router.patch(
@@ -137,7 +137,7 @@ async def update_user(
     """Ubah nama, level, unit, atau status aktif. Berlaku pada permintaan berikutnya."""
     target = await _target(store, user_id)
     changes = payload.model_dump(exclude_unset=True)
-    for kolom in ("nama", "unit"):
+    for kolom in ("name", "unit"):
         if kolom in changes:
             changes[kolom] = changes[kolom] or None
     if changes.get("unit"):
@@ -173,7 +173,7 @@ async def reset_user_password(
     password_hash = await anyio.to_thread.run_sync(hash_password, sandi)
     await store.set_password(target.id, password_hash, datetime.now(UTC))
     audit.warning("Kata sandi %s diatur ulang oleh %s", target.email, actor.email)
-    return TemporaryPassword(password_sementara=sandi)
+    return TemporaryPassword(temporary_password=sandi)
 
 
 @router.delete(

@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 _PERTANYAAN_SUBQUERY = """
     LEFT JOIN LATERAL (
-        SELECT u.konten
+        SELECT u.content
         FROM messages u
         WHERE u.conversation_id = m.conversation_id
           AND u.role = 'user'
@@ -63,8 +63,8 @@ async def fetch_feedback(
     rows = await session.execute(
         text(
             "SELECT f.id::text AS id, f.message_id::text AS message_id, f.helpful,"
-            " f.catatan, f.created_at, m.konten AS jawaban, m.meta->>'kind' AS kind,"
-            " m.top_score, q.konten AS pertanyaan"
+            " f.comment, f.created_at, m.content AS answer, m.meta->>'kind' AS kind,"
+            " m.top_score, q.content AS question"
             " FROM feedback f"
             " JOIN messages m ON m.id = f.message_id"
             f" {_PERTANYAAN_SUBQUERY} {where}"
@@ -99,6 +99,6 @@ async def fetch_feedback(
     return {
         "items": [dict(row) for row in rows.mappings()],
         "total": total,
-        "jumlah_positif": positif,
-        "jumlah_negatif": negatif,
+        "positive_count": positif,
+        "negative_count": negatif,
     }

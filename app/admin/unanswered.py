@@ -34,12 +34,21 @@ async def fetch_items(
 
     rows = await session.execute(
         text(
-            "SELECT id::text AS id, pertanyaan, top_score, created_at, resolved"
-            f" FROM unanswered {where} ORDER BY created_at DESC LIMIT :batas"
+            "SELECT id::text AS id, question, top_score, created_at, resolved"
+            f" FROM unanswered_questions {where} ORDER BY created_at DESC LIMIT :batas"
         ),
         params,
     )
-    return [UnansweredItem(**row) for row in rows.mappings()]
+    return [
+        UnansweredItem(
+            id=row["id"],
+            pertanyaan=row["question"],
+            top_score=row["top_score"],
+            created_at=row["created_at"],
+            resolved=row["resolved"],
+        )
+        for row in rows.mappings()
+    ]
 
 
 async def set_resolved(
@@ -47,7 +56,9 @@ async def set_resolved(
 ) -> bool:
     """Return: False bila id tidak ada."""
     hasil = await session.execute(
-        text("UPDATE unanswered SET resolved = :resolved WHERE id = :id RETURNING id"),
+        text(
+            "UPDATE unanswered_questions SET resolved = :resolved WHERE id = :id RETURNING id"
+        ),
         {"id": unanswered_id, "resolved": resolved},
     )
     if hasil.first() is None:
