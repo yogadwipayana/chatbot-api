@@ -199,7 +199,8 @@ Berjalan setiap kali mahasiswa mengirim pertanyaan (`POST /api/chat` atau `/api/
 │ Query Rewriting (FR-4)  │
 │ riwayat → pertanyaan    │
 │ mandiri; dilewati bila  │
-│ pesan pertama           │
+│ pesan pertama, kecuali  │
+│ berbahasa Inggris       │
 └───────────┬─────────────┘
             │
    ┌────────┴──────────────────────┐
@@ -308,7 +309,7 @@ rule_gate ──────── acak / manipulasi ───────→ EN
   ├──────────────────────────────┐          (berjalan PARALEL)
   ▼                              ▼
 jev_gate                       cari (subgraph)
-  │                              rewrite   (FR-4, dilewati pada pesan pertama)
+  │                              rewrite   (FR-4, dilewati pada pesan pertama berbahasa Indonesia)
   │                                │
   │                                ▼
   │                              retrieve  (FTS ∥ pgvector → RRF → rerank,

@@ -16,6 +16,7 @@ Validasi di sini menutup dua kegagalan yang tidak terlihat oleh mata:
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 CITATION_RE = re.compile(
@@ -92,18 +93,51 @@ def _halaman(teks: str) -> list[int]:
     return hasil
 
 
-def extract_citations(answer: str) -> tuple[Citation, ...]:
+def extract_citations(
+    answer: str, tanpa_halaman: Mapping[str, int] | None = None
+) -> tuple[Citation, ...]:
     """Ambil semua sitasi dari jawaban, urut kemunculan, tanpa duplikat.
 
-    Penanda dengan beberapa halaman menjadi satu sitasi per halaman."""
-    found: list[Citation] = []
+    Penanda dengan beberapa halaman menjadi satu sitasi per halaman.
+
+    `tanpa_halaman`: judul sumber yang tidak berhalaman (entri tanya jawab)
+    beserta halamannya di database. Penandanya cukup `[Judul]` -- judulnya
+    dicocokkan persis, sehingga teks berkurung lain ("TRANSFER[SPASI]...")
+    tidak pernah terbaca sebagai sitasi.
+    """
+    kemunculan: list[tuple[int, Citation]] = []
     for match in CITATION_RE.finditer(answer):
         judul = match.group("judul").strip()
         for halaman in _halaman(match.group("halaman")):
-            citation = Citation(judul=judul, halaman=halaman)
-            if citation not in found:
-                found.append(citation)
+            kemunculan.append((match.start(), Citation(judul=judul, halaman=halaman)))
+    for judul, halaman in (tanpa_halaman or {}).items():
+        pola = re.compile(r"\[\s*" + re.escape(judul) + r"\s*\]", re.IGNORECASE)
+        for match in pola.finditer(answer):
+            kemunculan.append((match.start(), Citation(judul=judul, halaman=halaman)))
+
+    found: list[Citation] = []
+    # Pengurutan stabil: halaman dalam satu penanda tetap berurutan.
+    for _, citation in sorted(kemunculan, key=lambda item: item[0]):
+        if citation not in found:
+            found.append(citation)
     return tuple(found)
+
+
+def ringkas_sitasi_tanpa_halaman(answer: str, judul: Iterable[str]) -> str:
+    """`[Judul, hal. 1]` menjadi `[Judul]` untuk sumber yang tidak berhalaman.
+
+    Entri tanya jawab tidak punya halaman, tetapi LLM kadang tetap menulis
+    "hal. 1" mengikuti format sitasi PDF (T25). Judul lain tidak disentuh.
+    """
+    kunci = {j.casefold() for j in judul}
+    if not kunci:
+        return answer
+
+    def ganti(match: re.Match[str]) -> str:
+        nama = match.group("judul").strip()
+        return f"[{nama}]" if nama.casefold() in kunci else match.group(0)
+
+    return CITATION_RE.sub(ganti, answer)
 
 
 def validate_answer(

@@ -8,6 +8,7 @@ from app.rag.citations import (
     Citation,
     extract_citations,
     format_citation,
+    ringkas_sitasi_tanpa_halaman,
     validate_answer,
 )
 
@@ -35,6 +36,47 @@ class TestFormat:
         """FE-2 butuh perjalanan bolak-balik: teks -> (dokumen, halaman) -> PDF."""
         teks = format_citation("Panduan Akademik 2025", 12)
         assert extract_citations(teks) == (Citation("Panduan Akademik 2025", 12),)
+
+
+class TestTanpaHalaman:
+    """T25: entri tanya jawab dikutip `[Judul]`, bukan `[Judul, hal. 1]`."""
+
+    FAQ = "Berapa biaya ujian TOEIC di UPS?"
+
+    def test_penanda_tanpa_halaman_dikenali(self):
+        jawaban = f"Rp675.000 [{self.FAQ}]."
+        assert extract_citations(jawaban, {self.FAQ: 1}) == (Citation(self.FAQ, 1),)
+
+    def test_tanpa_daftar_tidak_dikenali(self):
+        assert extract_citations(f"Rp675.000 [{self.FAQ}].") == ()
+
+    def test_teks_berkurung_lain_bukan_sitasi(self):
+        jawaban = "Ketik TRANSFER[SPASI]NomorVA ke 3346 [Panduan VA, hal. 2]."
+        assert extract_citations(jawaban, {self.FAQ: 1}) == (Citation("Panduan VA", 2),)
+
+    def test_urutan_campuran_mengikuti_kemunculan(self):
+        jawaban = f"A [Panduan VA, hal. 2]. B [{self.FAQ}]. C [SK Rektor 2024, hal. 3]."
+        assert extract_citations(jawaban, {self.FAQ: 1}) == (
+            Citation("Panduan VA", 2),
+            Citation(self.FAQ, 1),
+            Citation("SK Rektor 2024", 3),
+        )
+
+    def test_halaman_dibuang_hanya_untuk_tanya_jawab(self):
+        jawaban = f"A [{self.FAQ}, hal. 1]. B [Panduan VA, hal. 2]."
+        assert ringkas_sitasi_tanpa_halaman(jawaban, [self.FAQ]) == (
+            f"A [{self.FAQ}]. B [Panduan VA, hal. 2]."
+        )
+
+    def test_awalan_sumber_dan_huruf_besar(self):
+        jawaban = f"A [Sumber: {self.FAQ.upper()}, hal. 1]."
+        assert ringkas_sitasi_tanpa_halaman(jawaban, [self.FAQ]) == (
+            f"A [{self.FAQ.upper()}]."
+        )
+
+    def test_tanpa_tanya_jawab_teks_utuh(self):
+        jawaban = "A [Panduan VA, hal. 2]."
+        assert ringkas_sitasi_tanpa_halaman(jawaban, []) == jawaban
 
 
 class TestEkstraksi:

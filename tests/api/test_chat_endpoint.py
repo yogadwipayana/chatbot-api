@@ -7,6 +7,7 @@ from uuid import UUID
 
 import pytest
 
+from app.db.models import DocumentType
 from app.observability import tracing
 from app.rag.chain import OutcomeKind
 from app.rag.risk import KONTAK_FRONT_OFFICE
@@ -163,6 +164,31 @@ class TestSitasiHanyaYangDikutip:
         data = make_client(strong_documents).post("/api/chat", json=payload).json()
         assert data["kind"] == OutcomeKind.ANSWER
         assert data["citations"] == []
+
+    @pytest.mark.parametrize("path", ["/api/chat", "/api/chat/stream"])
+    def test_tanya_jawab_dikutip_tanpa_halaman(
+        self, make_client, strong_documents, payload, api_llm, path
+    ):
+        """T25: entri tanya jawab tidak berhalaman. "hal. 1" yang tetap ditulis
+        LLM dibuang dari teks, dan kartunya tetap muncul."""
+        from tests.fixtures.fakes import make_document
+
+        faq = make_document("f1", judul="Berapa biaya ujian TOEIC?", halaman=1)
+        faq.metadata["jenis"] = DocumentType.TANYA_JAWAB
+        api_llm.reply = (
+            "TOEIC Rp675.000 [Berapa biaya ujian TOEIC?, hal. 1], "
+            "dibayar lewat VA [Panduan Akademik 2025, hal. 12]."
+        )
+        r = make_client([faq, *strong_documents]).post(path, json=payload)
+        data = pesan_akhir(r) if path.endswith("stream") else r.json()
+        assert data["text"] == (
+            "TOEIC Rp675.000 [Berapa biaya ujian TOEIC?], "
+            "dibayar lewat VA [Panduan Akademik 2025, hal. 12]."
+        )
+        assert [(c["title"], c["type"]) for c in data["citations"]] == [
+            ("Berapa biaya ujian TOEIC?", DocumentType.TANYA_JAWAB),
+            ("Panduan Akademik 2025", DocumentType.PDF),
+        ]
 
 
 class TestPenolakan:

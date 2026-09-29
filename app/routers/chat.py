@@ -344,10 +344,17 @@ def citations_for(outcome: PipelineOutcome) -> list[CitationOut]:
         # Chunk berbeda dari halaman yang sama menghasilkan kartu yang sama.
         tersedia.setdefault((kartu.title.casefold(), kartu.page), kartu)
 
+    # Entri tanya jawab dikutip `[Judul]` tanpa halaman (T25).
+    tanpa_halaman = {
+        kartu.title: kartu.page
+        for kartu in tersedia.values()
+        if kartu.type == DocumentType.TANYA_JAWAB
+    }
+
     # Urutan mengikuti kemunculan di jawaban, bukan peringkat retrieval: itu
     # urutan yang dibaca mahasiswa.
     dikutip: list[CitationOut] = []
-    for citation in extract_citations(outcome.text):
+    for citation in extract_citations(outcome.text, tanpa_halaman):
         kartu = tersedia.get((citation.judul.casefold(), citation.halaman))
         if kartu is not None and kartu not in dikutip:
             dikutip.append(kartu)

@@ -50,6 +50,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 
+from app.db.models import DocumentType
 from app.rag import risk as risk_module
 from app.rag import rule_gate as rule_gate_module
 from app.rag import sensitive as sensitive_module
@@ -68,6 +69,7 @@ from app.rag.chain import (
     render_contacts,
     strip_markers,
 )
+from app.rag.citations import ringkas_sitasi_tanpa_halaman
 from app.rag.gate import REPLIES as GATE_REPLIES
 from app.rag.gate import GateLabel, GateVerdict, lolos
 from app.rag.rewriter import HISTORY_WINDOW, Turn, format_history, needs_rewrite
@@ -263,10 +265,10 @@ async def _kecuali_diblokir(
 
 
 async def rewrite(state: PipelineState, runtime: Rt) -> dict:
-    """FR-4 -- dilewati bila pesan pertama, atau bila JEV sudah memblokir."""
+    """FR-4 -- dilewati bila pesan pertama berbahasa Indonesia, atau JEV sudah memblokir."""
     clean = state["clean"]
     rewrite_call = runtime.context.rewrite_call
-    if rewrite_call is None or not needs_rewrite(state["history"]):
+    if rewrite_call is None or not needs_rewrite(state["history"], clean):
         return {"search_query": clean, "rewritten": None}
     jalan, hasil = await _kecuali_diblokir(
         lambda: rewrite_call(clean, format_history(state["history"])),
@@ -368,10 +370,15 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
     # kartu sitasi dokumen yang tidak relevan dan tidak pernah sampai ke AD-4.
     if is_not_found(answer):
         return {"outcome": _penolakan(state, assessment, llm_called=True)}
+    tanya_jawab = [
+        doc.metadata.get("judul", "")
+        for doc in state["documents"]
+        if doc.metadata.get("jenis") == DocumentType.TANYA_JAWAB
+    ]
     return {
         "outcome": PipelineOutcome(
             kind=OutcomeKind.ANSWER,
-            text=strip_markers(answer),
+            text=ringkas_sitasi_tanpa_halaman(strip_markers(answer), tanya_jawab),
             documents=tuple(state["documents"]),
             decision=state["decision"],
             risk=assessment,

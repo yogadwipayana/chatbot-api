@@ -247,6 +247,25 @@ class TestQueryRewriting:
         assert hasil.rewritten_query is None
         assert strong_retriever.queries == ["kapan KRS dibuka"]
 
+    async def test_pesan_pertama_berbahasa_inggris_diterjemahkan(
+        self, strong_retriever, llm, rewriter
+    ):
+        """T22: fulltext memakai kamus Indonesia, jadi query Inggris hanya
+        ditemukan pencarian vektor -- dan potongan yang terambil tidak relevan."""
+        hasil = await run_pipeline(
+            "What is the minimum GPA for the achievement scholarship?",
+            retriever=strong_retriever,
+            llm_call=llm,
+            rewrite_call=rewriter,
+            history=[],
+            policy=POLICY,
+        )
+        assert rewriter.calls == [
+            ("What is the minimum GPA for the achievement scholarship?", "")
+        ]
+        assert strong_retriever.queries == [rewriter.rewritten]
+        assert hasil.rewritten_query == rewriter.rewritten
+
     async def test_dipakai_saat_ada_riwayat(self, strong_retriever, llm, rewriter):
         hasil = await run_pipeline(
             "kalau telat gimana?",

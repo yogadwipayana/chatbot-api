@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.db.models import DocumentType
 from app.rag.prompts import (
     REWRITE_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
@@ -15,7 +16,7 @@ from app.rag.prompts import (
     format_context,
     rewrite_prompt,
 )
-from app.rag.rewriter import Turn, format_history, needs_rewrite
+from app.rag.rewriter import Turn, format_history, looks_english, needs_rewrite
 from tests.fixtures.fakes import make_document
 
 
@@ -111,6 +112,31 @@ class TestFormatKonteks:
         hasil = format_context([StubDocument(page_content="isi", metadata={})])
         assert "Dokumen tanpa judul" in hasil
 
+    def test_tanya_jawab_tanpa_halaman(self):
+        """T25: "hal. 1" di penanda disalin LLM ke jawaban, padahal entri tanya
+        jawab tidak berhalaman."""
+        dok = make_document("c1", judul="Berapa biaya ujian TOEIC?", halaman=1)
+        dok.metadata["jenis"] = DocumentType.TANYA_JAWAB
+        hasil = format_context([dok])
+        assert hasil.startswith("[Berapa biaya ujian TOEIC?]\n")
+        assert "hal." not in hasil
+
+
+class TestIstilahInternal:
+    def test_melarang_menyebut_konteks_kepada_mahasiswa(self):
+        """T23: jawaban sebagian dulu berbunyi "tidak ditemukan dalam konteks
+        yang diberikan" -- istilah kerja model, bukan bahasa mahasiswa."""
+        assert '"konteks"' in SYSTEM_PROMPT
+        assert "dokumen resmi" in SYSTEM_PROMPT
+
+    def test_jawaban_sebagian_menyarankan_ganti_topik(self):
+        assert "topik unit" in SYSTEM_PROMPT
+
+    def test_bahasa_jawaban_tidak_mengikuti_pertanyaan(self):
+        """T22: pertanyaan Inggris dijawab dalam bahasa Inggris, sementara
+        kartu sumber, penolakan, dan kontak tetap berbahasa Indonesia."""
+        assert "jangan mengikuti bahasa pertanyaan" in SYSTEM_PROMPT
+
 
 class TestRewriterHelper:
     def test_pesan_pertama_tidak_perlu_ditulis_ulang(self):
@@ -118,6 +144,42 @@ class TestRewriterHelper:
 
     def test_ada_riwayat_berarti_perlu(self):
         assert needs_rewrite([Turn("user", "kapan KRS")]) is True
+
+    def test_pesan_pertama_berbahasa_inggris_perlu(self):
+        assert needs_rewrite([], "How do I pay my tuition?") is True
+
+    def test_prompt_meminta_terjemahan(self):
+        """T22: aturan lama "Pertahankan bahasa aslinya" dibaca model dua arah."""
+        assert "terjemahkan" in REWRITE_SYSTEM_PROMPT
+        assert "bahasa aslinya" not in REWRITE_SYSTEM_PROMPT
+
+    @pytest.mark.parametrize(
+        "pertanyaan",
+        [
+            "What is the minimum GPA required for the achievement scholarship?",
+            "How do I pay my tuition through BNI virtual account using SMS banking?",
+            "Can I apply for the TOEIC certification?",
+            "how much is the TOEIC test",
+            "What is IPK minimal untuk beasiswa?",
+        ],
+    )
+    def test_mengenali_bahasa_inggris(self, pertanyaan):
+        assert looks_english(pertanyaan)
+
+    @pytest.mark.parametrize(
+        "pertanyaan",
+        [
+            "Berapa IPK minimal untuk beasiswa prestasi?",
+            "Bagaimana cara reset password akun SIAKAD?",
+            "kalau telat bayar UKT gimana?",
+            "TOEIC?",
+            "Apakah bisa bayar VA BNI lewat mobile banking?",
+            "",
+        ],
+    )
+    def test_pertanyaan_indonesia_tidak_diterjemahkan(self, pertanyaan):
+        """Istilah Inggris yang terselip tidak boleh memicu panggilan LLM tambahan."""
+        assert not looks_english(pertanyaan)
 
     def test_hanya_tiga_pesan_terakhir_dipakai(self):
         """FR-4 menyebut 3 pesan terakhir; jendela lebih lebar menaikkan biaya

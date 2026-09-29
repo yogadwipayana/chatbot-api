@@ -152,7 +152,8 @@ async def admin_test_query(
     Termasuk gerbang JEV: tanpanya "yang dilihat mahasiswa" di halaman ini
     keliru untuk pesan yang diblokir (admin melihat "tidak ditemukan",
     mahasiswa melihat penolakan JEV). Uji coba tanpa riwayat, jadi penulisan
-    ulang query (FR-4) memang tidak pernah berjalan di sini.
+    ulang query (FR-4) hanya berjalan untuk menerjemahkan pertanyaan berbahasa
+    Inggris, persis seperti pesan pertama mahasiswa.
 
     Tidak tunduk pada kill switch (admin perlu mendiagnosis justru saat
     layanan dimatikan) dan tidak dicatat ke log percakapan, supaya uji coba
