@@ -218,6 +218,194 @@ class TestPemecahanSadarStruktur:
         tergabung = "\n".join(c.konten for c in chunks)
         assert all(u in tergabung for u in utuh)
 
+    @staticmethod
+    def _judul_chunk(chunks) -> list[str]:
+        return [c.konten.splitlines()[0] for c in chunks]
+
+    def test_nama_bab_ikut_pada_setiap_sub_bagian(self):
+        """T9: enam bab pedoman beasiswa memakai sub-judul yang sama (Gambaran
+        Umum, Kuota, ...). Tanpa nama BAB, potongannya tidak menyebut beasiswa
+        mana yang dibahas."""
+        halaman = self._halaman(
+            1,
+            ("BAB II", "judul"),
+            ("BEASISWA KIP KULIAH", "judul"),
+            ("2.1. Gambaran Umum", "judul"),
+            ("KIP Kuliah adalah bantuan pemerintah.", "teks"),
+            ("2.5. Kuota", "judul"),
+            ("Kuota nasional.", "teks"),
+            ("BAB III", "judul"),
+            ("BEASISWA ADIK DIFABEL", "judul"),
+            ("3.5 Kuota", "judul"),
+            ("Kuota 10 orang.", "teks"),
+        )
+        chunks = split_pages([halaman], chunk_size=500, chunk_overlap=50)
+        assert self._judul_chunk(chunks) == [
+            "BAB II BEASISWA KIP KULIAH › 2.1. Gambaran Umum",
+            "BAB II BEASISWA KIP KULIAH › 2.5. Kuota",
+            "BAB III BEASISWA ADIK DIFABEL › 3.5 Kuota",
+        ]
+
+    def test_nomor_dan_judul_di_baris_terpisah_disatukan(self):
+        halaman = self._halaman(
+            1,
+            ("2.10", "judul"),
+            ("Mekanisme Pendaftaran", "judul"),
+            ("Daftar lewat portal.", "teks"),
+            ("Pasal 24", "judul"),
+            ("HAK DAN KEWAJIBAN ORGANISASI", "judul"),
+            ("KEMAHASISWAAN", "judul"),
+            ("Organisasi berhak ...", "teks"),
+        )
+        chunks = split_pages([halaman], chunk_size=500, chunk_overlap=50)
+        assert self._judul_chunk(chunks) == [
+            "2.10 Mekanisme Pendaftaran",
+            "Pasal 24 HAK DAN KEWAJIBAN ORGANISASI KEMAHASISWAAN",
+        ]
+
+    def test_jejak_bab_menyeberang_halaman(self):
+        """Judul BAB di dasar halaman, judul bab dan sub-bagian di halaman berikut."""
+        halaman = [
+            self._halaman(1, ("Penutup bab sebelumnya.", "teks"), ("BAB II", "judul")),
+            self._halaman(
+                2,
+                ("BEASISWA KIP KULIAH", "judul"),
+                ("2.1 Gambaran Umum", "judul"),
+                ("Isi.", "teks"),
+            ),
+            self._halaman(3, ("Lanjutan isi.", "teks")),
+        ]
+        chunks = split_pages(halaman, chunk_size=500, chunk_overlap=50)
+        assert self._judul_chunk(chunks)[1:] == [
+            "BAB II BEASISWA KIP KULIAH › 2.1 Gambaran Umum",
+            "BAB II BEASISWA KIP KULIAH › 2.1 Gambaran Umum",
+        ]
+        assert [c.halaman for c in chunks[1:]] == [2, 3]
+
+    def test_bagian_dan_pasal_bertingkat(self):
+        halaman = self._halaman(
+            1,
+            ("BAB III", "judul"),
+            ("Bagian Pertama", "judul"),
+            ("RUANG LINGKUP", "judul"),
+            ("Pasal 3", "judul"),
+            ("Isi pasal 3.", "teks"),
+            ("Bagian Kedua", "judul"),
+            ("KODE ETIK DENGAN DOSEN", "judul"),
+            ("Pasal 4", "judul"),
+            ("Isi pasal 4.", "teks"),
+            ("Pasal 5", "judul"),
+            ("Isi pasal 5.", "teks"),
+            ("BAB IV", "judul"),
+            ("LARANGAN", "judul"),
+            ("Pasal 10", "judul"),
+            ("Mahasiswa dilarang ...", "teks"),
+        )
+        chunks = split_pages([halaman], chunk_size=500, chunk_overlap=50)
+        assert self._judul_chunk(chunks) == [
+            "BAB III › Bagian Pertama RUANG LINGKUP › Pasal 3",
+            "BAB III › Bagian Kedua KODE ETIK DENGAN DOSEN › Pasal 4",
+            "BAB III › Bagian Kedua KODE ETIK DENGAN DOSEN › Pasal 5",
+            "BAB IV LARANGAN › Pasal 10",
+        ]
+
+    def test_nomor_saudara_menggantikan_dan_anak_mengikuti_awalannya(self):
+        halaman = self._halaman(
+            1,
+            ("2. Uraian Pedoman", "judul"),
+            ("2.1 Peserta", "judul"),
+            ("Isi 2.1.", "teks"),
+            ("2.2 Asesor", "judul"),
+            ("2.2.1 Asesor Lisensi", "judul"),
+            ("Isi 2.2.1.", "teks"),
+            ("2.3 Instruktur", "judul"),
+            ("Isi 2.3.", "teks"),
+            ("3.7 Cakupan", "judul"),
+            ("1. Biaya Pendidikan:", "judul"),
+            ("Isi 1.", "teks"),
+            ("2. Biaya Hidup:", "judul"),
+            ("Isi 2.", "teks"),
+            ("3.8 Persyaratan", "judul"),
+            ("Isi 3.8.", "teks"),
+        )
+        chunks = split_pages([halaman], chunk_size=500, chunk_overlap=50)
+        assert self._judul_chunk(chunks) == [
+            "2. Uraian Pedoman › 2.1 Peserta",
+            "2. Uraian Pedoman › 2.2 Asesor › 2.2.1 Asesor Lisensi",
+            "2. Uraian Pedoman › 2.3 Instruktur",
+            "3.7 Cakupan › 1. Biaya Pendidikan:",
+            "3.7 Cakupan › 2. Biaya Hidup:",
+            "3.8 Persyaratan",
+        ]
+
+    def test_judul_tanpa_nomor_tetap_di_bawah_bab(self):
+        halaman = self._halaman(
+            1,
+            ("BAB IV", "judul"),
+            ("BEASISWA SKSS", "judul"),
+            ("4.1", "judul"),
+            ("Profil Program", "judul"),
+            ("Isi.", "teks"),
+            ("Catatan Khusus", "judul"),
+            ("Isi catatan.", "teks"),
+            ("Catatan Lain", "judul"),
+            ("Isi catatan lain.", "teks"),
+        )
+        chunks = split_pages([halaman], chunk_size=500, chunk_overlap=50)
+        assert self._judul_chunk(chunks) == [
+            "BAB IV BEASISWA SKSS › 4.1 Profil Program",
+            "BAB IV BEASISWA SKSS › 4.1 Profil Program › Catatan Khusus",
+            "BAB IV BEASISWA SKSS › 4.1 Profil Program › Catatan Lain",
+        ]
+
+    def test_judul_kapital_tanpa_nomor_mengakhiri_bab(self):
+        """Blok tanda tangan dan buku panduan yang disatukan sesudah SK bukan
+        bagian dari BAB terakhir SK itu."""
+        halaman = self._halaman(
+            1,
+            ("BAB VIII", "judul"),
+            ("KETENTUAN PENUTUP", "judul"),
+            ("Pasal 14", "judul"),
+            ("Berlaku sejak ditetapkan.", "teks"),
+            ("SATUAN KREDIT PARTISIPASI", "judul"),
+            ("A. PENGERTIAN", "judul"),
+            ("SKP adalah ...", "teks"),
+            ("B. TUJUAN", "judul"),
+            ("Tujuannya ...", "teks"),
+        )
+        chunks = split_pages([halaman], chunk_size=500, chunk_overlap=50)
+        assert self._judul_chunk(chunks) == [
+            "BAB VIII KETENTUAN PENUTUP › Pasal 14",
+            "SATUAN KREDIT PARTISIPASI › A. PENGERTIAN",
+            "SATUAN KREDIT PARTISIPASI › B. TUJUAN",
+        ]
+
+    def test_bab_di_tengah_runtun_tidak_menjadi_anak_judul_sebelumnya(self):
+        halaman = self._halaman(
+            1,
+            ("PROGRAM STUDI SISTEM KOMPUTER", "judul"),
+            ("B. MISI", "judul"),
+            ("Misi prodi.", "teks"),
+            ("Lampiran Surat Keputusan Rektor", "judul"),
+            ("BAB I", "judul"),
+            ("KETENTUAN UMUM", "judul"),
+            ("Pasal 1", "judul"),
+            ("Pengertian.", "teks"),
+        )
+        chunks = split_pages([halaman], chunk_size=500, chunk_overlap=50)
+        assert self._judul_chunk(chunks)[-1] == "BAB I KETENTUAN UMUM › Pasal 1"
+
+    def test_tahun_di_awal_judul_bukan_nomor_bagian(self):
+        halaman = self._halaman(
+            1,
+            ("1. Ketentuan", "judul"),
+            ("Isi.", "teks"),
+            ("2026 Jadwal Baru", "judul"),
+            ("Isi jadwal.", "teks"),
+        )
+        chunks = split_pages([halaman], chunk_size=500, chunk_overlap=50)
+        assert self._judul_chunk(chunks)[-1] == "1. Ketentuan › 2026 Jadwal Baru"
+
     def test_halaman_tanpa_struktur_tetap_terpecah(self):
         """`LoadedPage` tanpa `baris` -- mundur ke pemecahan berbasis teks."""
         chunks = split_pages([LoadedPage(1, TEKS_PENUH)], chunk_size=100, chunk_overlap=10)

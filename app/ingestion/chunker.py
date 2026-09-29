@@ -13,13 +13,21 @@ Karena itu batas chunk diletakkan di judul bagian, dan tiap potongan lanjutan
 membawa ulang judul bagiannya. `RecursiveCharacterTextSplitter` dari LangChain
 tetap dipakai, tetapi hanya untuk bagian yang memang lebih panjang daripada
 satu chunk (PRD §6).
+
+Judul yang dibawa adalah jejak bertingkat, bukan hanya judul terdekat
+(`_JejakJudul`): "BAB IV BEASISWA SATU KELUARGA SATU SARJANA (SKSS) › 4.2
+Cakupan Pembiayaan". Tanpa nama BAB, potongan "Cakupan Pembiayaan" tidak
+menyebut beasiswa mana yang dibahas -- enam bab pedoman beasiswa memakai
+sub-judul yang sama persis (Gambaran Umum, Kuota, Persyaratan), sehingga
+pertanyaan tentang satu beasiswa mengambil potongan beasiswa lain.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from app.ingestion.loader import LoadedLine, LoadedPage
 
@@ -35,6 +43,159 @@ DEFAULT_CHUNK_OVERLAP = 105
 
 LANJUTAN = "(lanjutan)"
 """Penanda pada judul potongan kedua dan seterusnya dari satu bagian."""
+
+PEMISAH_JEJAK = " › "
+"""Pemisah antartingkat judul pada baris pertama chunk."""
+
+_STRUKTUR: tuple[tuple[re.Pattern[str], int], ...] = (
+    (re.compile(r"BAB\s+(?:[IVXLC]+|\d+)", re.IGNORECASE), 1),
+    (re.compile(r"Bagian\s+\w+", re.IGNORECASE), 2),
+    (re.compile(r"Pasal\s+\d+[a-z]?", re.IGNORECASE), 3),
+)
+"""Penanda tingkat dokumen resmi kampus, dari yang tertinggi: BAB > Bagian > Pasal."""
+
+_NOMOR = re.compile(r"(\d{1,3}(?:\.\d{1,3})*)\.?|([A-Z])\.")
+"""Nomor bagian: "2", "2.1.", "2.2.1", atau huruf "A." (Buku SKP). Paling banyak
+tiga digit, supaya judul yang diawali tahun ("2026 ...") tidak dianggap nomor."""
+
+
+@dataclass(frozen=True)
+class _Judul:
+    teks: str
+    jenis: Literal["struktur", "nomor", "polos"]
+    tingkat: int = 0
+    """Hanya untuk `struktur`: 1 = BAB, 2 = Bagian, 3 = Pasal."""
+    nomor: str = ""
+    """Hanya untuk `nomor`: "2.1", "A"."""
+
+    @property
+    def kedalaman(self) -> int:
+        return self.nomor.count(".") + 1
+
+
+def _batas_kata(teks: str, i: int) -> bool:
+    return teks[i : i + 1] in ("", " ")
+
+
+def _penanda(teks: str) -> tuple[_Judul, bool] | None:
+    """(judul, hanya_penanda) bila baris diawali penanda tingkat, selain itu None.
+
+    `hanya_penanda` = barisnya cuma penanda ("BAB II", "2.10", "Pasal 3"): judul
+    bagiannya tercetak di baris berikut dan harus disambungkan ke sini.
+    """
+    for pola, tingkat in _STRUKTUR:
+        cocok = pola.match(teks)
+        if cocok and _batas_kata(teks, cocok.end()):
+            return _Judul(teks, "struktur", tingkat=tingkat), cocok.end() == len(teks)
+    cocok = _NOMOR.match(teks)
+    if cocok and _batas_kata(teks, cocok.end()):
+        nomor = cocok.group(1) or cocok.group(2)
+        return _Judul(teks, "nomor", nomor=nomor), cocok.end() == len(teks)
+    return None
+
+
+def _kapital(teks: str) -> bool:
+    huruf = [c for c in teks if c.isalpha()]
+    return len(huruf) >= 2 and all(c.isupper() for c in huruf)
+
+
+def _pecah_runtun_judul(runtun: Sequence[str]) -> list[_Judul]:
+    """Baris judul berturut-turut (tanpa isi di antaranya) -> daftar judul.
+
+    PDF memecah satu judul menjadi beberapa baris: "BAB II" / "BEASISWA KIP
+    KULIAH", "2.10" / "Mekanisme Pendaftaran", atau judul panjang yang terlipat.
+    Baris tanpa penanda disambung ke baris sebelumnya bila sebelumnya hanya
+    penanda, atau bila gaya hurufnya sama (sama-sama kapital) -- tanda judul
+    yang terlipat. Selain itu ia judul tersendiri.
+    """
+    hasil: list[tuple[_Judul, list[str], bool]] = []
+    for teks in runtun:
+        penanda = _penanda(teks)
+        if penanda is not None:
+            hasil.append((penanda[0], [teks], penanda[1]))
+            continue
+        if hasil:
+            judul, baris, hanya_penanda = hasil[-1]
+            if hanya_penanda or _kapital(teks) == _kapital(baris[-1]):
+                hasil[-1] = (judul, [*baris, teks], False)
+                continue
+        hasil.append((_Judul(teks, "polos"), [teks], False))
+    return [
+        _Judul(" ".join(baris), judul.jenis, judul.tingkat, judul.nomor)
+        for judul, baris, _ in hasil
+    ]
+
+
+@dataclass
+class _JejakJudul:
+    """Jejak judul yang sedang berlaku, dibawa lintas halaman.
+
+    Aturan saat judul baru datang (`_lepas`):
+
+    * BAB/Bagian/Pasal menggantikan semua yang setingkat atau lebih rendah.
+    * Nomor menggantikan nomor sekedalaman ("2.3" menggantikan "2.2" beserta
+      anaknya) dan nomor lain yang bukan awalannya ("3.7" menggantikan "2." >
+      "2.3"), dan menjadi anak nomor yang menjadi awalannya ("2" > "2.1").
+      Daftar bernomor di dalam sub-bagian tetap di bawahnya ("3.7" > "1.",
+      lalu "3.7" > "2."), sampai "3.8" menggantikan keduanya.
+    * Judul tanpa penanda ("ATM BNI", lalu "Mobile Banking") saling
+      menggantikan, tetapi tetap berada di bawah BAB atau nomor di atasnya.
+    * Judul KAPITAL tanpa penanda ("REKTOR INSTITUT ...", "SATUAN KREDIT
+      PARTISIPASI") mengosongkan jejak. Di dokumen kampus, sub-judul di dalam
+      satu BAB selalu bernomor atau berupa Pasal, jadi judul seperti itu
+      menandai bagian besar baru -- blok tanda tangan, lampiran, atau buku
+      panduan yang disatukan sesudah SK. Tanpa aturan ini, isi Buku SKP akan
+      tercatat di bawah "BAB VIII KETENTUAN PENUTUP" milik SK-nya.
+
+    Di dalam satu runtun, judul kedua dan seterusnya menjadi anak judul
+    sebelumnya ("BAB IV ..." / "4.1 ...", "3.7 Cakupan Beasiswa" / "1. Biaya
+    Pendidikan:"), kecuali BAB/Bagian/Pasal yang selalu menempati tingkatnya
+    sendiri ("Lampiran SK ..." / "BAB I" -- BAB I bukan anak lampiran).
+    """
+
+    tumpukan: list[_Judul] = field(default_factory=list)
+    tertunda: list[str] = field(default_factory=list)
+    """Baris judul yang belum disusul isi. Bisa menyeberang halaman: "BAB II"
+    di dasar halaman, judul bab dan "2.1 ..." di halaman berikutnya."""
+
+    def tunda(self, teks: str) -> None:
+        self.tertunda.append(teks)
+
+    def judul(self) -> str | None:
+        """Terapkan judul tertunda, lalu kembalikan jejak lengkapnya."""
+        for i, judul in enumerate(_pecah_runtun_judul(self.tertunda)):
+            if i == 0 or judul.jenis == "struktur":
+                self._lepas(judul)
+            self.tumpukan.append(judul)
+        self.tertunda = []
+        return PEMISAH_JEJAK.join(j.teks for j in self.tumpukan) or None
+
+    def _lepas(self, baru: _Judul) -> None:
+        """Buang judul di puncak tumpukan yang tidak lagi menaungi `baru`."""
+        t = self.tumpukan
+        if baru.jenis == "struktur":
+            while t and not (t[-1].jenis == "struktur" and t[-1].tingkat < baru.tingkat):
+                t.pop()
+        elif baru.jenis == "polos":
+            if _kapital(baru.teks):
+                t.clear()
+            while t and t[-1].jenis == "polos":
+                t.pop()
+        else:
+            if any(j.jenis == "nomor" for j in t):
+                while t[-1].jenis == "polos":
+                    t.pop()
+            saudara_lepas = False
+            while t and t[-1].jenis == "nomor":
+                atas = t[-1]
+                if baru.nomor.startswith(atas.nomor + "."):
+                    break
+                if saudara_lepas and atas.kedalaman > baru.kedalaman:
+                    # "3.7" > "1." lalu "2.": sesudah "1." dilepas, "3.7" adalah
+                    # induk daftar bernomor itu, bukan saudara yang digantikan.
+                    break
+                t.pop()
+                saudara_lepas = saudara_lepas or atas.kedalaman == baru.kedalaman
 
 
 @dataclass(frozen=True)
@@ -65,23 +226,26 @@ def _baris_dari_teks(konten: str) -> list[LoadedLine]:
 
 
 def _bagian(
-    baris: Sequence[LoadedLine], judul_awal: str | None
+    baris: Sequence[LoadedLine], jejak: _JejakJudul
 ) -> list[tuple[str | None, list[LoadedLine]]]:
-    """Kelompokkan baris menjadi (judul bagian, isi).
+    """Kelompokkan baris menjadi (jejak judul, isi).
 
-    `judul_awal` adalah judul bagian terakhir dari halaman sebelumnya. Halaman
-    yang dibuka oleh baris non-judul adalah lanjutan bagian itu, dan tanpa
-    mewariskannya potongan pertama tiap halaman akan kehilangan identitasnya --
-    persis masalah yang ingin dihindari pemecahan ini.
+    `jejak` dibawa dari halaman sebelumnya. Halaman yang dibuka oleh baris
+    non-judul adalah lanjutan bagian terakhir, dan tanpa mewariskannya potongan
+    pertama tiap halaman akan kehilangan identitasnya -- persis masalah yang
+    ingin dihindari pemecahan ini.
+
+    Judul yang langsung disusul judul lain ("BAB II", lalu "2.1 Gambaran Umum")
+    tidak menjadi bagian kosong yang dibuang, melainkan masuk ke jejak.
     """
     hasil: list[tuple[str | None, list[LoadedLine]]] = []
     for b in baris:
         if b.jenis == "judul":
-            hasil.append((b.teks, []))
-        else:
-            if not hasil:
-                hasil.append((judul_awal, []))
-            hasil[-1][1].append(b)
+            jejak.tunda(b.teks)
+            continue
+        if jejak.tertunda or not hasil:
+            hasil.append((jejak.judul(), []))
+        hasil[-1][1].append(b)
     return hasil
 
 
@@ -194,14 +358,10 @@ def split_pages(
 
     chunks: list[PreparedChunk] = []
     urutan = 0
-    judul_berjalan: str | None = None
+    jejak = _JejakJudul()
     for page in pages:
         baris = list(page.baris) or _baris_dari_teks(page.konten)
-        for judul, isi in _bagian(baris, judul_berjalan):
-            if judul:
-                judul_berjalan = judul
-            if not isi:
-                continue
+        for judul, isi in _bagian(baris, jejak):
             for teks in _potong_bagian(
                 judul, isi, chunk_size=chunk_size, chunk_overlap=chunk_overlap
             ):
