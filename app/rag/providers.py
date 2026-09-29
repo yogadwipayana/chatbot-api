@@ -46,6 +46,8 @@ def build_llm(settings: Settings, *, streaming: bool = True) -> Any:
         "streaming": streaming,
         "temperature": 0,
         "default_headers": dict(_HEADERS),
+        "timeout": settings.llm_timeout_seconds,
+        "max_retries": settings.llm_max_retries,
     }
     if streaming:
         # langchain-openai menyalakan `stream_usage` sendiri HANYA untuk endpoint
@@ -57,6 +59,68 @@ def build_llm(settings: Settings, *, streaming: bool = True) -> Any:
     if settings.base_url:
         kwargs["base_url"] = settings.base_url
     return ChatOpenAI(**kwargs)
+
+
+PENANDA_GALAT_GATEWAY = "[Error]"
+"""Awal pesan galat yang dikirim gateway SEBAGAI ISI jawaban.
+
+Terbukti 2026-09-29: saat server hulunya kelebihan beban, gateway proyek ini
+tetap membalas 200 lalu menyisipkan "[Error] Our servers are currently
+overloaded. Please try again later." ke aliran -- bahkan setelah beberapa
+potongan jawaban sungguhan ("Untuk membayar[Error] Our servers ..."). SDK tidak
+melihat galat apa pun, sehingga tanpa pemeriksaan ini teks itu tersimpan dan
+tampil sebagai jawaban biasa, lengkap dengan tombol penilaian.
+"""
+
+
+class GalatGateway(RuntimeError):
+    """Gateway melaporkan kegagalan di dalam isi jawaban, bukan lewat status HTTP.
+
+    Diperlakukan seperti galat HTTP dari LLM: giliran gagal dan tercatat
+    `error`, tidak ada jawaban yang disimpan, dan mahasiswa diminta mengirim
+    ulang pertanyaannya.
+    """
+
+
+def periksa_galat_gateway(teks: str) -> str:
+    """Kembalikan `teks` apa adanya, atau lempar `GalatGateway` bila memuat penanda."""
+    posisi = teks.find(PENANDA_GALAT_GATEWAY)
+    if posisi >= 0:
+        raise GalatGateway(teks[posisi:].strip())
+    return teks
+
+
+class PenyaringGalatGateway:
+    """`periksa_galat_gateway` untuk aliran: penanda tidak pernah sampai ke mahasiswa.
+
+    Penanda bisa terbelah di dua potongan ("...membayar[Err" + "or] Our ..."),
+    jadi ekor potongan yang masih mungkin menjadi awal penanda ditahan sampai
+    potongan berikutnya memastikannya. Sitasi `[Judul, hal. N]` hanya tertahan
+    sebentar: huruf keduanya sudah menyimpang dari penanda.
+    """
+
+    def __init__(self) -> None:
+        self._tertahan = ""
+
+    def terima(self, potongan: str) -> str:
+        """Bagian yang aman diteruskan sekarang; lempar `GalatGateway` bila ada penanda."""
+        teks = periksa_galat_gateway(self._tertahan + potongan)
+        batas = len(teks) - _ekor_awal_penanda(teks)
+        self._tertahan = teks[batas:]
+        return teks[:batas]
+
+    def sisa(self) -> str:
+        """Ekor yang masih tertahan saat aliran selesai -- ternyata bukan penanda."""
+        teks, self._tertahan = self._tertahan, ""
+        return teks
+
+
+def _ekor_awal_penanda(teks: str) -> int:
+    """Panjang ekor terpanjang `teks` yang sama dengan awal penanda."""
+    for panjang in range(min(len(teks), len(PENANDA_GALAT_GATEWAY) - 1), 0, -1):
+        if PENANDA_GALAT_GATEWAY.startswith(teks[-panjang:]):
+            return panjang
+    return 0
 
 
 def build_embeddings(settings: Settings) -> Any:

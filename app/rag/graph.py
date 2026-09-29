@@ -6,11 +6,26 @@ tidak berubah; yang berubah hanya siapa yang memegang urutan:
 
     START -> sanitize -> sensitive ─┬─> END                        (FR-7)
                                     └─> smalltalk ─┬─> END
-                                                   └─> jev_gate ─┬─> END
-                                                                 └─> rewrite (FR-4)
-      -> retrieve (hybrid + RRF + rerank, filter unit) -> validate_context (FR-3)
+                                                   └─> rule_gate ─┬─> END  (acak, manipulasi)
+                                                                  ├─> jev_gate ─────────┐
+                                                                  └─> cari: rewrite     │
+                                                                       -> retrieve ─────┤
+      validate_context (FR-3) <── menunggu keduanya ────────────────────────────────────┘
+           ├─> END                  (JEV memblokir: hasil pencarian dibuang)
            ├─> refuse   -> END      (LLM tidak dipanggil)
-           └─> generate -> END      (FR-6 + FR-5)
+           └─> generate -> END      (FR-6 + FR-5; penolakan bila LLM membalas
+                                     NOT_FOUND_MARKER, `rejected` bila
+                                     OFF_TOPIC_MARKER)
+
+`rule_gate` dan `OFF_TOPIC_MARKER` adalah cadangan JEV: dengan
+`JEV_ENABLED=false` keduanya menghasilkan vonis yang mirip tanpa biaya per
+pesan (`app.rag.rule_gate`).
+
+Gerbang JEV dan pencarian berjalan paralel: keduanya hanya butuh pertanyaan
+yang sudah bersih, dan menunggu JEV dulu menambah ~3 detik ke setiap giliran
+demi menghemat pencarian pada ~5% pesan yang diblokir. `rewrite -> retrieve`
+dibungkus subgraph (`cari`) karena LangGraph berjalan per superstep: sebagai
+dua node terpisah, `retrieve` baru dapat mulai setelah JEV selesai.
 
 Ketergantungan per permintaan (retriever, LLM, callback streaming) masuk
 lewat `context` LangGraph, bukan lewat state: state hanya berisi data yang
@@ -25,8 +40,10 @@ sesudahnya -- termasuk LLM -- yang berjalan setelah keputusan berhenti diambil.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, TypedDict
 
@@ -34,6 +51,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 
 from app.rag import risk as risk_module
+from app.rag import rule_gate as rule_gate_module
 from app.rag import sensitive as sensitive_module
 from app.rag import smalltalk as smalltalk_module
 from app.rag.chain import (
@@ -45,12 +63,21 @@ from app.rag.chain import (
     PipelineOutcome,
     _hits_from_documents,
     _jawab,
+    is_not_found,
+    is_off_topic,
     render_contacts,
+    strip_markers,
 )
-from app.rag.gate import GateLabel, GateVerdict
+from app.rag.gate import REPLIES as GATE_REPLIES
+from app.rag.gate import GateLabel, GateVerdict, lolos
 from app.rag.rewriter import HISTORY_WINDOW, Turn, format_history, needs_rewrite
 from app.rag.threshold import Decision, ThresholdDecision, ThresholdPolicy, evaluate
 from app.security.sanitize import sanitize_question, wrap_user_input
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_JEV_GRACE_SECONDS = 1.5
+"""Dipakai bila `gate_call` tidak membawa `grace_seconds` (pengganti di test)."""
 
 
 @dataclass(frozen=True)
@@ -64,6 +91,13 @@ class PipelineDeps:
     policy: ThresholdPolicy | None = None
     on_token: Callable[[str], Awaitable[None]] | None = None
     on_stage: Callable[[str], Awaitable[None]] | None = None
+    search_done: asyncio.Event = field(default_factory=asyncio.Event)
+    """Dinyalakan `retrieve`; tenggat gerbang JEV dihitung darinya. Satu per
+    giliran -- `PipelineDeps` dibuat baru di setiap `run_pipeline`."""
+    gate_blocked: asyncio.Event = field(default_factory=asyncio.Event)
+    """Dinyalakan `jev_gate` saat memblokir; `rewrite` dan `retrieve` berhenti
+    begitu melihatnya. Tanpa ini pesan yang sudah diblokir tetap menunggu --
+    dan ikut gagal bersama -- cabang pencarian yang hasilnya akan dibuang."""
 
 
 class PipelineState(TypedDict, total=False):
@@ -126,6 +160,16 @@ async def smalltalk(state: PipelineState) -> dict:
     }
 
 
+async def rule_gate(state: PipelineState) -> dict:
+    """Saringan aturan (`app.rag.rule_gate`): pesan acak, tawa, basa-basi tentang
+    PANDU, dan upaya manipulasi. Selalu berjalan, JEV hidup atau mati -- pesan
+    yang jelas bukan pertanyaan tidak perlu dibayar satu panggilan JEV."""
+    verdict = rule_gate_module.detect(state["clean"])
+    if verdict is None:
+        return {}
+    return {"gate": verdict, "outcome": _hasil_blokir(state, verdict)}
+
+
 async def jev_gate(state: PipelineState, runtime: Rt) -> dict:
     """Gerbang semantik JEV (`app.rag.gate`). Dilewati bila JEV_ENABLED=false."""
     gate_call = runtime.context.gate_call
@@ -133,52 +177,145 @@ async def jev_gate(state: PipelineState, runtime: Rt) -> dict:
         return {"gate": None}
 
     riwayat = [(t.role, t.konten) for t in state["history"][-HISTORY_WINDOW:]]
-    verdict = await gate_call(state["clean"], riwayat)
+    verdict = await _vonis_sebelum_tenggat(
+        gate_call(state["clean"], riwayat, unit=state.get("unit")),
+        runtime.context.search_done,
+        grace=getattr(gate_call, "grace_seconds", DEFAULT_JEV_GRACE_SECONDS),
+    )
     if not verdict.blocked:
         return {"gate": verdict}
+    runtime.context.gate_blocked.set()
+    return {"gate": verdict, "outcome": _hasil_blokir(state, verdict)}
 
+
+def _hasil_blokir(state: PipelineState, verdict: GateVerdict) -> PipelineOutcome:
+    """Balasan untuk pesan yang dihentikan gerbang, JEV maupun aturan."""
     kind = (
         OutcomeKind.SMALLTALK if verdict.label is GateLabel.SMALLTALK else OutcomeKind.REJECTED
     )
-    return {
-        "gate": verdict,
-        "outcome": PipelineOutcome(
-            kind=kind,
-            text=verdict.reply,
-            sensitivity=state["sensitivity"],
-            gate=verdict,
-            llm_called=False,
-        ),
-    }
+    text = verdict.reply
+    if kind is OutcomeKind.SMALLTALK:
+        # Gerbang hanya tahu "basa-basi"; nadanya dibaca dari pesannya sendiri,
+        # supaya "sip, itu saja dulu" tidak dibalas sapaan pembuka.
+        text = smalltalk_module.reply_for(state["clean"]) or text
+    return PipelineOutcome(
+        kind=kind,
+        text=text,
+        sensitivity=state["sensitivity"],
+        gate=verdict,
+        llm_called=False,
+    )
+
+
+async def _vonis_sebelum_tenggat(
+    panggilan: Awaitable[GateVerdict], pencarian_selesai: asyncio.Event, *, grace: float
+) -> GateVerdict:
+    """Tunggu vonis JEV selama pencarian paralel masih berjalan, plus `grace`.
+
+    `validate_context` menunggu kedua cabang, jadi selama pencarian belum
+    selesai menunggu JEV tidak menambah waktu apa pun. Batas tetap (dulu 3 dtk)
+    justru memutus JEV di tengah pencarian 5-10 dtk -- perlindungan hilang
+    tanpa ada waktu yang dihemat. Lewat tenggat, pesan diteruskan (fail-open)
+    seperti galat JEV lainnya, dan panggilannya dibatalkan.
+    """
+    tugas = asyncio.ensure_future(panggilan)
+    tunggu_cari = asyncio.ensure_future(pencarian_selesai.wait())
+    try:
+        selesai, _ = await asyncio.wait(
+            {tugas, tunggu_cari}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if tugas not in selesai:
+            selesai, _ = await asyncio.wait({tugas}, timeout=grace)
+        if tugas in selesai:
+            return tugas.result()
+        tugas.cancel()
+        logger.warning(
+            "Gerbang JEV melewati tenggat (pencarian selesai + %.1f dtk), pesan diteruskan",
+            grace,
+        )
+        return lolos(f"Tenggat: pencarian selesai lebih dulu (+{grace:g} dtk)")
+    finally:
+        tunggu_cari.cancel()
+
+
+async def _kecuali_diblokir(
+    kerja: Callable[[], Awaitable[Any]], diblokir: asyncio.Event
+) -> tuple[bool, Any]:
+    """Jalankan `kerja`, tetapi hentikan begitu gerbang JEV memblokir pesan.
+
+    Kembali `(True, hasil)` bila selesai, `(False, None)` bila dihentikan.
+    Galat `kerja` tetap diteruskan selama pesan tidak diblokir.
+    """
+    if diblokir.is_set():
+        return False, None
+    tugas = asyncio.ensure_future(kerja())
+    tunggu_blokir = asyncio.ensure_future(diblokir.wait())
+    try:
+        selesai, _ = await asyncio.wait(
+            {tugas, tunggu_blokir}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if tugas in selesai:
+            return True, tugas.result()
+        tugas.cancel()
+        return False, None
+    finally:
+        tunggu_blokir.cancel()
 
 
 async def rewrite(state: PipelineState, runtime: Rt) -> dict:
-    """FR-4 -- dilewati bila pesan pertama."""
+    """FR-4 -- dilewati bila pesan pertama, atau bila JEV sudah memblokir."""
     clean = state["clean"]
     rewrite_call = runtime.context.rewrite_call
     if rewrite_call is None or not needs_rewrite(state["history"]):
         return {"search_query": clean, "rewritten": None}
-    rewritten = (await rewrite_call(clean, format_history(state["history"]))).strip()
+    jalan, hasil = await _kecuali_diblokir(
+        lambda: rewrite_call(clean, format_history(state["history"])),
+        runtime.context.gate_blocked,
+    )
+    rewritten = hasil.strip() if jalan else ""
     return {"search_query": rewritten or clean, "rewritten": rewritten or None}
 
 
 async def retrieve(state: PipelineState, runtime: Rt) -> dict:
-    """FR-2: vector + fulltext paralel, RRF, rerank -- semuanya di dalam retriever."""
-    documents = await runtime.context.retriever.ainvoke(
-        state["search_query"], unit=state.get("unit")
-    )
-    return {"documents": list(documents)}
+    """FR-2: vector + fulltext paralel, RRF, rerank -- semuanya di dalam retriever.
+
+    Dihentikan bila JEV memblokir: hasilnya toh dibuang di `validate_context`."""
+    try:
+        jalan, documents = await _kecuali_diblokir(
+            lambda: runtime.context.retriever.ainvoke(
+                state["search_query"], unit=state.get("unit")
+            ),
+            runtime.context.gate_blocked,
+        )
+    finally:
+        # Juga saat gagal: gerbang JEV tidak perlu menunggu pencarian yang sudah berhenti.
+        runtime.context.search_done.set()
+    return {"documents": list(documents) if jalan else []}
 
 
 async def validate_context(state: PipelineState, runtime: Rt) -> dict:
-    """FR-3 -- memutuskan apakah LLM boleh dipanggil."""
+    """FR-3 -- memutuskan apakah LLM boleh dipanggil.
+
+    Juga titik temu gerbang JEV dan pencarian yang berjalan paralel. Bila JEV
+    sudah mengisi `outcome`, hasil pencarian tidak dinilai sama sekali.
+    """
+    if "outcome" in state:
+        return {}
     hits = _hits_from_documents(state["documents"])
     return {"decision": evaluate(hits, runtime.context.policy)}
 
 
 async def refuse(state: PipelineState) -> dict:
     """Penolakan FR-3. Tidak memanggil LLM."""
-    assessment = risk_module.detect(state["clean"])
+    return {
+        "outcome": _penolakan(state, risk_module.detect(state["clean"]), llm_called=False)
+    }
+
+
+def _penolakan(
+    state: PipelineState, assessment: risk_module.RiskAssessment, *, llm_called: bool
+) -> PipelineOutcome:
+    """Satu bentuk penolakan, entah diputuskan threshold atau oleh LLM."""
     # Semua unit terkait ditampilkan, bukan hanya yang pertama: pertanyaan
     # "deadline pembayaran UKT" menyangkut akademik DAN keuangan sekaligus,
     # dan mahasiswa yang ditolak tidak boleh dikirim ke loket yang salah.
@@ -187,20 +324,18 @@ async def refuse(state: PipelineState) -> dict:
     unit = state.get("unit")
     if unit is not None:
         text += REFUSAL_UNIT_HINT.format(unit=unit)
-    return {
-        "outcome": PipelineOutcome(
-            kind=OutcomeKind.REFUSAL,
-            text=text,
-            documents=tuple(state["documents"]),
-            decision=state["decision"],
-            risk=assessment,
-            sensitivity=state["sensitivity"],
-            gate=state.get("gate"),
-            rewritten_query=state.get("rewritten"),
-            llm_called=False,
-            contacts=contacts,
-        )
-    }
+    return PipelineOutcome(
+        kind=OutcomeKind.REFUSAL,
+        text=text,
+        documents=tuple(state["documents"]),
+        decision=state["decision"],
+        risk=assessment,
+        sensitivity=state["sensitivity"],
+        gate=state.get("gate"),
+        rewritten_query=state.get("rewritten"),
+        llm_called=llm_called,
+        contacts=contacts,
+    )
 
 
 async def generate(state: PipelineState, runtime: Rt) -> dict:
@@ -212,10 +347,31 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
     answer = await _jawab(
         deps.llm_call, wrap_user_input(state["clean"]), state["documents"], deps.on_token
     )
+    # Pertanyaan di luar urusan kampus yang lolos gerbang (atau JEV mati):
+    # dibalas dan dicatat seperti blokir JEV `out_of_scope` -- bukan celah
+    # dokumen, jadi tidak masuk AD-4.
+    if is_off_topic(answer):
+        return {
+            "outcome": PipelineOutcome(
+                kind=OutcomeKind.REJECTED,
+                text=GATE_REPLIES[GateLabel.OUT_OF_SCOPE],
+                documents=tuple(state["documents"]),
+                decision=state["decision"],
+                sensitivity=state["sensitivity"],
+                gate=state.get("gate"),
+                rewritten_query=state.get("rewritten"),
+                llm_called=True,
+            )
+        }
+    # Konteks lolos threshold tetapi tidak menjawab: tampilkan dan catat sebagai
+    # penolakan, bukan sebagai jawaban berisi "tidak menemukan" yang membawa
+    # kartu sitasi dokumen yang tidak relevan dan tidak pernah sampai ke AD-4.
+    if is_not_found(answer):
+        return {"outcome": _penolakan(state, assessment, llm_called=True)}
     return {
         "outcome": PipelineOutcome(
             kind=OutcomeKind.ANSWER,
-            text=answer,
+            text=strip_markers(answer),
             documents=tuple(state["documents"]),
             decision=state["decision"],
             risk=assessment,
@@ -231,16 +387,40 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
 # --- Sisi bersyarat -------------------------------------------------------
 
 
-def _selesai_atau(berikutnya: str) -> Callable[[PipelineState], str]:
-    def route(state: PipelineState) -> str:
-        return "selesai" if "outcome" in state else berikutnya
+def _selesai_atau(*berikutnya: str) -> Callable[[PipelineState], str | list[str]]:
+    """Ke END bila `outcome` sudah ada; selain itu ke semua node `berikutnya`
+    sekaligus -- lebih dari satu berarti berjalan paralel."""
 
-    route.__name__ = f"selesai_atau_{berikutnya}"
+    def route(state: PipelineState) -> str | list[str]:
+        if "outcome" in state:
+            return "selesai"
+        return berikutnya[0] if len(berikutnya) == 1 else list(berikutnya)
+
+    route.__name__ = "selesai_atau_" + "_".join(berikutnya)
     return route
 
 
 def route_context(state: PipelineState) -> str:
+    if "outcome" in state:
+        return "selesai"
     return "refuse" if state["decision"].decision is Decision.REFUSE else "generate"
+
+
+SEARCH_NODE = "cari"
+"""Subgraph `rewrite -> retrieve` yang berjalan sejajar dengan `jev_gate`.
+
+Hanya pembungkus: perekam durasi melewatinya (`applog.WRAPPER_NODES`) dan
+mencatat `rewrite` serta `retrieve` di dalamnya sebagai langkah biasa."""
+
+
+def _search_graph() -> Any:
+    g = StateGraph(PipelineState, context_schema=PipelineDeps)
+    g.add_node("rewrite", rewrite)
+    g.add_node("retrieve", retrieve)
+    g.add_edge(START, "rewrite")
+    g.add_edge("rewrite", "retrieve")
+    g.add_edge("retrieve", END)
+    return g.compile(name="pandu_cari")
 
 
 @lru_cache(maxsize=1)
@@ -251,27 +431,34 @@ def build_graph() -> Any:
         sanitize,
         sensitive,
         smalltalk,
+        rule_gate,
         jev_gate,
-        rewrite,
-        retrieve,
         validate_context,
         refuse,
         generate,
     ):
         g.add_node(node.__name__, node)
+    g.add_node(SEARCH_NODE, _search_graph())
 
     g.add_edge(START, "sanitize")
     g.add_edge("sanitize", "sensitive")
-    for asal, lanjut in (
-        ("sensitive", "smalltalk"),
-        ("smalltalk", "jev_gate"),
-        ("jev_gate", "rewrite"),
-    ):
-        g.add_conditional_edges(asal, _selesai_atau(lanjut), {"selesai": END, lanjut: lanjut})
-    g.add_edge("rewrite", "retrieve")
-    g.add_edge("retrieve", "validate_context")
     g.add_conditional_edges(
-        "validate_context", route_context, {"refuse": "refuse", "generate": "generate"}
+        "sensitive", _selesai_atau("smalltalk"), {"selesai": END, "smalltalk": "smalltalk"}
+    )
+    g.add_conditional_edges(
+        "smalltalk", _selesai_atau("rule_gate"), {"selesai": END, "rule_gate": "rule_gate"}
+    )
+    g.add_conditional_edges(
+        "rule_gate",
+        _selesai_atau("jev_gate", SEARCH_NODE),
+        {"selesai": END, "jev_gate": "jev_gate", SEARCH_NODE: SEARCH_NODE},
+    )
+    # Titik temu: validate_context baru berjalan setelah KEDUA cabang selesai.
+    g.add_edge(["jev_gate", SEARCH_NODE], "validate_context")
+    g.add_conditional_edges(
+        "validate_context",
+        route_context,
+        {"selesai": END, "refuse": "refuse", "generate": "generate"},
     )
     g.add_edge("refuse", END)
     g.add_edge("generate", END)

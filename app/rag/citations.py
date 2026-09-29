@@ -19,9 +19,25 @@ import re
 from dataclasses import dataclass
 
 CITATION_RE = re.compile(
-    r"\[\s*(?P<judul>[^\[\]]+?)\s*,\s*hal\.?\s*(?P<halaman>\d+)\s*\]",
+    r"\[\s*(?:sumber\s*:\s*)?(?P<judul>[^\[\]]+?)\s*,\s*hal\.?\s*"
+    r"(?P<halaman>\d+(?:\s*(?:[-–—,&]|dan)\s*\d+)*)\s*\]",
     re.IGNORECASE,
 )
+"""Satu penanda boleh menyebut beberapa halaman: `hal. 8–9`, `hal. 4, 6`,
+`hal. 4 dan 6`. Prompt meminta satu halaman per sitasi, tetapi daftar yang
+bersambung ke halaman berikutnya (potongan lanjutan, `RETRIEVAL_NEIGHBORS`)
+membuat LLM menulis rentang. Tanpa ini penanda itu tidak terbaca sama sekali
+dan jawabannya tampil tanpa kartu sumber (T19).
+
+Awalan `Sumber:` ([Sumber: Judul, hal. 2]) juga sesekali ditulis LLM. Tanpa
+dibuang, awalan itu ikut menjadi judul, tidak cocok dengan dokumen mana pun,
+dan kartunya hilang dengan cara yang sama."""
+
+_BAGIAN_HALAMAN_RE = re.compile(r"(\d+)(?:\s*[-–—]\s*(\d+))?")
+
+RENTANG_MAKS = 10
+"""Rentang yang lebih lebar dari ini (atau terbalik) hanya diambil kedua
+ujungnya: `hal. 1-300` hampir pasti salah tulis, bukan 300 sumber."""
 
 
 @dataclass(frozen=True)
@@ -63,16 +79,30 @@ def format_citation(judul: str, halaman: int) -> str:
     return f"[{judul}, hal. {halaman}]"
 
 
+def _halaman(teks: str) -> list[int]:
+    """`"8–9"` -> [8, 9]; `"4, 6"` dan `"4 dan 6"` -> [4, 6]."""
+    hasil: list[int] = []
+    for bagian in _BAGIAN_HALAMAN_RE.finditer(teks):
+        awal = int(bagian.group(1))
+        akhir = int(bagian.group(2) or awal)
+        if awal <= akhir <= awal + RENTANG_MAKS:
+            hasil.extend(range(awal, akhir + 1))
+        else:
+            hasil.extend((awal, akhir))
+    return hasil
+
+
 def extract_citations(answer: str) -> tuple[Citation, ...]:
-    """Ambil semua sitasi dari jawaban, urut kemunculan, tanpa duplikat."""
+    """Ambil semua sitasi dari jawaban, urut kemunculan, tanpa duplikat.
+
+    Penanda dengan beberapa halaman menjadi satu sitasi per halaman."""
     found: list[Citation] = []
     for match in CITATION_RE.finditer(answer):
-        citation = Citation(
-            judul=match.group("judul").strip(),
-            halaman=int(match.group("halaman")),
-        )
-        if citation not in found:
-            found.append(citation)
+        judul = match.group("judul").strip()
+        for halaman in _halaman(match.group("halaman")):
+            citation = Citation(judul=judul, halaman=halaman)
+            if citation not in found:
+                found.append(citation)
     return tuple(found)
 
 

@@ -19,10 +19,11 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from app.rag.glossary import fulltext_variants
+from app.rag.fts_query import fulltext_queries
 from app.rag.retriever import (
     FULLTEXT_SQL,
     ITERATIVE_SCAN_SQL,
+    NEIGHBOR_SQL,
     VECTOR_SQL,
     PostgresHybridRetriever,
     fulltext_sql,
@@ -159,7 +160,22 @@ class TestParameterQuery:
     async def test_pertanyaan_dikirim_ke_fulltext(self, pabrik):
         await retriever_dengan(pabrik).ainvoke("pengisian KRS")
         params = next(p for s in pabrik.sesi for sql, p in s.panggilan if sql is FULLTEXT_SQL)
-        assert params["query"] == "pengisian KRS"
+        assert params["query"] == "pengisian or krs"
+
+    async def test_kata_tanya_dibuang_dan_digabung_or(self, pabrik):
+        """T17: dengan DAN atas setiap kata, "berapa harga sertifikasi TOEIC?"
+        tidak cocok dengan satu potongan pun."""
+        await retriever_dengan(pabrik).ainvoke("berapa harga sertifikasi TOEIC?")
+        params = next(p for s in pabrik.sesi for sql, p in s.panggilan if sql is FULLTEXT_SQL)
+        assert params["query"] == "harga or sertifikasi or toeic"
+
+    async def test_semua_kata_umum_melewati_fulltext(self, pabrik):
+        """Tidak ada yang layak dicocokkan; vektor saja yang memutuskan."""
+        docs = await retriever_dengan(pabrik).ainvoke("apa itu?")
+        dijalankan = [sql for s in pabrik.sesi for sql, _ in s.panggilan]
+        assert VECTOR_SQL in dijalankan
+        assert all(sql is VECTOR_SQL or sql is ITERATIVE_SCAN_SQL for sql in dijalankan)
+        assert [d.metadata["chunk_id"] for d in docs] == ["a", "b"]
 
     async def test_jumlah_kandidat_diteruskan(self, pabrik):
         await retriever_dengan(pabrik, candidates=7).ainvoke("pengisian KRS")
@@ -178,9 +194,10 @@ class TestKamusSinonim:
     async def test_istilah_kampus_mengirim_semua_varian(self, pabrik):
         await retriever_dengan(pabrik).ainvoke("akreditasi STIKI", unit="BAAK")
         [(sql, params)] = self.panggilan_fulltext(pabrik)
-        varian = fulltext_variants("akreditasi STIKI")
+        varian = fulltext_queries("akreditasi STIKI")
         assert sql is fulltext_sql(len(varian))
-        assert params["query"] == "akreditasi STIKI"
+        assert params["query"] == "akreditasi or stiki"
+        assert '"institut bisnis dan teknologi indonesia"' in " ".join(varian)
         assert [params[f"query_{i}"] for i in range(1, len(varian))] == varian[1:]
         assert params["unit"] == "BAAK"
 
@@ -311,3 +328,87 @@ class TestHasil:
     async def test_tanpa_hasil_tidak_menggagalkan(self):
         kosong = PabrikSesiPalsu([], [])
         assert await retriever_dengan(kosong).ainvoke("resep rendang") == []
+
+
+def baris_lanjutan(sumber: str, chunk_id: str, halaman: int = 13) -> dict:
+    return {
+        "source_id": sumber,
+        "chunk_id": chunk_id,
+        "content": f"lanjutan {chunk_id}",
+        "page": halaman,
+        "document_id": "d1",
+        "title": "Panduan Akademik 2025",
+        "type": "pdf",
+        "file_path": "documents/d1.pdf",
+    }
+
+
+class PabrikDenganLanjutan(PabrikSesiPalsu):
+    def __init__(self, *args, lanjutan: list[dict]) -> None:
+        super().__init__(*args)
+        self.lanjutan = lanjutan
+
+    def baris_untuk(self, sql) -> list[dict]:
+        return self.lanjutan if sql is NEIGHBOR_SQL else super().baris_untuk(sql)
+
+    def panggilan_lanjutan(self) -> list[dict]:
+        return [p for s in self.sesi for q, p in s.panggilan if q is NEIGHBOR_SQL]
+
+
+class TestPotonganLanjutan:
+    """Prosedur yang terbelah antar halaman harus sampai ke LLM utuh.
+
+    Peringkat awal (lihat fixture `pabrik`): b, a, c.
+    """
+
+    def pabrik(self, *lanjutan: dict) -> PabrikDenganLanjutan:
+        return PabrikDenganLanjutan(
+            [baris("a", 0.91), baris("b", 0.80)],
+            [baris("b", 0.40), baris("c", 0.30)],
+            lanjutan=list(lanjutan),
+        )
+
+    async def test_mati_secara_bawaan_tanpa_query_tambahan(self):
+        pabrik = self.pabrik(baris_lanjutan("b", "b2"))
+        docs = await retriever_dengan(pabrik).ainvoke("KRS")
+        assert [d.metadata["chunk_id"] for d in docs] == ["b", "a", "c"]
+        assert pabrik.panggilan_lanjutan() == []
+
+    async def test_hanya_hasil_teratas_yang_dicarikan_lanjutan(self):
+        pabrik = self.pabrik()
+        await retriever_dengan(pabrik, neighbors=2).ainvoke("KRS")
+        assert pabrik.panggilan_lanjutan() == [{"ids": ["b", "a"]}]
+
+    async def test_lanjutan_disisipkan_tepat_sesudah_sumbernya(self):
+        pabrik = self.pabrik(baris_lanjutan("b", "b2"), baris_lanjutan("a", "a2"))
+        docs = await retriever_dengan(pabrik, neighbors=2).ainvoke("KRS")
+        assert [d.metadata["chunk_id"] for d in docs] == ["b", "b2", "a", "a2", "c"]
+
+    async def test_lanjutan_yang_sudah_terambil_tidak_digandakan(self):
+        pabrik = self.pabrik(baris_lanjutan("b", "c"))
+        docs = await retriever_dengan(pabrik, neighbors=2).ainvoke("KRS")
+        assert [d.metadata["chunk_id"] for d in docs] == ["b", "a", "c"]
+
+    async def test_lanjutan_tanpa_skor_supaya_tidak_meloloskan_threshold(self):
+        pabrik = self.pabrik(baris_lanjutan("b", "b2"))
+        docs = await retriever_dengan(pabrik, neighbors=1).ainvoke("KRS")
+        b2 = next(d for d in docs if d.metadata["chunk_id"] == "b2")
+        assert b2.metadata["raw_scores"] == {}
+        assert b2.metadata["neighbor_of"] == "b"
+
+    async def test_metadata_sitasi_lanjutan_lengkap(self):
+        pabrik = self.pabrik(baris_lanjutan("b", "b2", halaman=14))
+        docs = await retriever_dengan(pabrik, neighbors=1).ainvoke("KRS")
+        meta = next(d for d in docs if d.metadata["chunk_id"] == "b2").metadata
+        assert meta["halaman"] == 14
+        assert {"chunk_id", "document_id", "judul", "halaman", "file_path"} <= set(meta)
+
+    async def test_tanpa_hasil_tidak_mencari_lanjutan(self):
+        pabrik = PabrikDenganLanjutan([], [], lanjutan=[])
+        assert await retriever_dengan(pabrik, neighbors=2).ainvoke("x") == []
+        assert pabrik.panggilan_lanjutan() == []
+
+    def test_sql_mengambil_posisi_berikutnya_di_dokumen_yang_sama(self):
+        sql = str(NEIGHBOR_SQL)
+        assert "n.position = c.position + 1" in sql
+        assert "n.document_id = c.document_id" in sql

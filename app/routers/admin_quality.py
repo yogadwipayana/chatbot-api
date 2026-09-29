@@ -19,18 +19,22 @@ from app.deps import (
     SessionDep,
     SettingsDep,
     UnitDirectoryDep,
+    build_gate_call,
     build_llm_call,
     build_retriever,
+    build_rewrite_call,
     require_admin,
     require_role,
     unit_terdaftar,
 )
 from app.observability.tracing import akhiri_jejak, id_giliran, jejak_giliran
-from app.rag.chain import run_pipeline
+from app.rag.chain import refusal_source, rejection_source, run_pipeline
 from app.rag.threshold import ThresholdPolicy
 from app.routers.chat import to_response
+from app.routers.common import LAYANAN_AI_BERMASALAH, terjemahkan_galat_ai
 from app.schemas.admin import (
     FeedbackPage,
+    GateVerdictOut,
     RetrievedChunk,
     TestQueryRequest,
     TestQueryResponse,
@@ -130,7 +134,9 @@ async def list_feedback(
 
 
 @router.post(
-    "/test-query", response_model=TestQueryResponse, responses={422: {"model": Error}}
+    "/test-query",
+    response_model=TestQueryResponse,
+    responses={422: {"model": Error}, 502: {"model": Error}},
 )
 async def admin_test_query(
     payload: TestQueryRequest,
@@ -138,12 +144,22 @@ async def admin_test_query(
     units: UnitDirectoryDep,
     retriever: Any = Depends(build_retriever),
     llm_call: Any = Depends(build_llm_call),
+    rewrite_call: Any = Depends(build_rewrite_call),
+    gate_call: Any = Depends(build_gate_call),
 ) -> TestQueryResponse:
     """AD-6. Alur yang sama persis dengan `/api/chat`, ditambah rincian retrieval.
+
+    Termasuk gerbang JEV: tanpanya "yang dilihat mahasiswa" di halaman ini
+    keliru untuk pesan yang diblokir (admin melihat "tidak ditemukan",
+    mahasiswa melihat penolakan JEV). Uji coba tanpa riwayat, jadi penulisan
+    ulang query (FR-4) memang tidak pernah berjalan di sini.
 
     Tidak tunduk pada kill switch (admin perlu mendiagnosis justru saat
     layanan dimatikan) dan tidak dicatat ke log percakapan, supaya uji coba
     admin tidak mencemari statistik AD-5 maupun daftar AD-4.
+
+    Galat layanan AI (LLM, gateway, embedding pertanyaan) dibalas 502 berisi
+    kalimat siap tampil; rinciannya masuk log server.
     """
     policy = ThresholdPolicy(
         vector_threshold=(
@@ -158,17 +174,20 @@ async def admin_test_query(
 
     mulai = time.perf_counter()
     run_id = id_giliran()
-    async with jejak_giliran(
-        run_id=run_id, pertanyaan=payload.question, nama="uji_coba_admin"
-    ) as akar:
-        outcome = await run_pipeline(
-            payload.question,
-            retriever=retriever,
-            llm_call=llm_call,
-            policy=policy,
-            unit=unit,
-        )
-        akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
+    with terjemahkan_galat_ai("uji coba jawaban", pesan=LAYANAN_AI_BERMASALAH):
+        async with jejak_giliran(
+            run_id=run_id, pertanyaan=payload.question, nama="uji_coba_admin"
+        ) as akar:
+            outcome = await run_pipeline(
+                payload.question,
+                retriever=retriever,
+                llm_call=llm_call,
+                rewrite_call=rewrite_call,
+                gate_call=gate_call,
+                policy=policy,
+                unit=unit,
+            )
+            akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
     latency_ms = round((time.perf_counter() - mulai) * 1000)
 
     respons = to_response(outcome)
@@ -192,6 +211,7 @@ async def admin_test_query(
                 rrf_score=float(doc.metadata.get("rrf_score", 0.0)),
                 raw_scores=dict(doc.metadata.get("raw_scores", {})),
                 ranks=dict(doc.metadata.get("ranks", {})),
+                neighbor_of=doc.metadata.get("neighbor_of"),
             )
             for doc in outcome.documents
         ],
@@ -207,6 +227,20 @@ async def admin_test_query(
         ),
         thresholds=ThresholdValues(
             vector=policy.vector_threshold, fulltext=policy.lexical_threshold
+        ),
+        llm_called=outcome.llm_called,
+        refusal_source=refusal_source(outcome),
+        rejection_source=rejection_source(outcome),
+        gate=(
+            GateVerdictOut(
+                label=str(outcome.gate.label),
+                confidence=outcome.gate.confidence,
+                blocked=outcome.gate.blocked,
+                error=outcome.gate.error,
+                source=outcome.gate.source.value,
+            )
+            if outcome.gate
+            else None
         ),
         contacts=respons.contacts,
         escalated=respons.escalated,

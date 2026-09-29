@@ -1,8 +1,9 @@
 """Penerjemah galat layanan AI menjadi balasan berbahasa admin.
 
-Dipakai setiap endpoint yang menghitung embedding saat admin menunggu: unggah
-dokumen (AD-3) dan entri tanya jawab. Kalimatnya sengaja tunggal di satu tempat
--- dua salinan akan berbeda bunyi setelah suntingan pertama, dan admin yang
+Dipakai setiap endpoint yang memanggil layanan AI saat admin menunggu: unggah
+dokumen (AD-3), entri tanya jawab, dan uji coba jawaban (AD-6). Kalimatnya
+sengaja tunggal di satu tempat -- dua salinan akan berbeda bunyi setelah
+suntingan pertama, dan admin yang
 membaca "coba lagi" di satu layar lalu jargon teknis di layar lain akan
 menyimpulkan yang satu lebih serius daripada yang lain padahal sama saja.
 
@@ -30,16 +31,24 @@ LAYANAN_AI_MATI = (
     "Layanan AI untuk memproses dokumen sedang tidak dapat dihubungi. "
     "Coba lagi beberapa saat lagi."
 )
+LAYANAN_AI_BERMASALAH = (
+    "Layanan AI sedang bermasalah, jadi jawaban uji coba tidak dapat disusun. "
+    "Coba lagi beberapa saat lagi."
+)
 
 
 @contextmanager
-def terjemahkan_galat_ai(apa: str) -> Iterator[None]:
-    """Ubah kegagalan layanan embedding menjadi 502; galat lain diteruskan.
+def terjemahkan_galat_ai(apa: str, *, pesan: str = LAYANAN_AI_MATI) -> Iterator[None]:
+    """Ubah kegagalan layanan AI menjadi 502 berisi `pesan`; galat lain diteruskan.
 
     `apa` hanya untuk log, mis. "Panduan Akademik.pdf" atau "entri tanya jawab".
     Galat yang bukan berasal dari layanan AI sengaja tidak disentuh: ia harus
     tetap menjadi 500 dan terlihat sebagai bug, bukan menyamar sebagai gangguan
     pihak lain yang "coba lagi nanti" tidak akan pernah memperbaikinya.
+
+    Tanpa terjemahan ini galat layanan AI juga menjadi 500, dan balasan 500
+    tidak membawa header CORS: dashboard admin melihatnya sebagai koneksi
+    putus ("Tidak dapat terhubung ke server"), bukan layanan AI yang bermasalah.
     """
     try:
         yield
@@ -49,5 +58,5 @@ def terjemahkan_galat_ai(apa: str) -> Iterator[None]:
     except Exception as exc:
         if not galat_layanan_ai(exc):
             raise
-        logger.exception("Layanan embedding gagal saat memproses %s", apa)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, LAYANAN_AI_MATI) from exc
+        logger.exception("Layanan AI gagal saat memproses %s", apa)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, pesan) from exc

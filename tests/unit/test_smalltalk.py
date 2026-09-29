@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.rag.smalltalk import SmallTalkKind, detect
+from app.rag.smalltalk import REPLIES, SmallTalkKind, detect, reply_for
 
 
 class TestDikenali:
@@ -48,6 +48,37 @@ class TestDikenali:
         assert hasil.handled
         assert hasil.reply.strip()
 
+    @pytest.mark.parametrize(
+        "teks",
+        [
+            # Tiga pesan dari uji browser yang dulu berakhir "tidak ditemukan" (T12).
+            "oke siap min, nanti saya coba dulu ya",
+            "baik min, sudah jelas penjelasannya",
+            "sip, itu saja dulu pertanyaan saya",
+            "oke kalau begitu",
+            "sekian dulu min",
+            "sudah cukup",
+            "noted kak",
+        ],
+    )
+    def test_penutup_dengan_kata_pengiring(self, teks):
+        assert detect(teks).kind is SmallTalkKind.CLOSING
+
+    @pytest.mark.parametrize(
+        "teks",
+        [
+            "terima kasih atas bantuannya",
+            "makasih min, semoga sehat selalu",
+            "oke makasih ya",
+            "oke terima kasih",
+            "siap, terima kasih banyak kak",
+            "sangat membantu, thanks",
+        ],
+    )
+    def test_campuran_dengan_terima_kasih_dijawab_sama_sama(self, teks):
+        """Terima kasih mengalahkan penutup dan sapaan: yang pamit tidak disapa ulang."""
+        assert detect(teks).kind is SmallTalkKind.THANKS
+
 
 class TestTidakDikenali:
     @pytest.mark.parametrize(
@@ -60,10 +91,40 @@ class TestTidakDikenali:
             "syarat wisuda",
             "halo saya mau tanya soal skripsi dan wisuda",
             "kelas malam",
+            # Kata netral baru tidak boleh membuka celah untuk pertanyaan.
+            "saya sudah bayar ukt tapi belum masuk",
+            "oke, lalu syarat cuti?",
+            "sudah jelas, tapi bagaimana cara daftar ulang",
+            "oke saya coba ke BAAK besok",
+            "nanti KRS dibuka kapan",
+            "makasih, saya mau tanya lagi soal beasiswa",
+            "saya belum paham",
         ],
     )
     def test_pertanyaan_tidak_pernah_tertelan(self, teks):
         assert detect(teks).kind is SmallTalkKind.NONE
+
+    @pytest.mark.parametrize("teks", ["itu saja", "sudah jelas", "saya coba dulu"])
+    def test_hanya_kata_pengiring_bukan_basa_basi(self, teks):
+        """Tanpa satu pun kata kunci, pesan diteruskan -- bisa jadi kalimat terpotong."""
+        assert not detect(teks).handled
+
+
+class TestBalasanUntukVonisJev:
+    """JEV hanya memvonis "smalltalk"; nada balasannya dibaca dari pesannya."""
+
+    def test_pamit_dibalas_penutup(self):
+        assert reply_for("oke deh kalau begitu, nanti saya ke kampus aja") == REPLIES[
+            SmallTalkKind.CLOSING
+        ]
+
+    def test_terima_kasih_dibalas_sama_sama(self):
+        assert reply_for("wah makasih banyak, sangat membantu skripsi saya") == REPLIES[
+            SmallTalkKind.THANKS
+        ]
+
+    def test_tanpa_kata_dikenal_diserahkan_ke_jev(self):
+        assert reply_for("apa kabar bot") is None
 
     def test_sapaan_bersama_kata_lain_bukan_basa_basi(self):
         """"halo skripsi" adalah awal pertanyaan yang terpotong, bukan sapaan."""

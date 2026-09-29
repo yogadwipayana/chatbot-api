@@ -47,7 +47,14 @@ class ThresholdPolicy:
     """Cosine similarity minimum (0..1, makin tinggi makin mirip)."""
 
     lexical_threshold: float = 0.05
-    """`ts_rank` minimum. Kecocokan frasa persis boleh lolos walau vektor lemah."""
+    """`ts_rank` minimum atas query `or` tanpa kata umum (`app.rag.fts_query`).
+
+    Skor query `or` dibagi rata dengan jumlah kata pertanyaan, jadi potongan
+    yang tepat pada pertanyaan panjang bisa di bawah ambang (VA BNI lewat SMS:
+    0,047). Terukur 2026-09-29: pertanyaan terjawab 0,047-0,088, tak terjawab
+    0,036-0,063 -- tumpang tindih, jadi nilai ini belum dikalibrasi ulang.
+    Selama skor vektor e5 selalu di atas `vector_threshold` (T3), ambang ini
+    tidak pernah menentukan keputusan."""
 
     rerank_threshold: float | None = None
     """Skor reranker minimum. None = ambang vector/leksikal di atas yang berlaku.

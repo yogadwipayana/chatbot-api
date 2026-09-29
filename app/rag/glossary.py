@@ -93,6 +93,14 @@ _POLA = re.compile(
 tanda hubung, dan "instiki" tidak boleh cocok sebagai "stiki"."""
 
 
+def cari_istilah(teks: str) -> list[re.Match[str]]:
+    """Posisi setiap istilah kamus di `teks`, terpanjang lebih dulu, tanpa tumpang tindih.
+
+    Dipakai `app.rag.fts_query` supaya istilah multi-kata ("Unit Pelaksana
+    Sertifikasi") dikirim sebagai frasa, bukan dipecah menjadi kata umum."""
+    return list(_POLA.finditer(teks))
+
+
 def fulltext_variants(query: str) -> list[str]:
     """Query asli ditambah varian yang istilah kampusnya diganti padanannya.
 

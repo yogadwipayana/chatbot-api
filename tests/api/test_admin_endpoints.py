@@ -10,11 +10,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
+import openai
 import pytest
 import yaml
 
-from app.config import get_settings
+from app.config import Settings, get_settings
+from app.deps import build_llm_call
 from app.rag.chain import OutcomeKind
+from app.rag.providers import GalatGateway
+from app.routers.common import LAYANAN_AI_BERMASALAH
 from app.security.auth import create_access_token
 from app.security.ratelimit import LOGIN_MAX_FAILURES
 from tests.api.conftest import ADMIN_EMAIL, SANDI
@@ -258,3 +263,135 @@ class TestUjiCoba:
         """Uji coba admin tidak boleh mencemari statistik AD-5 dan daftar AD-4."""
         self.uji(client, admin_headers)
         assert chat_logger.entries == []
+
+    def test_ambang_menolak_dengan_sumber_threshold(self, client, admin_headers):
+        """T15: halaman bisa membedakan penolakan ambang dari penolakan LLM."""
+        data = self.uji(client, admin_headers, vector_threshold=0.9).json()
+        assert data["refusal_source"] == "threshold"
+        assert data["llm_called"] is False
+
+    def test_penolakan_llm_dilaporkan_sebagai_llm(self, client, admin_headers, api_llm):
+        """Lolos ambang, tetapi LLM menilai isinya tidak menjawab (T1). Halaman
+        dulu menulis "Model AI tidak dipanggil" untuk kasus ini."""
+        from app.rag.prompts import NOT_FOUND_MARKER
+
+        api_llm.reply = NOT_FOUND_MARKER
+        data = self.uji(client, admin_headers).json()
+        assert data["kind"] == OutcomeKind.REFUSAL
+        assert data["refusal_source"] == "llm"
+        assert data["llm_called"] is True
+        assert data["decision"]["decision"] == "proceed"
+
+    def test_jawaban_tanpa_sumber_penolakan(self, client, admin_headers):
+        data = self.uji(client, admin_headers).json()
+        assert data["refusal_source"] is None
+        assert data["llm_called"] is True
+
+    def test_memakai_gerbang_jev_seperti_chat_mahasiswa(
+        self, make_client, strong_documents, admin_headers, api_llm
+    ):
+        """T14: "yang dilihat mahasiswa" harus sama dengan chat sungguhan --
+        pesan yang diblokir JEV di chat juga diblokir di sini."""
+        from app.rag.gate import REPLIES, GateLabel, GateVerdict
+
+        async def gerbang(question, history=(), unit=None):
+            return GateVerdict(GateLabel.OUT_OF_SCOPE, 1.0, blocked=True)
+
+        client = make_client(strong_documents, gate=gerbang)
+        data = self.uji(client, admin_headers, question="resep nasi goreng dong").json()
+        assert data["kind"] == OutcomeKind.REJECTED
+        assert data["text"] == REPLIES[GateLabel.OUT_OF_SCOPE]
+        assert data["gate"] == {
+            "label": "out_of_scope",
+            "confidence": 1.0,
+            "blocked": True,
+            "error": None,
+            "source": "jev",
+        }
+        assert data["rejection_source"] == "jev"
+        assert data["decision"] is None
+        assert data["retrieved"] == []
+        assert api_llm.calls == []
+
+    def test_vonis_jev_yang_meloloskan_ikut_dilaporkan(
+        self, make_client, strong_documents, admin_headers
+    ):
+        from app.rag.gate import GateLabel, GateVerdict
+
+        async def gerbang(question, history=(), unit=None):
+            return GateVerdict(GateLabel.ACADEMIC, 0.97, blocked=False)
+
+        data = self.uji(make_client(strong_documents, gate=gerbang), admin_headers).json()
+        assert data["kind"] == OutcomeKind.ANSWER
+        assert data["gate"]["label"] == "academic"
+        assert data["gate"]["blocked"] is False
+
+    def test_potongan_lanjutan_menyebut_sumbernya(
+        self, make_client, strong_documents, admin_headers
+    ):
+        """T16: tanpa ini potongan lanjutan tampil tanpa skor dan tanpa keterangan."""
+        from tests.fixtures.fakes import make_document
+
+        lanjutan = make_document("c1b", halaman=13, vector_score=None, rrf_score=0.0)
+        lanjutan.metadata["neighbor_of"] = "c1"
+        dokumen = [strong_documents[0], lanjutan, strong_documents[1]]
+        data = self.uji(make_client(dokumen), admin_headers).json()
+        assert [c["neighbor_of"] for c in data["retrieved"]] == [None, "c1", None]
+        assert data["retrieved"][1]["raw_scores"] == {}
+
+
+class LLMGagal:
+    def __init__(self, galat: Exception) -> None:
+        self.galat = galat
+
+    async def __call__(self, wrapped_question: str, documents) -> str:
+        raise self.galat
+
+
+class TestUjiCobaSaatLayananAiGagal:
+    """T26: sebelumnya galat LLM menjadi 500 tanpa header CORS, dan dashboard
+    menampilkan "Tidak dapat terhubung ke server" -- seolah jaringan admin putus."""
+
+    def uji(self, make_client, strong_documents, headers, galat: Exception):
+        klien = make_client(strong_documents)
+        klien.app.dependency_overrides[build_llm_call] = lambda: LLMGagal(galat)
+        return klien.post(
+            "/api/admin/test-query",
+            json={"question": "kapan pengisian KRS dibuka?"},
+            headers=headers,
+        )
+
+    @pytest.mark.parametrize(
+        "galat",
+        [
+            GalatGateway("[Error] Our servers are currently overloaded."),
+            openai.APITimeoutError(request=httpx.Request("POST", "https://gateway.contoh/v1")),
+        ],
+        ids=["galat-gateway", "batas-waktu"],
+    )
+    def test_dibalas_502_berpesan(self, make_client, strong_documents, admin_headers, galat):
+        r = self.uji(make_client, strong_documents, admin_headers, galat)
+        assert r.status_code == 502
+        assert r.json()["detail"] == LAYANAN_AI_BERMASALAH
+
+    def test_balasan_terbaca_dashboard(
+        self, monkeypatch, make_client, strong_documents, admin_headers
+    ):
+        asal = "https://admin.dwipa.my.id"
+        monkeypatch.setattr(
+            "app.main.get_settings", lambda: Settings(_env_file=None, cors_origins=asal)
+        )
+        klien = make_client(strong_documents)
+        klien.app.dependency_overrides[build_llm_call] = lambda: LLMGagal(GalatGateway("x"))
+        r = klien.post(
+            "/api/admin/test-query",
+            json={"question": "kapan pengisian KRS dibuka?"},
+            headers={**admin_headers, "Origin": asal},
+        )
+        assert r.status_code == 502
+        assert r.headers["access-control-allow-origin"] == asal
+
+    def test_bug_tetap_500(self, make_client, strong_documents, admin_headers):
+        """Galat kode kita tidak boleh menyamar sebagai gangguan layanan AI."""
+        with pytest.raises(ZeroDivisionError):
+            self.uji(make_client, strong_documents, admin_headers, ZeroDivisionError())

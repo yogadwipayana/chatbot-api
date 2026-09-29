@@ -17,7 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import EMBEDDING_DIM
 from app.ingestion.chunker import PreparedChunk
-from app.rag.retriever import FTS_CONFIG, vector_literal
+from app.rag.providers import GalatGateway
+from app.rag.retriever import vector_literal
 
 
 class EmbeddingDimensionError(RuntimeError):
@@ -29,7 +30,12 @@ def galat_layanan_ai(exc: BaseException) -> bool:
 
     Dipakai router untuk memisahkan "layanan luar sedang bermasalah, coba lagi"
     (502) dari bug yang harus tetap menjadi 500 dan terlihat di log.
+
+    `openai.APIError` mencakup status galat, batas waktu, dan koneksi putus;
+    `GalatGateway` adalah galat yang dikirim gateway sebagai isi jawaban.
     """
+    if isinstance(exc, GalatGateway):
+        return True
     try:
         import openai
     except ModuleNotFoundError:  # pragma: no cover - langchain-openai selalu membawanya
@@ -46,15 +52,17 @@ yang melayani e5: batch 33 ke atas ditolak 422, dan setiap dokumen yang
 potongannya lebih dari itu gagal dipasang dengan 502."""
 
 INSERT_CHUNK_SQL = text(
-    f"""
-    INSERT INTO chunks (id, document_id, content, page, position, embedding, tsv)
+    """
+    INSERT INTO chunks (id, document_id, content, page, position, embedding)
     VALUES (
         :id, :document_id, :content, :page, :position,
-        (:embedding)::vector,
-        to_tsvector('{FTS_CONFIG}', :content)
+        (:embedding)::vector
     )
     """
 )
+"""`tsv` sengaja tidak diisi di sini: trigger `trg_chunks_tsv` yang membentuknya
+dari judul dokumen (bobot C) dan isi potongan (migrasi 0014). Nilai yang diisi
+di sini selalu ditimpa trigger, dan dua rumus di dua tempat cepat menyimpang."""
 
 
 async def embed_and_store(

@@ -324,7 +324,7 @@ python -m eval.run_eval --dataset eval/data/eval_set.jsonl --k 5
 
 Membandingkan baseline vector-only melawan hybrid + RRF lewat jalur SQL yang
 sama persis (baseline = bobot fulltext nol), sehingga yang terukur benar-benar
-hanya efek fusi. Bila `RERANK_PROVIDER` menyala, baris ketiga hybrid + RRF +
+hanya efek fusi. Bila `RERANK_ENABLED=true`, baris ketiga hybrid + RRF +
 rerank ikut dihitung. Exit code 1 bila Recall@5 belum mencapai 0.85.
 
 ## Evaluasi generasi — RAGAS
@@ -350,7 +350,7 @@ yang dinilai; tingkat dijawab dilaporkan terpisah.
 
 | Fitur | Setelan | Catatan |
 |---|---|---|
-| Reranker | `RERANK_PROVIDER=api\|local`, `RERANK_MODEL` | `local` butuh `uv sync --extra local` (torch) |
+| Reranker | `RERANK_ENABLED=true`, `RERANK_BASE_URL`, `RERANK_API_KEY`, `RERANK_MODEL` | Bawaan server TEI (`RERANK_PROVIDER=tei`); `local` butuh `uv sync --extra local` (torch). Lihat `docs/rerank.md` |
 | Ambang reranker | `RERANK_THRESHOLD` | Menggantikan ambang vector/leksikal bila skor reranker ada; kalibrasi dulu |
 | Gerbang JEV | `JEV_ENABLED=true` | Dikirim ke `<BASE_URL>/systemone` dengan `API_KEY`, model `openrouter/typesafe/jev-1.13` |
 | Embedding lokal | `EMBED_PROVIDER=local`, `EMBED_MODEL=intfloat/multilingual-e5-small` | Wajib re-index dan kalibrasi ulang ambang sesudahnya; panduan lengkap di [`docs/e5.md`](docs/e5.md) |

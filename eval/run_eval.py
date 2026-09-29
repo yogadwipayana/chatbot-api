@@ -2,7 +2,7 @@
 
 Menjalankan set evaluasi terhadap dua konfigurasi dan membandingkannya:
 baseline vector-only melawan hybrid + RRF -- ditambah hybrid + RRF + rerank
-bila RERANK_PROVIDER dinyalakan. Perbandingan inilah yang menjadi
+bila RERANK_ENABLED=true. Perbandingan inilah yang menjadi
 bukti bahwa retriever kustom memang lebih baik -- tanpa angka pembanding,
 klaim di skripsi tidak dapat dipertahankan.
 

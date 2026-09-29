@@ -77,6 +77,15 @@ class Settings(BaseSettings):
     kosong sehingga seluruh jawaban streaming kehilangan estimasi biaya AD-5.
     Matikan hanya bila gateway menolak `stream_options` -- jawabannya tetap
     utuh, yang hilang hanya angka biayanya."""
+    llm_timeout_seconds: float = Field(default=60.0, gt=0)
+    """Batas tunggu satu permintaan LLM, termasuk jeda antar potongan saat
+    streaming. Tanpa nilai ini klien OpenAI menunggu sampai 600 detik per
+    percobaan: gateway yang macet membuat widget mahasiswa tertahan di
+    "Menyusun jawaban..." selama itu, dan pertanyaan berikutnya tidak dapat
+    dikirim karena giliran sebelumnya belum selesai."""
+    llm_max_retries: int = Field(default=1, ge=0)
+    """Percobaan ulang setelah galat atau timeout. Bawaan klien OpenAI 2;
+    setiap percobaan menambah waktu tunggu mahasiswa sebesar timeout di atas."""
     embed_model: str = "text-embedding-3-large"
     """Harus menghasilkan 1024 dimensi, sama dengan kolom `chunks.embedding`
     (`app.db.models.EMBEDDING_DIM`). Mengganti model = re-index seluruh dokumen
@@ -90,16 +99,26 @@ class Settings(BaseSettings):
     cosine similarity tidak berubah, jadi skema database tidak perlu diubah."""
 
     # --- Reranker (setelah RRF, sebelum threshold) -------------------
-    rerank_provider: Literal["none", "api", "local"] = "none"
-    """`none` = urutan RRF langsung dipakai. `api` = endpoint `/rerank` gaya
-    Cohere/Jina. `local` = cross-encoder sentence-transformers."""
+    rerank_enabled: bool = False
+    """Sakelar reranker, seperti JEV_ENABLED. Mati = urutan RRF langsung dipakai
+    dan RERANK_* lainnya diabaikan. Mengganti model cukup dengan mengganti
+    RERANK_BASE_URL, RERANK_API_KEY, dan RERANK_MODEL."""
+    rerank_provider: Literal["tei", "api", "local"] = "tei"
+    """Bentuk endpoint, bukan modelnya. `tei` = Text Embeddings Inference
+    (`/rerank` dengan `texts`), `api` = gaya Cohere/Jina (`documents` ->
+    `results`), `local` = cross-encoder sentence-transformers di proses API.
+    Diganti hanya bila jenis servernya berganti."""
     rerank_model: str = ""
-    """Mis. `BAAI/bge-reranker-v2-m3` (local) atau
-    `jina-reranker-v2-base-multilingual` (api)."""
+    """Mis. `Alibaba-NLP/gte-multilingual-reranker-base`. TEI mengabaikannya
+    (satu server satu model), jadi di sana nama ini hanya untuk log; `api` dan
+    `local` memakainya untuk memilih model."""
     rerank_base_url: str | None = None
-    """Kosong = BASE_URL. `/rerank` ditambahkan di belakangnya."""
+    """Alamat server reranker, mis. `http://localhost:8081`; `/rerank`
+    ditambahkan di belakangnya. Wajib kecuali `local`. Tidak jatuh ke BASE_URL:
+    gateway tidak menyediakan `/rerank`."""
     rerank_api_key: SecretStr | None = None
-    """Kosong = API_KEY."""
+    """Kosong = tanpa header Authorization. Tidak jatuh ke API_KEY, supaya kunci
+    gateway tidak terkirim ke server lain."""
     rerank_candidates: int = 20
     """Jumlah hasil RRF yang dinilai ulang; yang lolos tetap RETRIEVAL_TOP_N."""
     rerank_threshold: float | None = None
@@ -111,7 +130,9 @@ class Settings(BaseSettings):
     # --- Gerbang JEV (Decisions API lewat gateway) ------------------
     jev_enabled: bool = False
     """Klasifikasi pesan sebelum retrieval: academic / smalltalk / out_of_scope /
-    nonsense / malicious. Gagal atau lewat batas waktu = pesan diteruskan."""
+    nonsense / malicious. Gagal atau lewat batas waktu = pesan diteruskan.
+    Mati pun aman: saringan aturan (`app.rag.rule_gate`) dan penanda
+    `[DI_LUAR_TOPIK]` LLM penjawab menggantikannya tanpa biaya per pesan."""
     jev_url: str | None = None
     """Kosong = `<BASE_URL>/systemone`, endpoint gateway yang meneruskan JEV.
     Diisi hanya bila JEV dilayani alamat lain dengan badan permintaan yang sama."""
@@ -119,18 +140,39 @@ class Settings(BaseSettings):
     """Kosong = API_KEY, kunci yang sama dengan gateway."""
     jev_model: str = "openrouter/typesafe/jev-1.13"
     """Nama model JEV menurut gateway."""
-    jev_timeout_seconds: float = 3.0
-    jev_block_threshold: float = 0.8
-    """Keyakinan minimum untuk menghentikan pesan nonsense/malicious/smalltalk."""
+    jev_timeout_seconds: float = Field(default=10.0, gt=0)
+    """Batas keras satu panggilan JEV. Biasanya bukan ini yang memutusnya:
+    JEV berjalan paralel dengan pencarian dan diputus `jev_grace_seconds`
+    setelah pencarian selesai (`app.rag.graph.jev_gate`). Batas ini hanya
+    berlaku bila pencarian sendiri juga lambat."""
+    jev_grace_seconds: float = Field(default=1.5, ge=0)
+    """Waktu tambahan bagi JEV setelah pencarian paralel selesai -- satu-
+    satunya waktu tunggu yang dapat ditambahkan JEV ke giliran mahasiswa.
+    Latensi JEV berayun dari ~1 dtk sampai ~29 dtk (2026-09-28); batas tetap
+    3 dtk dulu memutusnya walau pencarian masih berjalan 5-10 dtk."""
+    jev_block_threshold: float = 0.7
+    """Keyakinan minimum untuk menghentikan pesan nonsense/malicious/smalltalk.
+    Kalibrasi 2026-09-29: pertanyaan akademik tidak pernah di atas 0,03 untuk
+    ketiga label ini (lihat `app.rag.gate.GatePolicy`)."""
     jev_out_of_scope_threshold: float = 0.9
-    """Lebih ketat: pertanyaan di luar topik juga ditolak FR-3 bila lolos
-    gerbang, sedangkan salah blokir menelan pertanyaan akademik tanpa jejak."""
+    """Lebih ketat: pertanyaan di luar topik yang lolos gerbang masih ditandai
+    LLM penjawab (`[DI_LUAR_TOPIK]`), sedangkan salah blokir menelan pertanyaan
+    akademik tanpa jejak. Akademik paling tinggi 0,57, di luar topik sungguhan
+    paling rendah 0,94 (2026-09-29)."""
 
     # --- Retrieval (FR-2, FR-3) --------------------------------------
     retrieval_candidates: int = 20
     """Top-N per sumber sebelum fusi. PRD FR-2: 20 vector + 20 fulltext."""
     retrieval_top_n: int = 5
     """Jumlah chunk yang masuk konteks LLM setelah RRF."""
+    retrieval_neighbors: int = Field(default=5, ge=0)
+    """Berapa chunk teratas yang diberi potongan sesudahnya dari dokumen yang
+    sama. Konteks LLM paling banyak `retrieval_top_n + retrieval_neighbors`
+    chunk. 0 = mati. Lihat `app.rag.retriever.NEIGHBOR_SQL`.
+
+    5 = setiap chunk konteks. Dengan 2, daftar larangan Pasal 10 Kode Etik
+    (peringkat 3) terpotong di butir 6; dengan 5 lengkap 10 butir, dengan
+    tambahan sekitar 12% token input (uji 2026-09-29)."""
     rrf_k: int = 60
     rrf_weight_vector: float = 1.0
     rrf_weight_fulltext: float = 1.0
@@ -302,8 +344,8 @@ class Settings(BaseSettings):
         return _terisi(self.api_key)
 
     def kunci_rerank(self) -> SecretStr | None:
-        """RERANK_API_KEY, atau API_KEY bila kosong."""
-        return _terisi(self.rerank_api_key) or self.kunci_api()
+        """RERANK_API_KEY, atau None bila kosong -- sengaja tidak jatuh ke API_KEY."""
+        return _terisi(self.rerank_api_key)
 
     def kunci_jev(self) -> SecretStr | None:
         """JEV_API_KEY, atau API_KEY bila kosong."""
@@ -315,20 +357,23 @@ class Settings(BaseSettings):
             return self.jev_url
         return f"{self.base_url.rstrip('/')}/systemone" if self.base_url else None
 
-    def url_rerank(self) -> str | None:
-        """RERANK_BASE_URL, atau BASE_URL bila kosong."""
-        return self.rerank_base_url or self.base_url
-
     @model_validator(mode="after")
     def _reranker_dan_jev_valid(self) -> Settings:
         """Setelan yang setengah terisi gagal saat start, bukan saat mahasiswa bertanya."""
-        if self.rerank_provider != "none":
+        if self.rerank_enabled:
             if not self.rerank_model.strip():
-                raise ValueError(
-                    f"RERANK_PROVIDER={self.rerank_provider} tetapi RERANK_MODEL kosong"
-                )
-            if self.rerank_provider == "api" and not self.url_rerank():
-                raise ValueError("RERANK_PROVIDER=api butuh RERANK_BASE_URL atau BASE_URL")
+                raise ValueError("RERANK_ENABLED=true tetapi RERANK_MODEL kosong")
+            if self.rerank_provider != "local":
+                if not self.rerank_base_url:
+                    raise ValueError(
+                        f"RERANK_ENABLED=true dengan RERANK_PROVIDER={self.rerank_provider} "
+                        "butuh RERANK_BASE_URL"
+                    )
+                if not self.rerank_base_url.startswith(("http://", "https://")):
+                    raise ValueError(
+                        "RERANK_BASE_URL harus diawali http:// atau https://, "
+                        f"diberi {self.rerank_base_url!r}"
+                    )
         # rerank_candidates < retrieval_top_n tidak ditolak di sini: RETRIEVAL_TOP_N
         # dapat dinaikkan dari dashboard, dan retriever memakai yang lebih besar.
         if self.rerank_candidates < 1:
@@ -431,6 +476,17 @@ class Settings(BaseSettings):
     @classmethod
     def _rapikan_base_url(cls, v: str | None) -> str | None:
         return v.rstrip("/") if v else v
+
+    @field_validator("rerank_provider", mode="before")
+    @classmethod
+    def _provider_none_sudah_diganti(cls, v):
+        """`.env` lama berisi RERANK_PROVIDER=none; arahkan ke sakelar yang baru."""
+        if isinstance(v, str) and v.strip().lower() == "none":
+            raise ValueError(
+                "RERANK_PROVIDER=none tidak dipakai lagi: matikan reranker dengan "
+                "RERANK_ENABLED=false, dan isi RERANK_PROVIDER dengan tei, api, atau local"
+            )
+        return v
 
     @field_validator(
         "rate_limit_per_session", "rate_limit_per_ip", "rate_limit_per_embed_site"

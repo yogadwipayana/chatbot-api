@@ -259,6 +259,22 @@ class RetrievedChunk(BaseModel):
     raw_scores: dict[str, float]
     """Hanya sumber yang benar-benar menemukan chunk ini yang punya kunci."""
     ranks: dict[str, int]
+    neighbor_of: str | None = None
+    """`chunk_id` sumbernya bila ini potongan lanjutan (`RETRIEVAL_NEIGHBORS`).
+    Potongan lanjutan ikut karena sumbernya, jadi memang tidak punya skor."""
+
+
+class GateVerdictOut(BaseModel):
+    """Vonis gerbang pada uji coba ini; None bila JEV mati dan saringan aturan
+    meloloskan pesannya, atau alur berhenti sebelum gerbang."""
+
+    label: str
+    confidence: float
+    blocked: bool
+    error: str | None = None
+    """Galat atau lewat tenggat; saat itu pesan diteruskan (fail-open)."""
+    source: Literal["jev", "rules"] = "jev"
+    """`rules` = saringan aturan, tanpa model; keyakinannya selalu 1."""
 
 
 class ThresholdDecisionOut(BaseModel):
@@ -281,7 +297,16 @@ class TestQueryResponse(BaseModel):
     rewritten_query: str | None = None
     retrieved: list[RetrievedChunk]
     decision: ThresholdDecisionOut | None
-    """None bila pertanyaan dialihkan ke konseling (FR-7) sebelum retrieval."""
+    """None bila alur berhenti sebelum ambang dinilai: konseling (FR-7), sapaan,
+    atau diblokir gerbang JEV."""
+    llm_called: bool = False
+    refusal_source: Literal["threshold", "llm"] | None = None
+    """Hanya untuk `refusal`: `threshold` = ambang FR-3 menolak dan LLM tidak
+    dipanggil; `llm` = lolos ambang, tetapi LLM menilai isinya tidak menjawab."""
+    rejection_source: Literal["jev", "rules", "llm"] | None = None
+    """Hanya untuk `rejected`: gerbang JEV, saringan aturan, atau LLM penjawab
+    yang membalas `[DI_LUAR_TOPIK]`."""
+    gate: GateVerdictOut | None = None
     thresholds: ThresholdValues
     contacts: list[ContactOut]
     escalated: bool

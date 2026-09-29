@@ -375,20 +375,40 @@ dimensinya muat: vektor dari dua model berbeda tidak dapat dibandingkan.
 ### Trigger `tsv`
 
 ```sql
+-- Sejak 0014: judul dokumen (bobot C) + isi potongan (bobot D).
 CREATE FUNCTION chunks_tsv_update() RETURNS trigger AS $$
 BEGIN
-    NEW.tsv := to_tsvector('indonesian', COALESCE(NEW.content, ''));
+    NEW.tsv :=
+        setweight(to_tsvector('indonesian', COALESCE((
+            SELECT CASE WHEN d.type = 'tanya_jawab' THEN '' ELSE d.title END
+            FROM documents d WHERE d.id = NEW.document_id
+        ), '')), 'C')
+        || to_tsvector('indonesian', COALESCE(NEW.content, ''));
     RETURN NEW;
 END
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trg_chunks_tsv
-    BEFORE INSERT OR UPDATE OF content ON chunks
+    BEFORE INSERT OR UPDATE OF content, document_id ON chunks
     FOR EACH ROW EXECUTE FUNCTION chunks_tsv_update();
+
+-- Judul atau jenis dokumen berubah: hitung ulang tsv semua potongannya.
+CREATE TRIGGER trg_documents_title_tsv
+    AFTER UPDATE OF title, type ON documents FOR EACH ROW
+    WHEN (OLD.title IS DISTINCT FROM NEW.title OR OLD.type IS DISTINCT FROM NEW.type)
+    EXECUTE FUNCTION documents_title_tsv_update();  -- UPDATE chunks SET content = content
 ```
 
 Diisi otomatis supaya tidak ada jalur penulisan yang bisa lupa mengisinya dan
-diam-diam mematikan separuh retrieval hibrida.
+diam-diam mematikan separuh retrieval hibrida. `INSERT` di
+`app/ingestion/embedder.py` sengaja tidak mengisi `tsv`.
+
+Judul ikut diindeks supaya pertanyaan yang menyebut nama dokumen ("menurut kode
+etik") dapat memanfaatkannya: potongan "Pasal 10 … dilarang" naik dari
+peringkat fulltext 48 ke 3. Bobot C (dua kali isi pada `ts_rank` bawaan)
+dipilih dari evaluasi A/B/C karena sama baiknya dengan A dengan dorongan
+terkecil. Entri tanya jawab dikecualikan: judulnya adalah pertanyaan itu
+sendiri, yang sudah ada di isi.
 
 > **Prasyarat rilis:** konfigurasi FTS `indonesian` harus tersedia di instans
 > target. Periksa dengan `SELECT cfgname FROM pg_ts_config;`. Bila tidak ada,
@@ -466,16 +486,17 @@ Hanya diisi pada baris `role = 'assistant'`.
 | Kunci | Tipe | Isi |
 |---|---|---|
 | `kind` | string | `answer` \| `refusal` \| `support` \| `smalltalk` |
+| `refusal_source` | string \| null | Hanya untuk `refusal`: `threshold` (ditolak ambang FR-3, LLM tidak dipanggil) atau `llm` (lolos ambang, tetapi LLM membalas `[TIDAK_DITEMUKAN]`). Banyaknya `llm` berarti ambang terlalu longgar |
 | `escalated` | bool | Jawaban menyertakan kontak unit (FR-6) |
 | `topics` | array | Topik berisiko tinggi yang terdeteksi |
 | `sensitivity` | string \| null | Tingkat sensitif (FR-7) |
-| `llm_called` | bool | Penolakan FR-3 dan FR-7 bernilai `false` |
+| `llm_called` | bool | Penolakan ambang FR-3 dan FR-7 bernilai `false`; penolakan `refusal_source = llm` bernilai `true` |
 | `model` | string \| null | Hanya diisi bila LLM benar-benar dipanggil |
 | `input_tokens` / `output_tokens` | int \| null | Dari `usage_metadata` LangChain |
 | `llm_cost_usd` | float \| null | `null` bila tarif modelnya tidak dikenal |
 | `rewritten_query` | string \| null | Hasil penulisan ulang query (FR-4) |
 | `unit` | string \| null | Unit pilihan mahasiswa di menu; `null` = semua unit. Membedakan penolakan akibat salah pilih unit dari dokumen yang memang belum ada |
-| `embed_called` | bool | `false` untuk FR-7 dan smalltalk — keduanya berhenti sebelum retrieval |
+| `embed_called` | bool | `false` untuk FR-7 dan sapaan berbasis aturan — keduanya berhenti sebelum retrieval. Pesan yang diblokir JEV (`rejected`, atau `smalltalk` dari JEV) bisa `true`: pencarian berjalan paralel dengan gerbang dan baru dihentikan saat vonis blokir tiba |
 | `embed_model` | string \| null | Model yang **diminta**, bukan yang dilaporkan gateway |
 | `embed_tokens` | int \| null | `usage.prompt_tokens`; `null` bila endpoint tidak melaporkannya |
 | `embed_cost_usd` | float \| null | Biaya meng-embed pertanyaan, **tanpa pembulatan** |
@@ -627,6 +648,7 @@ pertanyaan hari sebelumnya.
 | `0011_kunci_sematan` | `embed_keys` — satu kunci per situs yang memasang asisten; `conversations.embed_key` + indeks |
 | `0012_nama_resmi_ups` | Deskripsi unit UPS: "Unit Pelayanan Sertifikasi" → "Unit Pelaksana Sertifikasi" (nama resmi di FAQ kampus); deskripsi yang sudah disunting admin dibiarkan |
 | `0013_identifier_bahasa_inggris` | Seluruh identifier Indonesia → Inggris: tabel `unanswered` → `unanswered_questions`, kolom, constraint, index, fungsi trigger `tsv`, dan kunci `messages.meta` di baris lama |
+| `0014_judul_di_tsv` | `chunks.tsv` = judul dokumen (bobot C, kecuali tanya jawab) + isi; trigger `trg_documents_title_tsv` menghitung ulang saat judul berubah; semua potongan diisi ulang |
 
 Catatan per migrasi:
 

@@ -13,6 +13,7 @@ dibalas kutipan pasal tata cara DO.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -20,7 +21,9 @@ from typing import Any
 
 from app.rag import risk as risk_module
 from app.rag import sensitive as sensitive_module
-from app.rag.gate import GateVerdict
+from app.rag.citations import extract_citations
+from app.rag.gate import GateSource, GateVerdict
+from app.rag.prompts import NOT_FOUND_MARKER, OFF_TOPIC_MARKER
 from app.rag.rewriter import Turn
 from app.rag.threshold import ThresholdDecision, ThresholdPolicy
 
@@ -28,15 +31,22 @@ from app.rag.threshold import ThresholdDecision, ThresholdPolicy
 class OutcomeKind(StrEnum):
     ANSWER = "answer"
     REFUSAL = "refusal"
+    """Dokumen resmi tidak menjawab. Diputuskan threshold FR-3 sebelum LLM
+    (`llm_called=False`), atau oleh LLM sendiri lewat `NOT_FOUND_MARKER` saat
+    konteksnya mirip tetapi tidak menjawab (`llm_called=True`). Keduanya
+    tampil dan tercatat sama: tanpa sitasi, dengan kontak, masuk AD-4."""
     SUPPORT = "support"
     """Balasan empatik FR-7; bukan jawaban administrasi."""
     SMALLTALK = "smalltalk"
     """Sapaan atau basa-basi. Dibalas singkat tanpa retrieval maupun LLM, dan
     tidak pernah membawa sitasi -- tidak ada dokumen yang menjawab "hai"."""
     REJECTED = "rejected"
-    """Dihentikan gerbang JEV: nonsense, upaya manipulasi, atau di luar topik
-    kampus. Tanpa retrieval dan LLM, tanpa sitasi, dan tidak masuk AD-4 --
-    pesan seperti ini bukan celah dokumen yang perlu ditambal admin."""
+    """Bukan pertanyaan administrasi: nonsense, upaya manipulasi, atau di luar
+    topik kampus. Dihentikan gerbang JEV atau saringan aturan sebelum LLM, atau
+    oleh LLM penjawab sendiri lewat `OFF_TOPIC_MARKER` (`rejection_source`).
+    Tanpa sitasi dan tidak masuk AD-4 -- pesan seperti ini bukan celah dokumen
+    yang perlu ditambal admin. Pencarian yang berjalan paralel dengan gerbang
+    dihentikan begitu vonis blokir tiba."""
 
 
 @dataclass(frozen=True)
@@ -62,11 +72,14 @@ REFUSAL_TEMPLATE = (
 
 REFUSAL_UNIT_HINT = (
     "\n\nPencarian tadi hanya di dokumen unit {unit}. Bila pertanyaan Anda "
-    "ditangani unit lain, pilih unit tersebut atau semua unit lalu tanyakan lagi."
+    "ditangani unit lain, ganti topik ke unit tersebut lalu tanyakan lagi."
 )
 """Tanpa ini, mahasiswa yang salah memilih unit hanya melihat "tidak menemukan"
 dan menyimpulkan informasinya memang tidak ada -- padahal yang membatasi adalah
-pilihannya sendiri."""
+pilihannya sendiri.
+
+Jangan menyarankan "semua unit": widget mahasiswa -- satu-satunya pengirim
+`unit` -- mewajibkan satu topik dipilih dan tidak punya pilihan semua unit."""
 
 DEFAULT_FALLBACK_CONTACT = risk_module.FRONT_OFFICE
 
@@ -80,6 +93,68 @@ SUPPORT_TEMPLATE = (
 def render_contacts(contacts) -> str:
     """Susun daftar kontak menjadi teks siap tampil (FE-3, FE-4)."""
     return "\n".join(f"- {c.unit} ({c.jam_layanan}): {c.kontak}" for c in contacts)
+
+
+_NOT_FOUND_PROSE = re.compile(
+    r"\btidak\s+(?:menemukan|ditemukan|tercantum)\b|\btidak\s+ada\s+informasi\b",
+    re.IGNORECASE,
+)
+
+
+def is_not_found(answer: str) -> bool:
+    """Apakah jawaban LLM sebenarnya penolakan (aturan 3 `SYSTEM_PROMPT`).
+
+    Jalur utamanya `NOT_FOUND_MARKER`. Kalimat "tidak menemukan ..." tanpa satu
+    pun sitasi adalah jaring pengaman untuk model yang lupa memakai penanda.
+    Jawaban yang bersitasi tidak pernah dianggap penolakan, walau menyebut ada
+    bagian yang tidak ditemukan: itu jawaban parsial yang tetap berguna, dan
+    kartu sitasinya justru yang membuatnya dapat diverifikasi.
+    """
+    if extract_citations(answer):
+        return False
+    return NOT_FOUND_MARKER in answer or bool(_NOT_FOUND_PROSE.search(answer))
+
+
+def is_off_topic(answer: str) -> bool:
+    """Apakah LLM menilai pertanyaannya di luar urusan kampus (aturan 4 `SYSTEM_PROMPT`).
+
+    Jawaban bersitasi tidak pernah dianggap di luar topik: sitasi berarti
+    dokumen kampus menjawabnya, dan penandanya cukup dibuang (`strip_markers`).
+    """
+    return OFF_TOPIC_MARKER in answer and not extract_citations(answer)
+
+
+def rejection_source(outcome: PipelineOutcome) -> str | None:
+    """Siapa yang menghentikan pesan `rejected`: `jev`, `rules`, atau `llm`.
+    None bila bukan `rejected`. Satu sumber untuk log dan uji coba admin."""
+    if outcome.kind is not OutcomeKind.REJECTED:
+        return None
+    if outcome.llm_called:
+        return GateSource.LLM.value
+    return outcome.gate.source.value if outcome.gate else None
+
+
+def refusal_source(outcome: PipelineOutcome) -> str | None:
+    """Asal penolakan: `threshold` (LLM tidak dipanggil) atau `llm` (lolos ambang,
+    tetapi LLM membalas `NOT_FOUND_MARKER`). None bila bukan penolakan.
+
+    Satu sumber untuk log (`messages.meta`) dan uji coba admin, supaya keduanya
+    tidak pernah menjelaskan penolakan yang sama dengan cara berbeda."""
+    if outcome.kind is not OutcomeKind.REFUSAL:
+        return None
+    return "llm" if outcome.llm_called else "threshold"
+
+
+MARKERS = (NOT_FOUND_MARKER, OFF_TOPIC_MARKER)
+
+
+def strip_markers(answer: str) -> str:
+    """Buang penanda yang tersisa di jawaban parsial; mahasiswa tidak perlu melihatnya."""
+    if not any(marker in answer for marker in MARKERS):
+        return answer
+    for marker in MARKERS:
+        answer = answer.replace(marker, "")
+    return answer.strip()
 
 
 async def run_pipeline(
@@ -158,11 +233,41 @@ async def _jawab(
     if on_token is None or stream is None:
         return await llm_call(wrapped_question, documents)
 
+    penahan = _PenahanPenanda(on_token)
     bagian: list[str] = []
     async for potongan in stream(wrapped_question, documents):
         bagian.append(potongan)
-        await on_token(potongan)
+        await penahan(potongan)
     return "".join(bagian)
+
+
+class _PenahanPenanda:
+    """Menahan awal aliran selama ia masih mungkin berupa salah satu `MARKERS`.
+
+    Tanpa ini mahasiswa sempat melihat "[TIDAK_DITEMUKAN]" atau
+    "[DI_LUAR_TOPIK]" terketik di layar sebelum event `message` menggantinya
+    dengan kartu penolakan. Jawaban biasa hanya tertahan beberapa karakter
+    pertamanya: begitu awalnya menyimpang dari semua penanda -- termasuk sitasi
+    `[Judul, hal. N]` di awal kalimat -- semua yang tertahan dilepas sekaligus
+    dan sisanya diteruskan apa adanya.
+    """
+
+    def __init__(self, on_token: Callable[[str], Awaitable[None]]) -> None:
+        self.on_token = on_token
+        self.tertahan = ""
+        self.lepas = False
+
+    async def __call__(self, potongan: str) -> None:
+        if self.lepas:
+            await self.on_token(potongan)
+            return
+        self.tertahan += potongan
+        awal = self.tertahan.lstrip()
+        if any(m.startswith(awal) or awal.startswith(m) for m in MARKERS):
+            return
+        self.lepas = True
+        await self.on_token(self.tertahan)
+        self.tertahan = ""
 
 
 def _hits_from_documents(documents: Sequence[Any]):

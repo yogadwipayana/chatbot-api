@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -22,6 +23,7 @@ from app.rag.gate import (
 )
 from app.rag.rewriter import Turn
 from app.rag.threshold import ThresholdPolicy
+from tests.fixtures.fakes import FakeRetriever, make_document
 
 POLICY = ThresholdPolicy(vector_threshold=0.35, lexical_threshold=0.05)
 
@@ -51,7 +53,7 @@ class GerbangPalsu:
         self.verdict = verdict
         self.calls: list[tuple[str, list[tuple[str, str]]]] = []
 
-    async def __call__(self, question, history=()):
+    async def __call__(self, question, history=(), unit=None):
         self.calls.append((question, list(history)))
         return self.verdict
 
@@ -212,9 +214,11 @@ class TestGerbangDiAlur:
     @pytest.mark.parametrize(
         "label", [GateLabel.NONSENSE, GateLabel.MALICIOUS, GateLabel.OUT_OF_SCOPE]
     )
-    async def test_diblokir_tanpa_retrieval_dan_tanpa_llm(self, label, strong_retriever, llm):
+    async def test_diblokir_tanpa_llm_dan_tanpa_sitasi(self, label, strong_retriever, llm):
+        """Pencarian sempat berjalan (paralel dengan gerbang), tetapi hasilnya
+        dibuang: LLM penjawab tidak dipanggil dan tidak ada dokumen yang ikut."""
         hasil = await run_pipeline(
-            "asdf qwer",
+            "resep rendang padang",
             retriever=strong_retriever,
             llm_call=llm,
             gate_call=GerbangPalsu(vonis(label, blocked=True)),
@@ -222,9 +226,10 @@ class TestGerbangDiAlur:
         )
         assert hasil.kind is OutcomeKind.REJECTED
         assert hasil.text == vonis(label, True).reply
-        assert strong_retriever.queries == []
         assert not llm.called
+        assert hasil.llm_called is False
         assert hasil.documents == ()
+        assert hasil.decision is None
         assert hasil.gate.label is label
 
     async def test_smalltalk_dari_jev_menjadi_smalltalk(self, strong_retriever, llm):
@@ -236,7 +241,23 @@ class TestGerbangDiAlur:
             policy=POLICY,
         )
         assert hasil.kind is OutcomeKind.SMALLTALK
-        assert strong_retriever.queries == []
+        assert not llm.called
+        assert hasil.documents == ()
+
+    async def test_smalltalk_pamit_dari_jev_dibalas_penutup(self, strong_retriever, llm):
+        """Balasan JEV bawaan untuk smalltalk adalah sapaan pembuka; pesan pamit
+        yang lolos aturan sapaan tidak boleh disapa "Halo!" (T12)."""
+        from app.rag.smalltalk import REPLIES, SmallTalkKind
+
+        hasil = await run_pipeline(
+            "oke deh kalau begitu, nanti saya ke kampus aja",
+            retriever=strong_retriever,
+            llm_call=llm,
+            gate_call=GerbangPalsu(vonis(GateLabel.SMALLTALK, blocked=True)),
+            policy=POLICY,
+        )
+        assert hasil.kind is OutcomeKind.SMALLTALK
+        assert hasil.text == REPLIES[SmallTalkKind.CLOSING]
 
     async def test_tidak_diblokir_berjalan_seperti_biasa(self, strong_retriever, llm):
         gerbang = GerbangPalsu(vonis(GateLabel.ACADEMIC, blocked=False))
@@ -298,10 +319,40 @@ class TestGerbangDiAlur:
         assert hasil.kind is OutcomeKind.SMALLTALK
         assert not gerbang.called
 
-    async def test_gerbang_mendahului_rewrite(self, strong_retriever, llm, rewriter):
-        """Pesan nonsense tidak layak dibayar satu panggilan LLM rewrite."""
-        await run_pipeline(
-            "asdf",
+    async def test_gerbang_berjalan_bersamaan_dengan_pencarian(self, llm, rewriter):
+        """Gerbang menunggu sampai pencarian SUDAH dimulai. Bila keduanya masih
+        berurutan (gerbang dulu), pencarian tidak pernah mulai dan gerbang
+        kehabisan waktu -- bukti tanpa bergantung pada ukuran waktu."""
+        pencarian_mulai = asyncio.Event()
+
+        class RetrieverPenanda(FakeRetriever):
+            async def ainvoke(self, query, *, unit=None):
+                pencarian_mulai.set()
+                return await super().ainvoke(query, unit=unit)
+
+        async def gerbang(question, history=(), unit=None):
+            await asyncio.wait_for(pencarian_mulai.wait(), timeout=2)
+            return vonis(GateLabel.ACADEMIC, blocked=False)
+
+        hasil = await run_pipeline(
+            "syaratnya apa saja?",
+            retriever=RetrieverPenanda([make_document("c1", vector_score=0.8)]),
+            llm_call=llm,
+            rewrite_call=rewriter,
+            gate_call=gerbang,
+            history=[Turn("user", "syarat cuti?"), Turn("assistant", "Syaratnya ...")],
+            policy=POLICY,
+        )
+        assert hasil.kind is OutcomeKind.ANSWER
+        assert rewriter.called
+
+    async def test_diblokir_membuang_hasil_rewrite_dan_pencarian(
+        self, strong_retriever, llm, rewriter
+    ):
+        """Harga paralelisme: pesan yang diblokir sempat membayar rewrite dan
+        pencarian, tetapi hasilnya tidak ikut ke balasan maupun ke log sitasi."""
+        hasil = await run_pipeline(
+            "resep rendang padang",
             retriever=strong_retriever,
             llm_call=llm,
             rewrite_call=rewriter,
@@ -309,7 +360,10 @@ class TestGerbangDiAlur:
             history=[Turn("user", "syarat cuti?"), Turn("assistant", "Syaratnya ...")],
             policy=POLICY,
         )
-        assert not rewriter.called
+        assert hasil.kind is OutcomeKind.REJECTED
+        assert hasil.documents == ()
+        assert hasil.rewritten_query is None
+        assert not llm.called
 
     async def test_riwayat_terakhir_dikirim_ke_gerbang(self, strong_retriever, llm, rewriter):
         gerbang = GerbangPalsu(vonis(GateLabel.ACADEMIC, blocked=False))
@@ -326,3 +380,188 @@ class TestGerbangDiAlur:
         pertanyaan, dikirim = gerbang.calls[0]
         assert pertanyaan == "yang kedua?"
         assert dikirim == [("user", "pesan 2"), ("user", "pesan 3"), ("user", "pesan 4")]
+
+
+class TestTenggatMengikutiPencarian:
+    """JEV ditunggu selama pencarian paralel berjalan, plus `grace_seconds` (T13).
+
+    Batas tetap 3 dtk dulu memutus JEV di tengah pencarian 5-10 dtk: pesan
+    diteruskan tanpa diperiksa padahal menunggunya tidak menambah waktu.
+    Waktu di sini diperkecil (detik -> ratusan milidetik).
+    """
+
+    @staticmethod
+    def gerbang(tunda: float, grace: float, vonis_: GateVerdict, dibatalkan: list):
+        async def panggil(question, history=(), unit=None):
+            try:
+                await asyncio.sleep(tunda)
+            except asyncio.CancelledError:
+                dibatalkan.append(True)
+                raise
+            return vonis_
+
+        panggil.grace_seconds = grace
+        return panggil
+
+    @staticmethod
+    def retriever_lambat(tunda: float) -> FakeRetriever:
+        class Lambat(FakeRetriever):
+            async def ainvoke(self, query, *, unit=None):
+                await asyncio.sleep(tunda)
+                return await super().ainvoke(query, unit=unit)
+
+        return Lambat([make_document("c1", vector_score=0.8)])
+
+    async def test_jev_lambat_tetap_dipakai_selama_pencarian_berjalan(self, llm):
+        dibatalkan: list = []
+        hasil = await run_pipeline(
+            "resep rendang padang",
+            retriever=self.retriever_lambat(0.4),
+            llm_call=llm,
+            gate_call=self.gerbang(0.25, 0.0, vonis(GateLabel.NONSENSE, True), dibatalkan),
+            policy=POLICY,
+        )
+        assert hasil.kind is OutcomeKind.REJECTED
+        assert not dibatalkan
+
+    async def test_jev_masih_ditunggu_sebentar_setelah_pencarian(self, llm):
+        dibatalkan: list = []
+        hasil = await run_pipeline(
+            "resep rendang padang",
+            retriever=self.retriever_lambat(0.05),
+            llm_call=llm,
+            gate_call=self.gerbang(0.15, 0.5, vonis(GateLabel.NONSENSE, True), dibatalkan),
+            policy=POLICY,
+        )
+        assert hasil.kind is OutcomeKind.REJECTED
+
+    async def test_lewat_tenggat_diteruskan_dan_panggilan_dibatalkan(self, llm):
+        dibatalkan: list = []
+        hasil = await run_pipeline(
+            "kapan KRS dibuka?",
+            retriever=self.retriever_lambat(0.05),
+            llm_call=llm,
+            gate_call=self.gerbang(5.0, 0.1, vonis(GateLabel.NONSENSE, True), dibatalkan),
+            policy=POLICY,
+        )
+        assert hasil.kind is OutcomeKind.ANSWER
+        assert hasil.gate.error.startswith("Tenggat")
+        assert dibatalkan == [True]
+
+    async def test_tenggat_tidak_menunda_giliran_lebih_dari_grace(self, llm):
+        """Waktu total mengikuti pencarian + grace, bukan lama JEV macet."""
+        loop = asyncio.get_running_loop()
+        mulai = loop.time()
+        await run_pipeline(
+            "kapan KRS dibuka?",
+            retriever=self.retriever_lambat(0.05),
+            llm_call=llm,
+            gate_call=self.gerbang(5.0, 0.1, vonis(GateLabel.NONSENSE, True), []),
+            policy=POLICY,
+        )
+        assert loop.time() - mulai < 1.5
+
+
+class TestBlokirMenghentikanPencarian:
+    """Pesan yang diblokir JEV tidak menunggu -- dan tidak ikut gagal bersama --
+    cabang pencarian yang hasilnya akan dibuang.
+
+    Kejadian 2026-09-28: "resep nasi goreng dong" diblokir JEV dalam 2 dtk,
+    tetapi rewrite LLM gagal (token gateway dicabut) setelah 127 dtk, dan
+    mahasiswa melihat "Koneksi terputus" alih-alih balasan penolakan.
+    """
+
+    @staticmethod
+    def rewriter(tunda: float, dibatalkan: list, gagal: bool = False):
+        async def panggil(question, history, unit=None):
+            try:
+                await asyncio.sleep(tunda)
+            except asyncio.CancelledError:
+                dibatalkan.append("rewrite")
+                raise
+            if gagal:
+                raise RuntimeError("503 token_revoked")
+            return "pertanyaan mandiri"
+
+        return panggil
+
+    RIWAYAT = [Turn("user", "resep?"), Turn("assistant", "Maaf ...")]
+
+    async def test_rewrite_lambat_dibatalkan_dan_giliran_cepat(self, strong_retriever, llm):
+        dibatalkan: list = []
+        mulai = asyncio.get_running_loop().time()
+        hasil = await run_pipeline(
+            "resep nasi goreng dong",
+            retriever=strong_retriever,
+            llm_call=llm,
+            rewrite_call=self.rewriter(5.0, dibatalkan),
+            gate_call=GerbangPalsu(vonis(GateLabel.OUT_OF_SCOPE, blocked=True)),
+            history=self.RIWAYAT,
+            policy=POLICY,
+        )
+        assert hasil.kind is OutcomeKind.REJECTED
+        assert dibatalkan == ["rewrite"]
+        assert strong_retriever.queries == []
+        assert asyncio.get_running_loop().time() - mulai < 1.0
+
+    async def test_galat_rewrite_tidak_menggagalkan_pesan_yang_diblokir(
+        self, strong_retriever, llm
+    ):
+        async def gerbang_lambat(question, history=(), unit=None):
+            await asyncio.sleep(0.05)
+            return vonis(GateLabel.OUT_OF_SCOPE, blocked=True)
+
+        hasil = await run_pipeline(
+            "resep nasi goreng dong",
+            retriever=strong_retriever,
+            llm_call=llm,
+            rewrite_call=self.rewriter(0.3, [], gagal=True),
+            gate_call=gerbang_lambat,
+            history=self.RIWAYAT,
+            policy=POLICY,
+        )
+        assert hasil.kind is OutcomeKind.REJECTED
+
+    async def test_pencarian_lambat_dibatalkan(self, llm):
+        dibatalkan: list = []
+
+        class RetrieverLambat(FakeRetriever):
+            async def ainvoke(self, query, *, unit=None):
+                try:
+                    await asyncio.sleep(5.0)
+                except asyncio.CancelledError:
+                    dibatalkan.append("retrieve")
+                    raise
+                return []
+
+        async def gerbang_lambat(question, history=(), unit=None):
+            # Vonis tiba saat pencarian sudah berjalan, bukan sebelum dimulai.
+            await asyncio.sleep(0.1)
+            return vonis(GateLabel.NONSENSE, blocked=True)
+
+        mulai = asyncio.get_running_loop().time()
+        hasil = await run_pipeline(
+            "resep rendang padang",
+            retriever=RetrieverLambat(),
+            llm_call=llm,
+            gate_call=gerbang_lambat,
+            policy=POLICY,
+        )
+        assert hasil.kind is OutcomeKind.REJECTED
+        assert dibatalkan == ["retrieve"]
+        assert asyncio.get_running_loop().time() - mulai < 1.0
+
+    async def test_galat_rewrite_tetap_diteruskan_bila_tidak_diblokir(
+        self, strong_retriever, llm
+    ):
+        """Hanya pesan yang diblokir yang dilindungi; galat biasa tetap terlihat."""
+        with pytest.raises(RuntimeError, match="token_revoked"):
+            await run_pipeline(
+                "syaratnya apa?",
+                retriever=strong_retriever,
+                llm_call=llm,
+                rewrite_call=self.rewriter(0.0, [], gagal=True),
+                gate_call=GerbangPalsu(vonis(GateLabel.ACADEMIC, blocked=False)),
+                history=self.RIWAYAT,
+                policy=POLICY,
+            )

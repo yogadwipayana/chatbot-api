@@ -388,6 +388,7 @@ def build_retriever(settings: SettingsDep) -> Any:
         weight_fulltext=settings.rrf_weight_fulltext,
         reranker=build_reranker(settings),
         rerank_candidates=settings.rerank_candidates,
+        neighbors=settings.retrieval_neighbors,
     )
 
 
@@ -423,7 +424,7 @@ class LLMCall:
 
     async def __call__(self, wrapped_question: str, documents) -> str:
         from app.rag.prompts import answer_prompt, format_context
-        from app.rag.providers import build_llm
+        from app.rag.providers import build_llm, periksa_galat_gateway
 
         chain = answer_prompt() | build_llm(self.settings, streaming=False)
         result = await chain.ainvoke(
@@ -431,7 +432,7 @@ class LLMCall:
             config=self._config(),
         )
         self.usage = getattr(result, "usage_metadata", None)
-        return result.content
+        return periksa_galat_gateway(str(result.content))
 
     async def stream(self, wrapped_question: str, documents) -> AsyncIterator[str]:
         """Sama seperti `__call__`, tetapi memancarkan potongan jawaban begitu tiba.
@@ -442,18 +443,21 @@ class LLMCall:
         estimasi biaya AD-5 hilang untuk setiap jawaban yang dialirkan.
         """
         from app.rag.prompts import answer_prompt, format_context
-        from app.rag.providers import build_llm
+        from app.rag.providers import PenyaringGalatGateway, build_llm
 
         chain = answer_prompt() | build_llm(self.settings, streaming=True)
+        penyaring = PenyaringGalatGateway()
         utuh: Any = None
         async for potongan in chain.astream(
             {"context": format_context(documents), "question": wrapped_question},
             config=self._config(),
         ):
             utuh = potongan if utuh is None else utuh + potongan
-            teks = str(potongan.text)
+            teks = penyaring.terima(str(potongan.text))
             if teks:
                 yield teks
+        if sisa := penyaring.sisa():
+            yield sisa
         self.usage = getattr(utuh, "usage_metadata", None)
 
 
@@ -477,7 +481,7 @@ class RewriteCall:
 
     async def __call__(self, question: str, history: str) -> str:
         from app.rag.prompts import rewrite_prompt
-        from app.rag.providers import build_llm
+        from app.rag.providers import build_llm, periksa_galat_gateway
 
         run_id = id_run()
         self.run_id = str(run_id)
@@ -486,7 +490,8 @@ class RewriteCall:
             {"question": question, "history": history},
             config=konfigurasi_run("rewrite_query", run_id=run_id, session_id=self.session_id),
         )
-        return str(result.content)
+        # Tanpa ini pesan galat gateway menjadi query pencarian.
+        return periksa_galat_gateway(str(result.content))
 
 
 def build_rewrite_call(settings: SettingsDep) -> Any:

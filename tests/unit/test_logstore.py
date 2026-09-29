@@ -181,6 +181,19 @@ class TestRingkasan:
         jam_isi = [j for j in r["per_hour"] if j["turn_count"]]
         assert len(jam_isi) == 1 and jam_isi[0]["error_turn_count"] == 1
 
+    def test_dibatalkan_dihitung_terpisah_dari_gagal(self, store):
+        """Pembatalan bukan galat server, tetapi harus terlihat di ringkasan (T8)."""
+        store.tulis(
+            [
+                turn("t1", total_ms=1000),
+                turn("t2", total_ms=3000, status="error"),
+                turn("t3", total_ms=40000, status="dibatalkan", last_node="generate"),
+            ]
+        )
+        r = store.ringkasan(SEKARANG - timedelta(hours=1), SEKARANG, audit=True)
+        assert r["cancelled_turn_count"] == 1
+        assert r["error_turn_count"] == 1
+
     def test_log_audit_tidak_dihitung_tanpa_hak_audit(self, store):
         store.tulis([log("app.audit", "x", levelno=40), log("app.audit.sub", "y", levelno=40)])
         r = store.ringkasan(SEKARANG - timedelta(hours=1), SEKARANG, audit=False)

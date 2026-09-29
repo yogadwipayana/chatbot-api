@@ -44,6 +44,9 @@ class LogSummary(BaseModel):
     p95_total_ms: float | None
     error_turn_count: int
     error_ratio: float
+    cancelled_turn_count: int
+    """Giliran `dibatalkan`: mahasiswa menghentikan jawaban atau menutup panel.
+    Tidak ikut `error_turn_count` -- pembatalan bukan galat server."""
     jev_blocked_count: int
     jev_blocked_ratio: float
     error_log_count: int

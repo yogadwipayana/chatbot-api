@@ -66,6 +66,19 @@ class TestChat:
         assert build_llm(s, streaming=True).streaming is True
         assert build_llm(s, streaming=False).streaming is False
 
+    def test_selalu_punya_batas_waktu(self):
+        """Tanpa ini klien OpenAI menunggu 600 detik, dan widget terkunci selama itu."""
+        llm = build_llm(settings(api_key="sk-uji"))
+        assert llm.request_timeout == 60.0
+        assert llm.max_retries == 1
+
+    @pytest.mark.parametrize("streaming", [True, False])
+    def test_batas_waktu_dan_retry_dapat_diatur(self, streaming):
+        s = settings(api_key="sk-uji", llm_timeout_seconds=15, llm_max_retries=0)
+        llm = build_llm(s, streaming=streaming)
+        assert llm.request_timeout == 15
+        assert llm.max_retries == 0
+
 
 class TestEmbedding:
     def test_model_dan_kunci_diteruskan(self):

@@ -323,8 +323,10 @@ def citations_for(outcome: PipelineOutcome) -> list[CitationOut]:
     kartu: tautannya buntu, dan kartu yang tampak sah lebih berbahaya daripada
     tidak ada kartu sama sekali.
 
-    Jawaban tanpa satu pun penanda sitasi -- LLM melanggar FR-5 -- jatuh kembali
-    ke seluruh chunk terambil, supaya mahasiswa tetap punya jalan verifikasi.
+    Jawaban tanpa satu pun penanda sitasi juga tidak membawa kartu. Dulu ia
+    jatuh kembali ke seluruh chunk terambil, tetapi yang tidak dikutip justru
+    bukan sumber jawabannya: balasan "Selamat pagi!" dari LLM tampil dengan
+    tujuh kartu dokumen yang tidak berkaitan, seolah sapaan itu bersumber.
     """
     tersedia: dict[tuple[str, int], CitationOut] = {}
     for doc in outcome.documents:
@@ -350,7 +352,7 @@ def citations_for(outcome: PipelineOutcome) -> list[CitationOut]:
         if kartu is not None and kartu not in dikutip:
             dikutip.append(kartu)
 
-    return dikutip or list(tersedia.values())
+    return dikutip
 
 
 async def catat(
@@ -403,9 +405,7 @@ def policy_from(settings) -> ThresholdPolicy:
         lexical_threshold=settings.lexical_threshold,
         # Hanya berarti bila reranker hidup; tanpa skor reranker, ambang lama
         # yang berlaku (lihat `ThresholdPolicy.rerank_threshold`).
-        rerank_threshold=(
-            settings.rerank_threshold if settings.rerank_provider != "none" else None
-        ),
+        rerank_threshold=settings.rerank_threshold if settings.rerank_enabled else None,
     )
 
 

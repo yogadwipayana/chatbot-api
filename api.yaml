@@ -39,10 +39,10 @@ info:
     | `kind` | Arti | Tampilan |
     |---|---|---|
     | `answer` | Jawaban bersumber dokumen resmi | Bubble normal + kartu sitasi (FE-2) |
-    | `refusal` | Retrieval terlalu lemah, LLM tidak dipanggil (FR-3) | Visual berbeda + kontak (FE-4) |
+    | `refusal` | Dokumen resmi tidak menjawab: retrieval terlalu lemah sehingga LLM tidak dipanggil (FR-3), atau LLM menilai konteksnya tidak menjawab | Visual berbeda + kontak (FE-4) |
     | `support` | Pertanyaan bernuansa tekanan mental (FR-7) | Nada empatik + kontak konseling |
     | `smalltalk` | Sapaan atau basa-basi; retrieval dan LLM dilewati | Bubble biasa, tanpa sitasi dan tanpa tombol umpan balik |
-    | `rejected` | Dihentikan gerbang JEV: nonsense, upaya manipulasi, atau di luar topik kampus | Bubble biasa, tanpa sitasi dan tanpa tombol umpan balik |
+    | `rejected` | Bukan pertanyaan administrasi: nonsense, upaya manipulasi, atau di luar topik kampus. Dihentikan saringan aturan, gerbang JEV, atau LLM penjawab | Bubble biasa, tanpa sitasi dan tanpa tombol umpan balik |
 
     Hanya `answer` yang membawa sitasi. Menampilkan kartu sitasi di layar
     penolakan memberi kesan keliru bahwa jawabannya bersumber; menampilkannya
@@ -52,9 +52,11 @@ info:
     penolakan berisi alamat loket biro, dan supaya sapaan tidak masuk daftar
     pertanyaan tak terjawab (AD-4).
 
-    `rejected` hanya muncul bila gerbang JEV dinyalakan (`JEV_ENABLED=true`).
-    Sama seperti `smalltalk`, ia tidak masuk AD-4: pesan acak atau upaya
-    injeksi bukan celah dokumen yang perlu ditambal admin.
+    `rejected` muncul entah gerbang JEV dinyalakan atau tidak: saringan aturan
+    dan LLM penjawab (penanda `[DI_LUAR_TOPIK]`) menjadi cadangannya saat
+    `JEV_ENABLED=false`. Sama seperti `smalltalk`, ia tidak masuk AD-4: pesan
+    acak, upaya injeksi, atau pertanyaan di luar kampus bukan celah dokumen yang
+    perlu ditambal admin.
 
     ## Sitasi dan verifikasi (FE-2)
 
@@ -145,8 +147,12 @@ paths:
         penulisan ulang query (FR-4) -> retrieval hibrida (FR-2) -> ambang
         penolakan (FR-3) -> deteksi topik berisiko (FR-6) -> generasi (FR-5).
 
-        LLM tidak dipanggil sama sekali bila `kind` bernilai `refusal` atau
-        `support`.
+        LLM tidak dipanggil sama sekali bila `kind` bernilai `support`, begitu
+        pula `refusal` yang diputuskan ambang FR-3. `refusal` juga dapat datang
+        dari LLM yang menilai konteksnya tidak menjawab; bentuknya sama persis
+        (teks penolakan + kontak, tanpa sitasi). Di `/api/chat/stream`, token
+        yang sempat dialirkan sebelum penolakan itu diputuskan (biasanya tidak
+        ada) digantikan isi event `message`, sama seperti jawaban biasa.
       parameters:
         - $ref: '#/components/parameters/SessionIdHeader'
         - $ref: '#/components/parameters/EmbedKeyHeader'
@@ -1135,6 +1141,14 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '502':
+          description: |
+            Layanan AI gagal (LLM, gateway, atau embedding pertanyaan). `detail`
+            berisi kalimat siap tampil yang menyarankan mencoba lagi; rinciannya
+            hanya ada di log server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/admin/stats:
     get:
@@ -2006,7 +2020,7 @@ components:
         top_score: 0.77
 
     Refusal:
-      summary: Retrieval terlalu lemah -- LLM tidak dipanggil (FR-3)
+      summary: Dokumen resmi tidak menjawab (FR-3)
       value:
         kind: refusal
         message_id: 5a2c8f13-7e94-4b60-a1d2-3f4e5a6b7c8d
@@ -2206,8 +2220,9 @@ components:
             "Sumber" memaksa mahasiswa menebak kartu mana yang relevan.
 
             Sitasi ke dokumen di luar konteks (sumber karangan) tidak pernah
-            ikut: tautannya buntu. Jawaban tanpa satu pun penanda sitasi jatuh
-            kembali ke seluruh chunk terambil, supaya verifikasi tetap mungkin.
+            ikut: tautannya buntu. Jawaban tanpa satu pun penanda sitasi
+            (misalnya balasan sapaan dari LLM) tidak membawa kartu sama sekali:
+            chunk yang tidak dikutip bukan sumber jawabannya.
 
             Selalu kosong bila `kind` bukan `answer`.
           items: { $ref: '#/components/schemas/CitationOut' }
@@ -2579,6 +2594,31 @@ components:
           properties:
             vector: { type: integer }
             fulltext: { type: integer }
+        neighbor_of:
+          type: [string, 'null']
+          format: uuid
+          description: >-
+            `chunk_id` sumbernya bila ini potongan lanjutan (`RETRIEVAL_NEIGHBORS`):
+            ikut karena sumbernya, jadi `raw_scores` dan `ranks` kosong.
+
+    GateVerdictOut:
+      type: object
+      required: [label, confidence, blocked]
+      description: Vonis gerbang (JEV atau saringan aturan) pada uji coba ini.
+      properties:
+        label: { type: string, enum: [academic, smalltalk, nonsense, malicious, out_of_scope] }
+        confidence: { type: number }
+        blocked: { type: boolean }
+        error:
+          type: [string, 'null']
+          description: Galat atau lewat tenggat; saat itu pesan diteruskan (fail-open).
+        source:
+          type: string
+          enum: [jev, rules]
+          default: jev
+          description: >-
+            `rules` = saringan aturan tanpa model (pesan acak, tawa, basa-basi tentang
+            PANDU, upaya manipulasi); keyakinannya selalu 1.
 
     TestQueryRequest:
       type: object
@@ -2616,11 +2656,15 @@ components:
         rewritten_query: { type: [string, 'null'] }
         retrieved:
           type: array
-          description: Tetap terisi saat ditolak -- justru itu yang perlu dilihat saat diagnosa.
+          description: >-
+            Tetap terisi saat ditolak ambang atau LLM -- justru itu yang perlu dilihat
+            saat diagnosa. Kosong bila diblokir gerbang JEV: pencariannya dihentikan.
           items: { $ref: '#/components/schemas/RetrievedChunk' }
         decision:
           type: [object, 'null']
-          description: null bila pertanyaan dialihkan ke konseling (FR-7) sebelum retrieval.
+          description: >-
+            null bila alur berhenti sebelum ambang dinilai: konseling (FR-7),
+            sapaan, atau diblokir gerbang JEV.
           required: [decision, reason]
           properties:
             decision: { type: string, enum: [proceed, refuse] }
@@ -2628,6 +2672,26 @@ components:
             top_vector_score: { type: [number, 'null'] }
             top_lexical_score: { type: [number, 'null'] }
         thresholds: { $ref: '#/components/schemas/ThresholdValues' }
+        llm_called: { type: boolean, default: false }
+        refusal_source:
+          type: [string, 'null']
+          enum: [threshold, llm, null]
+          description: >-
+            Hanya untuk `refusal`: `threshold` = ambang FR-3 menolak dan LLM tidak
+            dipanggil; `llm` = lolos ambang, tetapi LLM menilai isinya tidak menjawab.
+        rejection_source:
+          type: [string, 'null']
+          enum: [jev, rules, llm, null]
+          description: >-
+            Hanya untuk `rejected`: gerbang JEV, saringan aturan, atau LLM penjawab
+            yang membalas `[DI_LUAR_TOPIK]` (pertanyaan di luar urusan kampus).
+        gate:
+          description: >-
+            Vonis gerbang JEV atau saringan aturan; null bila JEV mati dan aturan
+            meloloskan pesan, atau alur berhenti sebelumnya.
+          oneOf:
+            - $ref: '#/components/schemas/GateVerdictOut'
+            - type: 'null'
         contacts:
           type: array
           description: Kontak yang akan dilihat mahasiswa untuk pertanyaan yang sama (FE-3, FE-4).
@@ -2795,7 +2859,7 @@ components:
 
     LogSummary:
       type: object
-      required: [since, until, turn_count, p50_total_ms, p95_total_ms, error_turn_count, error_ratio, jev_blocked_count, jev_blocked_ratio, error_log_count, per_node, exit_points, per_hour]
+      required: [since, until, turn_count, p50_total_ms, p95_total_ms, error_turn_count, error_ratio, cancelled_turn_count, jev_blocked_count, jev_blocked_ratio, error_log_count, per_node, exit_points, per_hour]
       properties:
         since: { type: string }
         until: { type: string }
@@ -2804,6 +2868,7 @@ components:
         p95_total_ms: { type: [number, 'null'] }
         error_turn_count: { type: integer, minimum: 0 }
         error_ratio: { type: number, minimum: 0 }
+        cancelled_turn_count: { type: integer, minimum: 0, description: 'Giliran `dibatalkan` (mahasiswa menghentikan jawaban atau menutup panel). Tidak termasuk `error_turn_count`.' }
         jev_blocked_count: { type: integer, minimum: 0 }
         jev_blocked_ratio: { type: number, minimum: 0 }
         error_log_count: { type: integer, minimum: 0, description: 'Log ERROR ke atas. Untuk role admin, log audit tidak dihitung.' }

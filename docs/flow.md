@@ -11,7 +11,7 @@ Dokumen → Parse → Chunking → Embedding (API / e5 lokal) ─┐
                                                           ▼
                                    PostgreSQL: pgvector (HNSW) + Full-Text Search (GIN)
                                                           ▲
-User → FastAPI → LangGraph → FR-7 → Smalltalk → JEV → Rewrite
+User → FastAPI → LangGraph → FR-7 → Smalltalk → Saringan aturan → JEV → Rewrite
                                                           │
                               Retrieval hibrida → RRF → Rerank → Context Check → LLM → Answer + Sources
                                                           │
@@ -26,6 +26,7 @@ Komponen utama:
 | LangGraph | Mengatur urutan node dan jalan keluar lebih awal | `app/rag/graph.py` |
 | Deteksi sensitif (FR-7) | Pesan bernuansa tekanan mental → layanan konseling | `app/rag/sensitive.py` |
 | Smalltalk | Sapaan dan basa-basi, berbasis aturan | `app/rag/smalltalk.py` |
+| Saringan aturan | Pesan acak, tawa, basa-basi tentang PANDU, dan manipulasi, tanpa model; cadangan JEV | `app/rag/rule_gate.py` |
 | JEV | Gerbang semantik: academic / smalltalk / out_of_scope / nonsense / malicious | `app/rag/gate.py` |
 | Rewriter (FR-4) | Pertanyaan lanjutan → pertanyaan mandiri | `app/rag/rewriter.py` |
 | PostgreSQL Full-Text Search | Keyword search (`ts_rank`, konfigurasi `indonesian`) | `app/rag/retriever.py` |
@@ -179,10 +180,17 @@ Berjalan setiap kali mahasiswa mengirim pertanyaan (`POST /api/chat` atau `/api/
             │
             ▼
 ┌─────────────────────────┐
-│ JEV Semantic Gate       │──── nonsense ──────────────────→ kind = rejected
-│ (jika JEV_ENABLED)      │──── malicious ─────────────────→ kind = rejected
-│ + 3 pesan riwayat       │──── out_of_scope (≥ 0.9) ──────→ kind = rejected
-│                         │──── smalltalk ─────────────────→ kind = smalltalk
+│ Saringan aturan         │──── "asdf", "123", "hmm" ──────→ kind = rejected
+│ selalu berjalan         │──── "abaikan semua instruksi" ─→ kind = rejected
+│                         │──── "kamu siapa?", "wkwk" ─────→ kind = smalltalk
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│ JEV Semantic Gate       │──── nonsense (≥ 0.7) ──────────→ kind = rejected
+│ (jika JEV_ENABLED)      │──── malicious (≥ 0.7) ─────────→ kind = rejected
+│ + riwayat + topik unit  │──── out_of_scope (≥ 0.9) ──────→ kind = rejected
+│                         │──── smalltalk (≥ 0.7) ─────────→ kind = smalltalk
 │ ragu / galat = lanjut   │
 └───────────┬─────────────┘
             │ academic
@@ -271,7 +279,7 @@ Berjalan setiap kali mahasiswa mengirim pertanyaan (`POST /api/chat` atau `/api/
 | `refusal` | Konteks terlalu lemah (FR-3) | ✓ | – | – | ✓ |
 | `support` | Pertanyaan sensitif (FR-7) | – | – | – | – |
 | `smalltalk` | Sapaan (aturan atau JEV) | – | – | – | – |
-| `rejected` | Dihentikan JEV: nonsense / malicious / di luar topik | – | – | – | – |
+| `rejected` | Nonsense / malicious / di luar topik: dihentikan saringan aturan, JEV, atau LLM penjawab (`[DI_LUAR_TOPIK]`) | –/✓ | –/✓ | – | – |
 
 ---
 
@@ -294,19 +302,24 @@ sensitive ──────── sensitif ────────────
 smalltalk ──────── sapaan (aturan) ─────────→ END   (smalltalk)
   │
   ▼
-jev_gate ───────── nonsense ────────────────→ END   (rejected)
-  │     ├───────── malicious ───────────────→ END   (rejected)
-  │     ├───────── out_of_scope ────────────→ END   (rejected)
-  │     └───────── smalltalk ───────────────→ END   (smalltalk)
+rule_gate ──────── acak / manipulasi ───────→ END   (rejected)
+  │                basa-basi tentang PANDU ─→ END   (smalltalk)
+  │
+  ├──────────────────────────────┐          (berjalan PARALEL)
+  ▼                              ▼
+jev_gate                       cari (subgraph)
+  │                              rewrite   (FR-4, dilewati pada pesan pertama)
+  │                                │
+  │                                ▼
+  │                              retrieve  (FTS ∥ pgvector → RRF → rerank,
+  │                                │        filter unit, potongan lanjutan)
+  └──────────────┬─────────────────┘
+                 ▼
+validate_context             (titik temu, lalu FR-3)
+  │   ├── JEV memblokir ─────── nonsense / malicious / out_of_scope → END (rejected)
+  │   │                         smalltalk                           → END (smalltalk)
+  │   │                         (hasil pencarian dibuang)
   │ academic / ragu / JEV mati / galat
-  ▼
-rewrite                      (FR-4, dilewati pada pesan pertama)
-  │
-  ▼
-retrieve                     (FTS ∥ pgvector → RRF → rerank, filter unit)
-  │
-  ▼
-validate_context             (FR-3)
   │        │
 cukup   tidak cukup
   │        │
@@ -319,6 +332,10 @@ generate  refuse
       ▼
      END
 ```
+
+Gerbang JEV dan pencarian berjalan paralel karena keduanya hanya butuh pertanyaan yang sudah bersih. Menunggu JEV dulu menambah sekitar 3 detik ke **setiap** giliran, hanya untuk menghemat pencarian pada sekitar 5% pesan yang diblokir. Begitu JEV memblokir, `rewrite` dan `retrieve` yang masih berjalan dihentikan (`PipelineDeps.gate_blocked`), sehingga pesan yang diblokir tidak menunggu, dan tidak ikut gagal bersama, cabang pencarian. Yang sempat berjalan sebelum vonis tiba (embedding, rewrite) tetap terbayar. LLM penjawab tidak pernah dipanggil untuknya.
+
+`rewrite → retrieve` dibungkus subgraph `cari` karena LangGraph berjalan per superstep. Sebagai dua node biasa, `retrieve` baru bisa dimulai setelah JEV selesai, sehingga pesan pertama (tanpa rewrite) tidak mendapat penghematan apa pun. Perekam durasi melewati pembungkus `cari` (`applog.WRAPPER_NODES`), dan `last_node` adalah node yang mengisi `outcome`, bukan node yang terakhir dimulai.
 
 Diagram Mermaid yang selalu sesuai kode: `python -m app.rag.graph`.
 
@@ -350,23 +367,35 @@ Endpoint: `POST <BASE_URL>/systemone` (gateway, bukan OpenRouter langsung), mode
 
 ## Posisi di alur
 
-- **Setelah** FR-7 dan smalltalk berbasis aturan. Keduanya gratis dan dapat diaudit. Pesan "saya stres takut di-DO" tidak boleh bergantung pada klasifikasi model luar.
+- **Setelah** FR-7, smalltalk berbasis aturan, dan saringan aturan (`app/rag/rule_gate.py`). Ketiganya gratis dan dapat diaudit. Pesan "saya stres takut di-DO" tidak boleh bergantung pada klasifikasi model luar, dan pesan yang jelas acak atau manipulatif tidak perlu dibayar satu panggilan JEV.
 - **Sebelum** rewrite, embedding, dan retrieval. Pesan nonsense tidak perlu dibayar dengan satu panggilan LLM rewrite.
 - **Riwayat ikut dikirim**, supaya pertanyaan lanjutan pendek tidak dikira nonsense.
+- **Topik unit pilihan mahasiswa ikut dikirim** (`topik_dipilih`), dan kriterianya menyebut pembayaran biaya kampus lewat bank, VA, atau aplikasi sebagai urusan akademik (T18). Tanpa keduanya JEV menilai "cara bayar VA BNI lewat SMS" sebagai urusan perbankan umum: 12 dari 76 panggilan untuk pertanyaan akademik mendapat `out_of_scope` sampai 0,75 (sekali 0,93, terblokir). Dengan keduanya: 1 dari 76, paling tinggi 0,45 (uji 29 Sep 2026, lihat `jev.md`).
 
 ## Kebijakan: konservatif dan fail-open
 
 | Label | Ambang blokir | Tindakan |
 |---|---|---|
 | `academic` | tidak pernah | lanjut ke RAG |
-| `smalltalk` | ≥ 0.8 | balasan sapaan |
-| `nonsense` | ≥ 0.8 | balasan "belum memahami pesan" |
-| `malicious` | ≥ 0.8 | balasan datar tanpa menyebut deteksi |
+| `smalltalk` | ≥ 0.7 | balasan sapaan |
+| `nonsense` | ≥ 0.7 | balasan "belum memahami pesan" |
+| `malicious` | ≥ 0.7 | balasan datar tanpa menyebut deteksi |
 | `out_of_scope` | ≥ 0.9 (lebih ketat) | balasan cakupan PANDU |
 
-Keyakinan di bawah ambang, galat HTTP, atau timeout (3 detik) berarti pesan **diteruskan**. Pertanyaan akademik yang salah diblokir hilang tanpa jejak di AD-4. Sebaliknya, pesan buruk yang lolos masih dihadang threshold FR-3 dan delimiter FR-5.
+Keyakinan di bawah ambang, galat HTTP, atau lewat tenggat berarti pesan **diteruskan**. Tenggatnya bukan angka tetap: JEV ditunggu selama pencarian paralel berjalan, ditambah `JEV_GRACE_SECONDS` (1,5 dtk). `JEV_TIMEOUT_SECONDS` (10 dtk) hanya batas keras bila pencarian juga lambat. Dengan cara ini JEV tidak pernah menambah lebih dari waktu tambahan itu ke giliran mahasiswa, padahal latensinya sendiri berayun dari ~1 sampai ~29 detik. Pertanyaan akademik yang salah diblokir hilang tanpa jejak di AD-4. Sebaliknya, pesan buruk yang lolos masih dihadang threshold FR-3 dan delimiter FR-5.
+
+Ambang dikalibrasi 29 Sep 2026 dari 64 pesan berlabel: pertanyaan akademik tidak pernah mendapat lebih dari 0,03 untuk `smalltalk`/`nonsense`/`malicious` dan 0,57 untuk `out_of_scope`, sedangkan pesan di luar topik sungguhan paling rendah 0,94.
 
 Balasan untuk `malicious` sengaja datar. Memberi tahu bahwa injeksi terdeteksi hanya mengajari penyerang cara merumuskannya ulang.
+
+## Cadangan tanpa JEV (`JEV_ENABLED=false`)
+
+Dua lapis yang juga berjalan saat JEV hidup menggantikan vonisnya:
+
+- **Saringan aturan** (`rule_gate`, sebelum pencarian): pesan acak (tanpa huruf, deret keyboard, konsonan beruntun, gumam), tawa dan basa-basi tentang PANDU ("kamu siapa?"), serta pola manipulasi (tag `<pertanyaan_mahasiswa>`, "abaikan semua instruksi", "system prompt", bermain peran sebagai admin). Aturan acak dan basa-basi batal bila pesan memuat istilah kampus. Vonisnya dicatat dengan `gate_source = rules`.
+- **Penanda `[DI_LUAR_TOPIK]`** dari LLM penjawab (aturan 4 `SYSTEM_PROMPT`): pertanyaan di luar urusan kampus yang lolos threshold dibalas seperti blokir JEV `out_of_scope` (`rejected`, tanpa sitasi, tidak masuk AD-4, `rejection_source = llm`). Tidak menambah panggilan: LLM toh dipanggil untuk pertanyaan itu.
+
+Yang tidak tergantikan: pesan di luar topik pada unit tanpa dokumen ditolak threshold FR-3 sebelum LLM, jadi masuk AD-4 sebagai `refusal`.
 
 ## Hasil uji lewat gateway (25 Sep 2026)
 
@@ -396,6 +425,7 @@ Biaya sekitar $0.000023 per pesan, latensi sekitar 1.1 detik. Label, keyakinan, 
              │   AND unit = pilihan      │
              ▼                           ▼
   PostgreSQL Full-Text Search      Embedding (API / e5)
+  kata umum dibuang, gabung `or`         │
   websearch_to_tsquery                   │
   ts_rank, top 20                        ▼
              │                    pgvector cosine
@@ -419,6 +449,14 @@ Kedua pencarian berjalan paralel, masing-masing di koneksi database sendiri.
 Menjawab:
 
 > Apakah kata-kata pada query cocok dengan dokumen?
+
+Query-nya **bukan** pertanyaan utuh. `websearch_to_tsquery` menggabungkan setiap kata dengan DAN, dan konfigurasi `indonesian` tidak punya daftar stopword. Pertanyaan "berapa harga sertifikasi TOEIC?" dulu menjadi `'apa' & 'harga' & 'sertifikasi' & 'toeic'`, dan tidak ada satu potongan pun yang memuat keempatnya. Diukur 2026-09-29 pada 18 pertanyaan uji: 0 hit, jadi pencarian hibrida praktis hanya vektor.
+
+Karena itu `app/rag/fts_query.py` membuang kata tanya, kata sambung, dan sapaan (dari kata **mentah**, sebelum stemmer), lalu menggabungkan sisanya dengan `or`: `harga or sertifikasi or toeic`. Istilah kamus kampus multi-kata tetap dikirim sebagai frasa berkutip. Bila semua kata ternyata kata umum ("apa itu?"), pencarian teks penuh dilewati.
+
+Sejak migrasi 0014, `chunks.tsv` juga memuat judul dokumen (bobot C), sehingga pertanyaan yang menyebut nama dokumen ("menurut kode etik") ikut terbantu. Lihat `docs/schema.md` bagian Trigger `tsv`.
+
+Skor `ts_rank` untuk query `or` dibagi rata dengan jumlah kata pertanyaan. Urutan di dalam satu pertanyaan tetap benar, tetapi skor antarpertanyaan tidak sebanding, sehingga `LEXICAL_THRESHOLD` belum dikalibrasi ulang (lihat `ThresholdPolicy.lexical_threshold`).
 
 ## Embedding + pgvector
 
@@ -451,10 +489,12 @@ RRF (20 kandidat):  A  B  C  D  E  F  ...
 Top 5:              B (0.94)  A (0.81)  E (0.62)  ...
 ```
 
+Sakelarnya `RERANK_ENABLED` (bawaan `false`: urutan RRF langsung dipakai). Bentuk endpoint dipilih `RERANK_PROVIDER`; model diganti lewat `RERANK_BASE_URL`, `RERANK_API_KEY`, dan `RERANK_MODEL` (`docs/rerank.md`).
+
 | `RERANK_PROVIDER` | Implementasi |
 |---|---|
-| `none` | Urutan RRF langsung dipakai (bawaan) |
-| `api` | `POST {base}/rerank` gaya Cohere/Jina |
+| `tei` | `POST {RERANK_BASE_URL}/rerank` Text Embeddings Inference (bawaan) |
+| `api` | `POST {RERANK_BASE_URL}/rerank` gaya Cohere/Jina |
 | `local` | Cross-encoder sentence-transformers, mis. `BAAI/bge-reranker-v2-m3` |
 
 Reranker gagal (jaringan, timeout, bentuk respons salah) berarti urutan RRF yang dipakai. Reranker memperbaiki mutu; ia bukan syarat untuk menjawab.
@@ -541,7 +581,7 @@ python -m eval.run_eval
         │
         ├── vector-only
         ├── hybrid + RRF
-        └── hybrid + RRF + rerank   (bila RERANK_PROVIDER menyala)
+        └── hybrid + RRF + rerank   (bila RERANK_ENABLED=true)
         │
         ▼
 Recall@5, MRR   (target Recall@5 ≥ 0.85)
@@ -598,7 +638,7 @@ CHUNK_SIZE / CHUNK_OVERLAP        (dashboard)
 RETRIEVAL_CANDIDATES / TOP_N      (dashboard)
 RRF_WEIGHT_VECTOR / FULLTEXT      (dashboard)
 VECTOR_THRESHOLD / LEXICAL_THRESHOLD (dashboard)
-RERANK_PROVIDER / MODEL / THRESHOLD
+RERANK_ENABLED / MODEL / THRESHOLD
 EMBED_PROVIDER / EMBED_MODEL      (+ reindex)
 JEV_BLOCK_THRESHOLD / JEV_OUT_OF_SCOPE_THRESHOLD
 prompt                            (app/rag/prompts.py)

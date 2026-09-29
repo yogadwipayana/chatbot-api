@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.observability.applog import (
+    WRAPPER_NODES,
     LogWriter,
     NodeRecorder,
     SQLiteLogHandler,
@@ -44,13 +45,14 @@ class TestNodeRecorder:
             "sanitize",
             "sensitive",
             "smalltalk",
+            "rule_gate",
             "jev_gate",
             "rewrite",
             "retrieve",
             "validate_context",
             "generate",
         ]
-        assert [n["position"] for n in rec.nodes] == list(range(1, 9))
+        assert [n["position"] for n in rec.nodes] == list(range(1, 10))
         assert rec.node_terakhir == "generate"
         assert all(n["status"] == "ok" and n["duration_ms"] >= 0 for n in rec.nodes)
 
@@ -58,6 +60,13 @@ class TestNodeRecorder:
         _, rec = await jalankan("kapan pengisian KRS dibuka?", strong_retriever, llm)
         assert not any(n["node"].startswith("selesai_atau") for n in rec.nodes)
         assert "route_context" not in {n["node"] for n in rec.nodes}
+
+    async def test_pembungkus_subgraph_tidak_ikut_tercatat(self, strong_retriever, llm):
+        """rewrite + retrieve tercatat sendiri-sendiri, bukan juga sebagai `cari`."""
+        _, rec = await jalankan("kapan pengisian KRS dibuka?", strong_retriever, llm)
+        nama = [n["node"] for n in rec.nodes]
+        assert not WRAPPER_NODES & set(nama)
+        assert nama.count("rewrite") == nama.count("retrieve") == 1
 
     async def test_detail_per_node_tanpa_teks_mahasiswa(self, strong_retriever, llm):
         pertanyaan = "kapan pengisian KRS dibuka?"
@@ -76,12 +85,18 @@ class TestNodeRecorder:
         assert rec.nodes[-1]["detail"]["redirected"] is True
 
     async def test_vonis_jev_tercatat(self, strong_retriever, llm):
-        async def gerbang(q, riwayat):
+        async def gerbang(q, riwayat, unit=None):
             return GateVerdict(GateLabel.NONSENSE, 0.97, blocked=True, cost_usd=0.0002)
 
-        _, rec = await jalankan("asdf qwer zxcv", strong_retriever, llm, gate_call=gerbang)
+        _, rec = await jalankan(
+            "resep rendang padang", strong_retriever, llm, gate_call=gerbang
+        )
+        # Pencarian berjalan paralel dan validate_context tetap menjadi titik
+        # temu, tetapi alur berhenti karena vonis JEV.
         assert rec.node_terakhir == "jev_gate"
-        assert rec.nodes[-1]["detail"] == {
+        assert "generate" not in {n["node"] for n in rec.nodes}
+        detail = {n["node"]: n["detail"] for n in rec.nodes}
+        assert detail["jev_gate"] == {
             "label": "nonsense",
             "confidence": 0.97,
             "blocked": True,

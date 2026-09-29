@@ -10,6 +10,9 @@ ia boleh menjadi dasar FR-3 bila `RERANK_THRESHOLD` diisi -- lihat `threshold.py
 
 Kegagalan reranker TIDAK menggagalkan jawaban: urutan RRF dipakai apa adanya
 dan galatnya dicatat. Reranker adalah perbaikan mutu, bukan syarat menjawab.
+
+Sakelarnya `RERANK_ENABLED`. `RERANK_PROVIDER` hanya memilih bentuk endpoint
+(TEI, Cohere/Jina, atau lokal); model diganti lewat URL, kunci, dan nama model.
 """
 
 from __future__ import annotations
@@ -34,13 +37,12 @@ class Reranker(Protocol):
         ...
 
 
-class ApiReranker:
-    """Endpoint `POST {base_url}/rerank` gaya Cohere/Jina.
+TEI_MAX_BATCH = 32
+"""Bawaan `MAX_CLIENT_BATCH_SIZE` TEI; lebih dari itu per permintaan dijawab 422."""
 
-    Permintaan `{model, query, documents, top_n}`, jawaban
-    `{results: [{index, relevance_score}]}` -- bentuk yang dipakai Cohere, Jina,
-    Voyage, dan gateway yang menirunya.
-    """
+
+class _HttpReranker:
+    """Dasar reranker lewat `POST {base_url}/rerank`."""
 
     def __init__(
         self,
@@ -58,35 +60,85 @@ class ApiReranker:
         self._client = client
         """Disuntikkan di test (`httpx.AsyncClient` dengan MockTransport)."""
 
-    async def score(self, query: str, texts: Sequence[str]) -> list[float]:
+    async def _kirim(self, bodies: Sequence[dict[str, Any]]) -> list[Any]:
+        """POST setiap badan berurutan lewat satu klien; JSON jawabannya berurutan sama."""
         import httpx
 
         from app.rag.providers import USER_AGENT
 
+        headers = {**self._headers, "User-Agent": USER_AGENT}
+
+        async def kirim_semua(client: Any) -> list[Any]:
+            hasil = []
+            for body in bodies:
+                resp = await client.post(self.url, json=body, headers=headers)
+                resp.raise_for_status()
+                hasil.append(resp.json())
+            return hasil
+
+        if self._client is not None:
+            return await kirim_semua(self._client)
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            return await kirim_semua(client)
+
+
+class ApiReranker(_HttpReranker):
+    """Endpoint `/rerank` gaya Cohere/Jina (`RERANK_PROVIDER=api`).
+
+    Permintaan `{model, query, documents, top_n}`, jawaban
+    `{results: [{index, relevance_score}]}` -- bentuk yang dipakai Cohere, Jina,
+    Voyage, Infinity, dan gateway yang menirunya.
+    """
+
+    async def score(self, query: str, texts: Sequence[str]) -> list[float]:
         body = {
             "model": self.model,
             "query": query,
             "documents": list(texts),
             "top_n": len(texts),
         }
-        headers = {**self._headers, "User-Agent": USER_AGENT}
-        if self._client is not None:
-            resp = await self._client.post(self.url, json=body, headers=headers)
-        else:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(self.url, json=body, headers=headers)
-        resp.raise_for_status()
-        return skor_dari_respons(resp.json(), len(texts))
+        (data,) = await self._kirim([body])
+        return skor_dari_respons(data, len(texts))
+
+
+class TeiReranker(_HttpReranker):
+    """Text Embeddings Inference (`RERANK_PROVIDER=tei`), mis. container di `/rerank` server.
+
+    Permintaan `{query, texts, raw_scores, truncate}`, jawaban daftar
+    `[{index, score}]`. Satu server TEI melayani satu model, jadi nama model tidak
+    dikirim. `raw_scores=false` membuat TEI memasang sigmoid sehingga skornya
+    0..1 seperti bentuk Cohere; `truncate=true` memotong potongan yang melebihi
+    panjang maksimum model alih-alih menolaknya. Kandidat dikirim per
+    `TEI_MAX_BATCH`.
+    """
+
+    async def score(self, query: str, texts: Sequence[str]) -> list[float]:
+        kelompok = [
+            list(texts[i : i + TEI_MAX_BATCH]) for i in range(0, len(texts), TEI_MAX_BATCH)
+        ]
+        bodies = [
+            {"query": query, "texts": k, "raw_scores": False, "truncate": True}
+            for k in kelompok
+        ]
+        skor: list[float] = []
+        for k, data in zip(kelompok, await self._kirim(bodies), strict=True):
+            skor.extend(skor_dari_respons(data, len(k)))
+        return skor
 
 
 def skor_dari_respons(data: Any, n: int) -> list[float]:
-    """Susun ulang `results` penyedia menurut indeks masukan.
+    """Susun ulang hasil penyedia menurut indeks masukan.
 
-    Penyedia mengembalikan hasil terurut menurut skor, bukan menurut masukan;
-    indeks yang tidak dikembalikan mendapat 0.0 -- penyedia yang memotong
-    `top_n` sendiri berarti menilainya tidak relevan.
+    Dua bentuk diterima: `{results: [{index, relevance_score}]}` (Cohere dan
+    tiruannya) dan daftar `[{index, score}]` (TEI). Penyedia mengembalikan hasil
+    terurut menurut skor, bukan menurut masukan; indeks yang tidak dikembalikan
+    mendapat 0.0 -- penyedia yang memotong `top_n` sendiri berarti menilainya
+    tidak relevan.
     """
-    hasil = data.get("results") if isinstance(data, dict) else None
+    if isinstance(data, list):
+        hasil = data
+    else:
+        hasil = data.get("results") if isinstance(data, dict) else None
     if not isinstance(hasil, list):
         raise ValueError("respons rerank tanpa daftar `results`")
     skor = [0.0] * n
@@ -128,18 +180,19 @@ def _cross_encoder(model: str) -> Any:
 
 
 def build_reranker(settings: Any) -> Reranker | None:
-    """Reranker sesuai RERANK_PROVIDER, atau None bila dimatikan."""
-    if settings.rerank_provider == "api":
-        kunci = settings.kunci_rerank()
-        return ApiReranker(
-            base_url=settings.url_rerank(),
-            api_key=kunci.get_secret_value() if kunci else None,
-            model=settings.rerank_model,
-            timeout=settings.rerank_timeout_seconds,
-        )
+    """Reranker sesuai RERANK_PROVIDER, atau None bila RERANK_ENABLED=false."""
+    if not settings.rerank_enabled:
+        return None
     if settings.rerank_provider == "local":
         return LocalReranker(settings.rerank_model)
-    return None
+    kelas = TeiReranker if settings.rerank_provider == "tei" else ApiReranker
+    kunci = settings.kunci_rerank()
+    return kelas(
+        base_url=settings.rerank_base_url,
+        api_key=kunci.get_secret_value() if kunci else None,
+        model=settings.rerank_model,
+        timeout=settings.rerank_timeout_seconds,
+    )
 
 
 async def rerank_documents(

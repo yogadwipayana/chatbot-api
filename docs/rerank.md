@@ -2,8 +2,8 @@
 
 Langkah opsional yang memperbaiki urutan potongan dokumen sebelum dikirim ke
 LLM. Diatur segmen `Reranker` di `.env`. Bawaannya **mati**
-(`RERANK_PROVIDER=none`): selama itu seluruh variabel `RERANK_*` tidak
-berpengaruh apa pun.
+(`RERANK_ENABLED=false`, seperti `JEV_ENABLED`): selama itu variabel
+`RERANK_*` lainnya tidak berpengaruh apa pun, jadi boleh tetap terisi.
 
 ## Masalah yang diselesaikan
 
@@ -32,44 +32,63 @@ Dua sifat yang perlu diketahui:
 
 | Variabel | Fungsi |
 |---|---|
-| `RERANK_PROVIDER` | `none` (mati), `api` (endpoint `/rerank` gaya Cohere/Jina), atau `local` (cross-encoder di server sendiri) |
-| `RERANK_MODEL` | Nama model, mis. `BAAI/bge-reranker-v2-m3`. Wajib bila provider bukan `none`. |
-| `RERANK_BASE_URL`, `RERANK_API_KEY` | Endpoint dan kuncinya (mode `api`); kosong = `BASE_URL` / `API_KEY` |
+| `RERANK_ENABLED` | Sakelar. `false` (bawaan) = urutan RRF langsung dipakai. |
+| `RERANK_PROVIDER` | Bentuk endpoint, bukan model: `tei` (bawaan), `api`, atau `local`. Lihat tabel di bawah. |
+| `RERANK_BASE_URL` | Alamat server reranker, mis. `http://localhost:8081`; `/rerank` ditambahkan otomatis. Wajib kecuali `local`. **Tidak** jatuh ke `BASE_URL`, karena gateway tidak punya `/rerank`. |
+| `RERANK_API_KEY` | Dikirim sebagai `Authorization: Bearer`. Kosong = tanpa header. **Tidak** jatuh ke `API_KEY`, supaya kunci gateway tidak terkirim ke server lain. |
+| `RERANK_MODEL` | Nama model, mis. `Alibaba-NLP/gte-multilingual-reranker-base`. Wajib saat menyala. TEI mengabaikannya (satu server satu model), jadi di sana hanya untuk log. |
 | `RERANK_CANDIDATES` | Berapa hasil RRF teratas yang dinilai ulang (bawaan 20). Yang masuk konteks LLM tetap `RETRIEVAL_TOP_N`. |
 | `RERANK_THRESHOLD` | Opsional, 0–1. Terisi = penolakan FR-3 memakai skor reranker, bukan `VECTOR_THRESHOLD`/`LEXICAL_THRESHOLD`. Kosong = ambang lama. |
-| `RERANK_TIMEOUT_SECONDS` | Batas waktu satu penilaian (bawaan 10 detik) |
+| `RERANK_TIMEOUT_SECONDS` | Batas waktu per permintaan ke server reranker (bawaan 10 detik) |
+
+| `RERANK_PROVIDER` | Permintaan → jawaban | Contoh server |
+|---|---|---|
+| `tei` | `{query, texts, raw_scores, truncate}` → `[{index, score}]`, maksimal 32 teks per permintaan (dipecah otomatis) | Text Embeddings Inference, mis. container di `/rerank` server |
+| `api` | `{model, query, documents, top_n}` → `{results: [{index, relevance_score}]}` | Cohere, Jina, Voyage, Infinity |
+| `local` | Cross-encoder sentence-transformers di proses API; butuh `uv sync --extra local` | -- |
 
 Semuanya dibaca dari `.env` saja -- tidak dapat diubah dari halaman
 Konfigurasi dashboard -- jadi setiap perubahan butuh restart API. Setelan yang
-setengah terisi (provider tanpa model, mode `api` tanpa URL) membuat API gagal
-start dengan pesan yang jelas, bukan gagal saat mahasiswa bertanya.
+setengah terisi (menyala tanpa model, `tei`/`api` tanpa URL, URL tanpa
+`http://`) membuat API gagal start dengan pesan yang jelas, bukan gagal saat
+mahasiswa bertanya. `.env` lama yang masih berisi `RERANK_PROVIDER=none` juga
+ditolak dengan pesan yang menunjuk ke `RERANK_ENABLED`.
 
 ## Menyalakan
 
-**Lewat endpoint (`api`)** -- butuh layanan dengan `POST {url}/rerank` yang
-menerima `{model, query, documents, top_n}` dan menjawab
-`{results: [{index, relevance_score}]}` (bentuk Cohere, Jina, Voyage). Belum
-diperiksa apakah gateway `BASE_URL` proyek ini menyediakannya.
+Contoh dengan container gte di `/rerank` server (panduan container:
+`/rerank/README.md` di server):
 
 ```bash
-RERANK_PROVIDER=api
-RERANK_MODEL=<nama model di penyedia>
-RERANK_BASE_URL=           # kosong = BASE_URL
-RERANK_API_KEY=            # kosong = API_KEY
+RERANK_ENABLED=true
+RERANK_PROVIDER=tei
+RERANK_BASE_URL=http://localhost:8081   # dari laptop: http://100.111.178.48:8081
+RERANK_API_KEY=<GTE_API_KEY di /rerank/.env>
+RERANK_MODEL=Alibaba-NLP/gte-multilingual-reranker-base
+RERANK_THRESHOLD=
 ```
 
-**Di server sendiri (`local`)** -- butuh sentence-transformers, serta CPU dan
-RAM untuk modelnya:
+Lalu restart API. Di server, container API harus dibuat ulang supaya `.env`
+terbaca: `cd /chatbot && sudo docker compose up -d api`. Mulailah dengan
+`RERANK_THRESHOLD` kosong: reranker hanya memperbaiki urutan, sementara
+keputusan menolak tetap memakai ambang lama.
+
+Mematikan cukup `RERANK_ENABLED=false` lalu restart; variabel lain boleh
+dibiarkan.
+
+## Mengganti model
+
+Cukup tiga variabel, lalu restart API. Misalnya gte → bge:
 
 ```bash
-cd api && uv sync --extra local
-# .env
-RERANK_PROVIDER=local
+RERANK_BASE_URL=http://localhost:8082
+RERANK_API_KEY=<BGE_API_KEY di /rerank/.env>
 RERANK_MODEL=BAAI/bge-reranker-v2-m3
 ```
 
-Lalu restart API. Mulailah dengan `RERANK_THRESHOLD` kosong: reranker hanya
-memperbaiki urutan, sementara keputusan menolak tetap memakai ambang lama.
+`RERANK_PROVIDER` hanya diganti bila jenis servernya berganti (mis. dari TEI ke
+layanan gaya Cohere). Kosongkan `RERANK_THRESHOLD` setiap ganti model, lalu
+kalibrasi ulang: sebaran skor tiap model berbeda.
 
 ## Ambang `RERANK_THRESHOLD`
 
@@ -97,14 +116,15 @@ jawabannya mengutip dokumen yang salah padahal dokumen yang benar sudah ada.
 Konsekuensinya:
 
 - satu panggilan tambahan per pertanyaan, jadi jawaban sedikit lebih lambat;
-- mode `local` memakai CPU/RAM server; mode `api` menambah biaya per panggilan
-  di penyedia.
+- `tei` dan `local` memakai CPU/RAM server (CPU server proyek ini tanpa AVX,
+  jadi ukur dulu latensinya); `api` ke penyedia berbayar menambah biaya per
+  panggilan.
 
 ## Berkas terkait
 
 | Berkas | Isi |
 |---|---|
-| `app/rag/reranker.py` | `ApiReranker`, `LocalReranker`, `build_reranker`, `rerank_documents` |
+| `app/rag/reranker.py` | `TeiReranker`, `ApiReranker`, `LocalReranker`, `build_reranker`, `rerank_documents` |
 | `app/rag/retriever.py` | Memotong hasil RRF ke `RERANK_CANDIDATES` sebelum reranker |
 | `app/rag/threshold.py` | Keputusan menolak memakai skor reranker bila `RERANK_THRESHOLD` diisi |
 | `app/config.py` | Variabel `RERANK_*` dan validasinya |

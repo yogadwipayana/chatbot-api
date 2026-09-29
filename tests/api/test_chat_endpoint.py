@@ -125,6 +125,22 @@ class TestSitasiHanyaYangDikutip:
         data = make_client(strong_documents).post("/api/chat", json=payload).json()
         assert [c["page"] for c in data["citations"]] == [13, 12]
 
+    def test_sitasi_rentang_halaman_menjadi_kartu_tiap_halaman(
+        self, make_client, strong_documents, payload, api_llm
+    ):
+        """T19: jawaban dari potongan lanjutan mengutip `hal. 12–13`. Dulu penanda
+        itu tidak terbaca, dan jawabannya tampil tanpa satu pun kartu sumber."""
+        api_llm.reply = "Daftarnya bersambung [Panduan Akademik 2025, hal. 12–13]."
+        data = make_client(strong_documents).post("/api/chat", json=payload).json()
+        assert [c["page"] for c in data["citations"]] == [12, 13]
+
+    def test_sitasi_berawalan_sumber_tetap_jadi_kartu(
+        self, make_client, strong_documents, payload, api_llm
+    ):
+        api_llm.reply = "Lewat SMS Banking [Sumber: Panduan Akademik 2025, hal. 12]."
+        data = make_client(strong_documents).post("/api/chat", json=payload).json()
+        assert [c["page"] for c in data["citations"]] == [12]
+
     def test_sumber_karangan_tidak_pernah_jadi_kartu(
         self, make_client, strong_documents, payload, api_llm
     ):
@@ -138,13 +154,15 @@ class TestSitasiHanyaYangDikutip:
             ("Panduan Akademik 2025", 12)
         ]
 
-    def test_jawaban_tanpa_penanda_jatuh_ke_seluruh_chunk(
+    def test_jawaban_tanpa_penanda_tanpa_kartu(
         self, make_client, strong_documents, payload, api_llm
     ):
-        """LLM melanggar FR-5 di sini; mahasiswa tetap harus punya jalan verifikasi."""
-        api_llm.reply = "Silakan hubungi bagian akademik."
+        """Chunk yang tidak dikutip bukan sumber jawabannya. Sapaan dari LLM dulu
+        tampil dengan tujuh kartu dokumen yang tidak berkaitan (T10)."""
+        api_llm.reply = "Selamat pagi! Ada yang dapat saya bantu?"
         data = make_client(strong_documents).post("/api/chat", json=payload).json()
-        assert [c["page"] for c in data["citations"]] == [12, 13]
+        assert data["kind"] == OutcomeKind.ANSWER
+        assert data["citations"] == []
 
 
 class TestPenolakan:
@@ -462,37 +480,41 @@ class TestFeedback:
 
 
 class TestGerbangJev:
-    """`kind: rejected` -- tanpa sitasi, tanpa retrieval, dan tidak masuk AD-4."""
+    """`kind: rejected` -- tanpa sitasi, tanpa LLM penjawab, dan tidak masuk AD-4.
+
+    Pencarian sempat berjalan paralel dengan gerbang; hasilnya dibuang."""
 
     @pytest.fixture
     def gated_client(self, make_client, strong_documents):
         from app.rag.gate import GateLabel, GateVerdict
         from tests.fixtures.fakes import FakeRetriever
 
-        async def gate(question, history=()):
+        async def gate(question, history=(), unit=None):
             return GateVerdict(GateLabel.NONSENSE, 0.97, blocked=True, cost_usd=0.00002)
 
         self.retriever = FakeRetriever(strong_documents)
         return make_client(strong_documents, retriever=self.retriever, gate=gate)
 
     def test_dibalas_rejected_tanpa_sitasi(self, gated_client, payload, api_llm):
-        body = gated_client.post("/api/chat", json={**payload, "question": "asdf qwer"}).json()
+        pesan = {**payload, "question": "resep rendang padang"}
+        body = gated_client.post("/api/chat", json=pesan).json()
         assert body["kind"] == OutcomeKind.REJECTED
         assert body["citations"] == []
         assert body["contacts"] == []
-        assert self.retriever.queries == []
+        assert body["top_score"] is None
         assert not api_llm.called
 
     def test_label_dan_biaya_gerbang_tercatat(self, gated_client, payload, chat_logger):
         from app.observability.chatlog import build_meta
 
-        gated_client.post("/api/chat", json={**payload, "question": "asdf qwer"})
+        gated_client.post("/api/chat", json={**payload, "question": "resep rendang padang"})
         meta = build_meta(chat_logger.entries[-1])
         assert meta["kind"] == "rejected"
         assert meta["gate_label"] == "nonsense"
         assert meta["gate_cost_usd"] == 0.00002
-        assert meta["embed_called"] is False
+        assert meta["llm_called"] is False
 
     def test_stream_juga_rejected(self, gated_client, payload):
-        resp = gated_client.post("/api/chat/stream", json={**payload, "question": "asdf"})
+        pesan = {**payload, "question": "resep rendang padang"}
+        resp = gated_client.post("/api/chat/stream", json=pesan)
         assert pesan_akhir(resp)["kind"] == "rejected"

@@ -72,6 +72,57 @@ class TestEkstraksi:
     def test_kurung_biasa_bukan_sitasi(self):
         assert extract_citations("Lihat bagian (hal. 12) dokumen.") == ()
 
+    @pytest.mark.parametrize(
+        "teks",
+        [
+            "[Kode Etik, hal. 8–9]",
+            "[Kode Etik, hal. 8-9]",
+            "[Kode Etik, hal. 8—9]",
+            "[Kode Etik, hal. 8 – 9]",
+        ],
+    )
+    def test_rentang_halaman_menjadi_sitasi_per_halaman(self, teks):
+        """T19: daftar yang bersambung ke halaman berikutnya membuat LLM menulis
+        rentang; tanpa ini jawabannya tampil tanpa kartu sumber."""
+        assert extract_citations(teks) == (
+            Citation("Kode Etik", 8),
+            Citation("Kode Etik", 9),
+        )
+
+    @pytest.mark.parametrize(
+        "teks", ["[Panduan, hal. 4, 6]", "[Panduan, hal. 4 dan 6]", "[Panduan, hal. 4 & 6]"]
+    )
+    def test_daftar_halaman_menjadi_sitasi_per_halaman(self, teks):
+        assert extract_citations(teks) == (Citation("Panduan", 4), Citation("Panduan", 6))
+
+    def test_rentang_panjang_diurai_lengkap(self):
+        assert [c.halaman for c in extract_citations("[P, hal. 3-6]")] == [3, 4, 5, 6]
+
+    @pytest.mark.parametrize(
+        "teks, halaman", [("[P, hal. 9-8]", [9, 8]), ("[P, hal. 1-300]", [1, 300])]
+    )
+    def test_rentang_terbalik_atau_terlalu_lebar_hanya_ujungnya(self, teks, halaman):
+        assert [c.halaman for c in extract_citations(teks)] == halaman
+
+    @pytest.mark.parametrize(
+        "teks",
+        [
+            "[Sumber: Panduan, hal. 4]",
+            "[sumber:Panduan, hal. 4]",
+            "[SUMBER : Panduan, hal. 4]",
+        ],
+    )
+    def test_awalan_sumber_bukan_bagian_judul(self, teks):
+        """Awalan yang terbawa ke judul membuat kartu sumber hilang, sama seperti T19."""
+        assert extract_citations(teks) == (Citation("Panduan", 4),)
+
+    def test_halaman_rentang_yang_sudah_disebut_tidak_digandakan(self):
+        jawaban = "A [Kode Etik, hal. 8]. B [Kode Etik, hal. 8–9]."
+        assert extract_citations(jawaban) == (
+            Citation("Kode Etik", 8),
+            Citation("Kode Etik", 9),
+        )
+
 
 class TestValidasi:
     def test_jawaban_dengan_sumber_sah(self):

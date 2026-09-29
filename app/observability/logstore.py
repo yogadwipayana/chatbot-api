@@ -290,6 +290,10 @@ class LogStore:
         total = [r["total_ms"] for r in turns if r["total_ms"] is not None]
         jumlah = len(turns)
         gagal = sum(1 for r in turns if r["status"] == "error")
+        # Terpisah dari `gagal`: pembatalan bukan galat server. Tetapi mahasiswa
+        # yang menghentikan jawaban sering kali sudah kehilangan kesabaran, jadi
+        # jumlahnya perlu terlihat di ringkasan, bukan hanya di filter tab Giliran.
+        dibatalkan = sum(1 for r in turns if r["status"] == "dibatalkan")
         diblokir_jev = sum(1 for r in turns if r["last_node"] == "jev_gate")
 
         durasi: dict[str, list[float]] = defaultdict(list)
@@ -352,6 +356,7 @@ class LogStore:
             "p95_total_ms": _bulat(persentil(total, 0.95)),
             "error_turn_count": gagal,
             "error_ratio": round(gagal / jumlah, 4) if jumlah else 0.0,
+            "cancelled_turn_count": dibatalkan,
             "jev_blocked_count": diblokir_jev,
             "jev_blocked_ratio": round(diblokir_jev / jumlah, 4) if jumlah else 0.0,
             "error_log_count": sum(per_jam_log.values()),

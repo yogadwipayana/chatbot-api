@@ -20,7 +20,7 @@ from typing import Any
 from sqlalchemy import text
 
 from app.observability.costs import try_estimate_cost
-from app.rag.chain import OutcomeKind, PipelineOutcome
+from app.rag.chain import OutcomeKind, PipelineOutcome, refusal_source, rejection_source
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +55,10 @@ class ChatLogEntry:
     embed_key: str | None = None
     """Kunci situs penyemat asal pertanyaan (`app/embed_keys.py`); None = portal."""
     embed_dipanggil: bool = False
-    """False untuk FR-7 dan smalltalk: keduanya berhenti sebelum retrieval,
-    sehingga pertanyaannya tidak pernah di-embed sama sekali."""
+    """False untuk FR-7 dan sapaan berbasis aturan: keduanya berhenti sebelum
+    retrieval, sehingga pertanyaannya tidak pernah di-embed sama sekali. Pesan
+    yang diblokir JEV bisa True -- pencarian berjalan paralel dengan gerbang dan
+    baru dihentikan saat vonis blokir tiba."""
     embed_model: str | None = None
     embed_tokens: int | None = None
     embed_biaya_usd: float | None = None
@@ -82,6 +84,9 @@ def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
 
     return {
         "kind": outcome.kind.value,
+        # Penolakan yang baru diputuskan LLM berarti konteksnya lolos threshold
+        # padahal tidak menjawab -- sinyal untuk kalibrasi ambang FR-3.
+        "refusal_source": refusal_source(outcome),
         "escalated": bool(outcome.contacts),
         "topics": [t.value for t in outcome.risk.topics] if outcome.risk else [],
         "sensitivity": outcome.sensitivity.level.value if outcome.sensitivity else None,
@@ -101,12 +106,16 @@ def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
         "embed_tokens": entry.embed_tokens,
         "embed_cost_usd": entry.embed_biaya_usd,
         "embed_cost_source": entry.embed_biaya_sumber,
-        # Gerbang JEV. `gate_label` terisi juga untuk pesan yang diteruskan,
-        # supaya ambang JEV dapat dikalibrasi dari log, bukan ditebak.
+        # Gerbang JEV atau saringan aturan (`gate_source`). `gate_label` terisi
+        # juga untuk pesan yang diteruskan JEV, supaya ambangnya dapat
+        # dikalibrasi dari log, bukan ditebak.
         "gate_label": outcome.gate.label.value if outcome.gate else None,
         "gate_confidence": outcome.gate.confidence if outcome.gate else None,
         "gate_error": outcome.gate.error if outcome.gate else None,
         "gate_cost_usd": outcome.gate.cost_usd if outcome.gate else None,
+        "gate_source": outcome.gate.source.value if outcome.gate else None,
+        # `llm` = LLM penjawab membalas OFF_TOPIC_MARKER walau gerbang meloloskan.
+        "rejection_source": rejection_source(outcome),
         "top_rerank_score": (
             outcome.decision.top_rerank_score if outcome.decision else None
         ),

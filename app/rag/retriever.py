@@ -14,9 +14,15 @@ threshold dapat membacanya.
 Bila reranker dipasang, RRF dipotong menjadi `rerank_candidates` dulu, lalu
 reranker memilih top 5 dari situ (`app.rag.reranker`).
 
+Terakhir, beberapa hasil teratas diberi potongan lanjutannya dari dokumen yang
+sama (`neighbors`, lihat `NEIGHBOR_SQL`), supaya prosedur yang terbelah antar
+halaman sampai ke LLM utuh.
+
 Jalur fulltext memperluas query dengan kamus sinonim kampus
 (`app.rag.glossary`): "STIKI" ikut mencari "INSTIKI", "UPS" ikut mencari
-"Unit Pelaksana Sertifikasi", dan sebaliknya.
+"Unit Pelaksana Sertifikasi", dan sebaliknya. Setiap varian lalu dibersihkan
+dari kata tanya dan kata sambung dan digabung dengan `or` (`app.rag.fts_query`):
+tanpa itu pertanyaan utuh hampir tidak pernah cocok dengan potongan mana pun.
 
 Mahasiswa yang memilih unit di menu chatbot mempersempit KEDUA pencarian ke
 dokumen unit itu, lewat WHERE yang sama -- bukan disaring setelah hasilnya
@@ -41,8 +47,8 @@ from pydantic import ConfigDict
 from sqlalchemy import text
 
 from app.rag.filters import active_document_clause
+from app.rag.fts_query import fulltext_queries
 from app.rag.fusion import RankedHit, reciprocal_rank_fusion
-from app.rag.glossary import fulltext_variants
 from app.rag.reranker import rerank_documents
 from app.rag.threshold import LEXICAL_SOURCE, VECTOR_SOURCE
 
@@ -105,6 +111,14 @@ def fulltext_sql(varian: int = 1) -> Any:
     Dengan `GREATEST`, skor terhadap query asli tidak pernah turun.
 
     Dengan satu varian, SQL-nya sama persis seperti sebelum kamus ada.
+
+    Varian berupa query `or` (`app.rag.fts_query`). Untuk query `or`, `ts_rank`
+    dibagi rata dengan jumlah katanya: potongan yang cocok dengan "toeic"
+    bernilai 0,076, dan hanya 0,019 bila tiga kata lain yang tidak ada di
+    potongan itu ikut ditanyakan.
+    Urutan di dalam satu pertanyaan tidak berubah, tetapi varian panjang (frasa
+    kamus yang diurai) selalu kalah skor dari varian pendek -- satu alasan lagi
+    memakai `GREATEST`.
     """
     if varian < 1:
         raise ValueError(f"jumlah varian minimal 1, bukan {varian}")
@@ -138,6 +152,31 @@ def fulltext_sql(varian: int = 1) -> Any:
 
 
 FULLTEXT_SQL = fulltext_sql(1)
+
+NEIGHBOR_SQL = text(
+    """
+    SELECT c.id::text AS source_id,
+           n.id::text AS chunk_id,
+           n.content,
+           n.page,
+           d.id::text AS document_id,
+           d.title,
+           d.type,
+           d.file_path
+    FROM chunks c
+    JOIN chunks n ON n.document_id = c.document_id AND n.position = c.position + 1
+    JOIN documents d ON d.id = n.document_id
+    WHERE c.id = ANY(CAST(:ids AS text[])::uuid[])
+    """
+)
+"""Potongan sesudah (`position + 1`) setiap chunk sumber, dari dokumen yang sama.
+
+Dokumen dipecah per halaman, sehingga satu prosedur sering terbelah: langkah
+7-8 panduan KRS MBKM ada di halaman 5 sendirian, format SMS pembayaran VA
+menyambung potongan "SMS Banking" tanpa mengulang judulnya. Potongan lanjutan
+seperti itu kalah peringkat karena tidak memuat kata kunci pertanyaannya,
+dan LLM lalu menjawab prosedur yang bolong di tengah. Status aktif tidak perlu
+diperiksa lagi: dokumennya sama dengan chunk sumber yang sudah lolos filter."""
 
 
 def vector_literal(embedding: Sequence[float]) -> str:
@@ -181,6 +220,10 @@ class PostgresHybridRetriever(BaseRetriever):
     reranker: Any = None
     """`app.rag.reranker.Reranker`, atau None untuk memakai urutan RRF langsung."""
     rerank_candidates: int = 20
+    neighbors: int = 0
+    """Berapa hasil teratas yang diberi potongan lanjutannya (`NEIGHBOR_SQL`).
+    0 = mati. Potongan lanjutan disisipkan tepat sesudah sumbernya dan tidak
+    membawa skor, jadi tidak ikut menentukan keputusan threshold FR-3."""
 
     async def _aget_relevant_documents(
         self,
@@ -240,7 +283,47 @@ class PostgresHybridRetriever(BaseRetriever):
             )
             for hit in fused
         ]
-        return await rerank_documents(query, documents, self.reranker, top_n=self.top_n)
+        documents = await rerank_documents(
+            query, documents, self.reranker, top_n=self.top_n
+        )
+        return await self._with_neighbors(documents)
+
+    async def _with_neighbors(self, documents: list[Document]) -> list[Document]:
+        if self.neighbors <= 0 or not documents:
+            return documents
+        sumber = [doc.metadata["chunk_id"] for doc in documents[: self.neighbors]]
+        rows = await self._jalankan(NEIGHBOR_SQL, {"ids": sumber})
+
+        sudah = {doc.metadata["chunk_id"] for doc in documents}
+        lanjutan = {r["source_id"]: r for r in rows if r["chunk_id"] not in sudah}
+        hasil: list[Document] = []
+        for doc in documents:
+            hasil.append(doc)
+            row = lanjutan.get(doc.metadata["chunk_id"])
+            if row is None:
+                continue
+            hasil.append(
+                Document(
+                    id=row["chunk_id"],
+                    page_content=row["content"],
+                    metadata={
+                        "chunk_id": row["chunk_id"],
+                        "document_id": row["document_id"],
+                        "judul": row["title"],
+                        "jenis": row.get("type"),
+                        "halaman": row["page"],
+                        "file_path": row["file_path"],
+                        # Tanpa skor: potongan ini ikut karena sumbernya, bukan
+                        # karena mirip pertanyaan, dan tidak boleh meloloskan
+                        # threshold atas namanya sendiri.
+                        "rrf_score": 0.0,
+                        "raw_scores": {},
+                        "ranks": {},
+                        "neighbor_of": doc.metadata["chunk_id"],
+                    },
+                )
+            )
+        return hasil
 
     def _get_relevant_documents(
         self,
@@ -280,7 +363,13 @@ class PostgresHybridRetriever(BaseRetriever):
         # Hanya jalur ini yang memakai kamus sinonim. Jalur vektor sudah
         # menangkap kemiripan makna, dan menambah teks pada query embedding
         # akan menggeser distribusi skor yang dipakai kalibrasi threshold.
-        varian = fulltext_variants(query)
+        #
+        # Setiap varian sudah berupa "a or b or c" tanpa kata tanya dan kata
+        # sambung (`app.rag.fts_query`). Kosong = semua kata umum ("apa itu?"):
+        # tidak ada yang layak dicocokkan, vektor saja yang memutuskan.
+        varian = fulltext_queries(query)
+        if not varian:
+            return []
         return await self._jalankan(
             fulltext_sql(len(varian)),
             {

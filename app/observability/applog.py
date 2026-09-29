@@ -236,6 +236,9 @@ def ringkas_node(node: str, keluaran: Any) -> dict[str, Any]:
         return {"level": _nilai(s.level), "redirected": bool(s.bypasses_rag)}
     if node == "smalltalk":
         return {"handled": "outcome" in out}
+    if node == "rule_gate":
+        g = out.get("gate")
+        return {"blocked": False} if g is None else {"blocked": True, "label": _nilai(g.label)}
     if node == "jev_gate":
         g = out.get("gate")
         if g is None:
@@ -275,6 +278,13 @@ class _NodeBerjalan:
     t0: float
 
 
+WRAPPER_NODES = frozenset({"cari"})
+"""Node subgraph yang hanya membungkus langkah lain (`app.rag.graph.SEARCH_NODE`).
+
+Durasinya jumlah langkah di dalamnya; mencatatnya membuat langkah yang sama
+terhitung dua kali di halaman Log, dengan nama yang tidak dikenal dashboard."""
+
+
 class NodeRecorder(AsyncCallbackHandler):
     """Callback LangGraph: satu catatan per node, disimpan di memori.
 
@@ -290,6 +300,8 @@ class NodeRecorder(AsyncCallbackHandler):
         self.nodes: list[dict[str, Any]] = []
         self._berjalan: dict[uuid.UUID, _NodeBerjalan] = {}
         self._urutan = 0
+        self._penentu: str | None = None
+        """Node yang mengisi `outcome` -- tempat alur benar-benar berhenti."""
 
     async def on_chain_start(
         self,
@@ -301,7 +313,7 @@ class NodeRecorder(AsyncCallbackHandler):
         **kwargs: Any,
     ) -> None:
         node = (metadata or {}).get("langgraph_node")
-        if not node or kwargs.get("name") != node:
+        if not node or kwargs.get("name") != node or node in WRAPPER_NODES:
             return
         self._urutan += 1
         self._berjalan[run_id] = _NodeBerjalan(
@@ -312,6 +324,8 @@ class NodeRecorder(AsyncCallbackHandler):
         jalan = self._berjalan.pop(run_id, None)
         if jalan is None:
             return
+        if isinstance(outputs, dict) and outputs.get("outcome") is not None:
+            self._penentu = jalan.node
         try:
             detail = ringkas_node(jalan.node, outputs)
         except Exception:
@@ -348,6 +362,15 @@ class NodeRecorder(AsyncCallbackHandler):
 
     @property
     def node_terakhir(self) -> str | None:
+        """Tempat alur berhenti: node yang mengisi `outcome`.
+
+        Bukan sekadar node yang paling akhir dimulai: gerbang JEV berjalan
+        paralel dengan pencarian, dan pesan yang diblokirnya tetap melewati
+        `validate_context` sebagai titik temu. Tanpa `outcome` (galat atau
+        dibatalkan), node terakhir yang dimulai yang dilaporkan.
+        """
+        if self._penentu is not None:
+            return self._penentu
         if not self.nodes:
             return None
         return max(self.nodes, key=lambda n: n["position"])["node"]
