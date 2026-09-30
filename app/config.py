@@ -535,6 +535,25 @@ class Settings(BaseSettings):
             raise ValueError(f"max_upload_mb harus >= 1, diberi {v}")
         return v
 
+    @field_validator("rrf_weight_vector", "rrf_weight_fulltext")
+    @classmethod
+    def _bobot_tidak_negatif(cls, v: float, info) -> float:
+        if v < 0:
+            raise ValueError(f"{info.field_name} tidak boleh negatif, diberi {v}")
+        return v
+
+    @field_validator("rrf_weight_fulltext")
+    @classmethod
+    def _minimal_satu_sumber_aktif(cls, v: float, info) -> float:
+        """Bobot 0 mematikan sumbernya (`app.rag.fusion`). Keduanya 0 berarti
+        tidak ada pencarian sama sekali, dan setiap pertanyaan ditolak."""
+        if v == 0 and info.data.get("rrf_weight_vector") == 0:
+            raise ValueError(
+                "Bobot pencarian makna dan bobot pencarian kata tidak boleh keduanya 0: "
+                "minimal satu sumber pencarian harus aktif"
+            )
+        return v
+
     @field_validator("retrieval_top_n")
     @classmethod
     def _top_n_tidak_melebihi_kandidat(cls, v: int, info) -> int:

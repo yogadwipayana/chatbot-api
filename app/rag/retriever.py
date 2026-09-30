@@ -195,6 +195,11 @@ def vector_literal(embedding: Sequence[float]) -> str:
     return "[" + ",".join(repr(x) for x in nilai) + "]"
 
 
+async def _tanpa_hasil() -> list[dict[str, Any]]:
+    """Pengganti pencarian untuk sumber yang dimatikan (bobot 0)."""
+    return []
+
+
 class PostgresHybridRetriever(BaseRetriever):
     """Retriever hibrida di atas satu instans PostgreSQL + pgvector."""
 
@@ -234,11 +239,15 @@ class PostgresHybridRetriever(BaseRetriever):
     ) -> list[Document]:
         """`unit`: nama resmi dari tabel `units` (lihat `app.units`), atau None
         untuk semua unit. Diteruskan lewat `ainvoke(query, unit=...)`."""
-        embedding = await self.embed_query(query)
+        # Bobot 0 mematikan sumbernya (lihat `reciprocal_rank_fusion`), jadi
+        # pencariannya -- dan untuk vektor, panggilan embedding-nya -- dilewati.
+        cari_vektor = self.weight_vector != 0
+        cari_kata = self.weight_fulltext != 0
+        embedding = await self.embed_query(query) if cari_vektor else None
 
         vector_rows, fulltext_rows = await asyncio.gather(
-            self._vector_search(embedding, unit),
-            self._fulltext_search(query, unit),
+            self._vector_search(embedding, unit) if embedding is not None else _tanpa_hasil(),
+            self._fulltext_search(query, unit) if cari_kata else _tanpa_hasil(),
         )
 
         fused = reciprocal_rank_fusion(

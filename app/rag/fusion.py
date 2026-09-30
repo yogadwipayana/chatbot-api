@@ -59,6 +59,10 @@ def reciprocal_rank_fusion(
     Args:
         ranked_lists: nama sumber -> hasil, sudah terurut dari paling relevan.
         weights: bobot per sumber, default 1.0. Sumber tak dikenal ditolak.
+            Bobot 0 mematikan sumbernya: hasilnya tidak ikut peringkat dan
+            tidak membawa `raw_scores`, jadi juga tidak ikut menentukan
+            threshold FR-3. Sekadar mengalikan skor RRF dengan 0 tidak cukup:
+            potongannya tetap masuk konteks dan skornya tetap dinilai threshold.
         k: konstanta peredam; makin besar makin rata pengaruh antar peringkat.
         top_n: potong hasil akhir. None berarti kembalikan semua.
 
@@ -81,6 +85,8 @@ def reciprocal_rank_fusion(
 
     for source, hits in ranked_lists.items():
         weight = weights.get(source, 1.0)
+        if weight == 0:
+            continue
         seen: set[str] = set()
         for position, hit in enumerate(hits, start=1):
             if hit.chunk_id in seen:

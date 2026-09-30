@@ -79,6 +79,19 @@ class TestTanpaHalaman:
         assert ringkas_sitasi_tanpa_halaman(jawaban, []) == jawaban
 
 
+    def test_penanda_gabungan_dengan_tanya_jawab(self):
+        jawaban = f"A [{self.FAQ}, hal. 1; Panduan VA, hal. 2]."
+        assert ringkas_sitasi_tanpa_halaman(jawaban, [self.FAQ]) == (
+            f"A [{self.FAQ}; Panduan VA, hal. 2]."
+        )
+        assert extract_citations(
+            ringkas_sitasi_tanpa_halaman(jawaban, [self.FAQ]), {self.FAQ: 1}
+        ) == (Citation(self.FAQ, 1), Citation("Panduan VA", 2))
+
+    def test_penanda_tanpa_tanya_jawab_tidak_dirapikan(self):
+        jawaban = "A [ Panduan , hal.  4 ] dan [P, hal. 3; Q, hal. 5]."
+        assert ringkas_sitasi_tanpa_halaman(jawaban, [self.FAQ]) == jawaban
+
 class TestEkstraksi:
     def test_beberapa_sitasi_terurut_kemunculan(self):
         jawaban = (
@@ -166,6 +179,39 @@ class TestEkstraksi:
         )
 
 
+    def test_penanda_gabungan_diurai_per_sumber(self):
+        """T34: `[A, hal. 3; A, hal. 4]` dulu terbaca sebagai satu judul
+        "A, hal. 3; A" -- kartu sumbernya hilang."""
+        jawaban = (
+            "Klik Pengajuan KRS [Panduan KRS MBKM PLK, hal. 3; Panduan KRS MBKM PLK, hal. 4]."
+        )
+        assert extract_citations(jawaban) == (
+            Citation("Panduan KRS MBKM PLK", 3),
+            Citation("Panduan KRS MBKM PLK", 4),
+        )
+
+    def test_penanda_gabungan_dua_dokumen(self):
+        assert extract_citations("[Kode Etik, hal. 8; Sumber: SK Rektor, hal. 2–3]") == (
+            Citation("Kode Etik", 8),
+            Citation("SK Rektor", 2),
+            Citation("SK Rektor", 3),
+        )
+
+    def test_bagian_lanjutan_tanpa_judul_memakai_judul_sebelumnya(self):
+        assert extract_citations("[Panduan, hal. 3; hal. 5]") == (
+            Citation("Panduan", 3),
+            Citation("Panduan", 5),
+        )
+
+    def test_judul_yang_memuat_titik_koma_tetap_satu_sitasi(self):
+        """Bila tidak semua bagian terbaca sebagai sitasi, penanda dibaca utuh."""
+        assert extract_citations("[Pedoman A; Edisi 2, hal. 3]") == (
+            Citation("Pedoman A; Edisi 2", 3),
+        )
+
+    def test_kurung_dengan_titik_koma_bukan_sitasi(self):
+        assert extract_citations("Ketik [PIN; lalu OK] di layar.") == ()
+
 class TestValidasi:
     def test_jawaban_dengan_sumber_sah(self):
         hasil = validate_answer("Jawaban [Panduan Akademik 2025, hal. 12].", KONTEKS)
@@ -194,6 +240,13 @@ class TestValidasi:
         hasil = validate_answer("Lihat [panduan akademik 2025, hal. 12].", KONTEKS)
         assert hasil.unknown == ()
         assert hasil.is_valid
+
+    def test_penanda_gabungan_sah(self):
+        hasil = validate_answer(
+            "Syarat [Panduan Akademik 2025, hal. 12; SK Rektor 2024, hal. 3].", KONTEKS
+        )
+        assert hasil.is_valid
+        assert len(hasil.citations) == 2
 
     def test_campuran_sitasi_sah_dan_karangan_tetap_tidak_valid(self):
         jawaban = "A [Panduan Akademik 2025, hal. 12] dan B [Entah Apa, hal. 1]."

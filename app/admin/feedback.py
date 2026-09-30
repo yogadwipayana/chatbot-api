@@ -64,7 +64,7 @@ async def fetch_feedback(
         text(
             "SELECT f.id::text AS id, f.message_id::text AS message_id, f.helpful,"
             " f.comment, f.created_at, m.content AS answer, m.meta->>'kind' AS kind,"
-            " m.top_score, q.content AS question"
+            " m.meta->>'unit' AS unit, m.top_score, q.content AS question"
             " FROM feedback f"
             " JOIN messages m ON m.id = f.message_id"
             f" {_PERTANYAAN_SUBQUERY} {where}"

@@ -79,6 +79,7 @@ async def list_unanswered(
             avg_top_score=g.top_score_rata2,
             last_asked_at=g.terakhir_ditanyakan,
             resolved=g.resolved,
+            unit=g.unit,
         )
         for g in kelompok
     ]

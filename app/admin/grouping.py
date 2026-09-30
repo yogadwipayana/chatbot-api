@@ -130,6 +130,9 @@ class UnansweredItem:
     top_score: float | None
     created_at: datetime
     resolved: bool
+    unit: str | None = None
+    """Unit yang dipilih mahasiswa di menu chatbot saat bertanya. None bila
+    pesan asalnya sudah terhapus dari log."""
 
 
 @dataclass
@@ -141,6 +144,12 @@ class QuestionGroup:
     def representative(self) -> UnansweredItem:
         """Pertanyaan terbaru, apa adanya seperti diketik mahasiswa."""
         return self.items[0]
+
+    @property
+    def unit(self) -> str | None:
+        """Unit pertanyaan wakil, supaya uji ulangnya mencari di dokumen yang
+        sama dengan yang dicari chatbot saat menolak."""
+        return self.representative.unit
 
     @property
     def ids(self) -> list[str]:

@@ -81,6 +81,33 @@ class TestSkorMentah:
         assert "vector" not in by_id["b"].raw_scores
 
 
+class TestBobotNol:
+    """T29: bobot 0 mematikan sumber, bukan sekadar meniadakan skor RRF-nya."""
+
+    def test_chunk_hanya_dari_sumber_mati_tidak_ikut(self):
+        fused = reciprocal_rank_fusion(
+            {"vector": hits(("a", 0.5)), "fulltext": hits(("f", 0.9))},
+            weights={"vector": 1.0, "fulltext": 0.0},
+        )
+        assert [h.chunk_id for h in fused] == ["a"]
+
+    def test_skor_mentah_sumber_mati_tidak_dibawa(self):
+        """Tanpa ini threshold FR-3 masih bisa diloloskan sumber yang dimatikan."""
+        fused = reciprocal_rank_fusion(
+            {"vector": hits(("a", 0.5)), "fulltext": hits(("a", 0.9))},
+            weights={"vector": 1.0, "fulltext": 0.0},
+        )
+        assert fused[0].raw_scores == {"vector": 0.5}
+        assert fused[0].ranks == {"vector": 1}
+
+    def test_kedua_sumber_mati_tanpa_hasil(self):
+        fused = reciprocal_rank_fusion(
+            {"vector": hits(("a", 0.5)), "fulltext": hits(("f", 0.9))},
+            weights={"vector": 0.0, "fulltext": 0.0},
+        )
+        assert fused == []
+
+
 class TestKasusTepi:
     def test_semua_sumber_kosong(self):
         assert reciprocal_rank_fusion({"vector": [], "fulltext": []}) == []

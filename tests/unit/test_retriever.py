@@ -182,6 +182,35 @@ class TestParameterQuery:
         assert all(p["limit"] == 7 for s in pabrik.sesi for _, p in s.panggilan)
 
 
+class TestBobotNol:
+    """T29: bobot 0 mematikan sumbernya -- pencariannya tidak dijalankan, jadi
+    potongannya tidak masuk konteks dan skornya tidak ikut dinilai threshold."""
+
+    async def test_bobot_kata_nol_tidak_menjalankan_fulltext(self, pabrik):
+        docs = await retriever_dengan(pabrik, weight_fulltext=0.0).ainvoke("pengisian KRS")
+        dijalankan = [sql for s in pabrik.sesi for sql, _ in s.panggilan]
+        assert VECTOR_SQL in dijalankan
+        assert all(sql is VECTOR_SQL or sql is ITERATIVE_SCAN_SQL for sql in dijalankan)
+        assert [d.metadata["chunk_id"] for d in docs] == ["a", "b"]
+        assert all("fulltext" not in d.metadata["raw_scores"] for d in docs)
+
+    async def test_bobot_makna_nol_tidak_memanggil_embedding(self, pabrik):
+        dipanggil: list[str] = []
+
+        async def rekam(q: str) -> list[float]:
+            dipanggil.append(q)
+            return [0.1] * 1024
+
+        docs = await PostgresHybridRetriever(
+            session_factory=pabrik, embed_query=rekam, weight_vector=0.0
+        ).ainvoke("pengisian KRS")
+        assert dipanggil == []
+        dijalankan = [sql for s in pabrik.sesi for sql, _ in s.panggilan]
+        assert VECTOR_SQL not in dijalankan
+        assert [d.metadata["chunk_id"] for d in docs] == ["b", "c"]
+        assert all("vector" not in d.metadata["raw_scores"] for d in docs)
+
+
 class TestKamusSinonim:
     def panggilan_fulltext(self, pabrik) -> list[tuple]:
         return [

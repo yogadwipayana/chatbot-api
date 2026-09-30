@@ -192,6 +192,10 @@ class UnansweredGroup(BaseModel):
     avg_top_score: float | None = None
     last_asked_at: datetime
     resolved: bool
+    unit: str | None = None
+    """Unit yang dipilih mahasiswa saat menanyakan `sample_question`. Chatbot
+    hanya mencari di dokumen unit itu, jadi uji ulangnya juga harus begitu.
+    None bila pesan asalnya sudah terhapus dari log."""
 
 
 class UnansweredUpdate(BaseModel):
@@ -224,6 +228,8 @@ class FeedbackItem(BaseModel):
     """`messages.meta->>'kind'` apa adanya -- bukan enum tertutup: nilai baru
     di backend tidak boleh membuat halaman ini gagal memuat."""
     top_score: float | None = None
+    unit: str | None = None
+    """`messages.meta->>'unit'`: unit yang dipilih mahasiswa saat bertanya."""
 
 
 class FeedbackPage(BaseModel):

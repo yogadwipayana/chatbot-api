@@ -2510,6 +2510,12 @@ components:
             nilai sangat rendah menandakan dokumennya memang belum ada.
         last_asked_at: { type: string, format: date-time }
         resolved: { type: boolean }
+        unit:
+          type: [string, 'null']
+          description: |
+            Unit yang dipilih mahasiswa saat menanyakan `sample_question`. Chatbot
+            hanya mencari di dokumen unit itu, jadi uji coba ulangnya juga harus
+            memakai unit ini. Null bila pesan asalnya sudah terhapus dari log.
 
     FeedbackItem:
       type: object
@@ -2543,6 +2549,9 @@ components:
         top_score:
           type: [number, 'null']
           description: Skor mentah tertinggi saat jawaban itu dibuat.
+        unit:
+          type: [string, 'null']
+          description: Unit yang dipilih mahasiswa saat bertanya (`messages.meta.unit`).
 
     FeedbackPage:
       type: object

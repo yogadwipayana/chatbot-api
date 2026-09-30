@@ -60,6 +60,19 @@ class TestValidasiSilang:
     def test_top_n_sama_dengan_kandidat_diterima(self):
         assert settings(retrieval_candidates=20, retrieval_top_n=20).retrieval_top_n == 20
 
+    def test_satu_bobot_nol_diterima(self):
+        """Bobot 0 mematikan satu sumber; sumber lainnya tetap mencari."""
+        assert settings(rrf_weight_fulltext=0).rrf_weight_fulltext == 0
+
+    def test_kedua_bobot_nol_ditolak(self):
+        """T29: tanpa sumber aktif setiap pertanyaan ditolak."""
+        with pytest.raises(ValidationError, match="minimal satu sumber"):
+            settings(rrf_weight_vector=0, rrf_weight_fulltext=0)
+
+    def test_bobot_negatif_ditolak(self):
+        with pytest.raises(ValidationError, match="tidak boleh negatif"):
+            settings(rrf_weight_vector=-1)
+
 
 class TestRahasia:
     def test_kunci_api_tidak_muncul_saat_dicetak(self):

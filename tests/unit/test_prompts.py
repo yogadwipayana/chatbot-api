@@ -132,6 +132,23 @@ class TestIstilahInternal:
     def test_jawaban_sebagian_menyarankan_ganti_topik(self):
         assert "topik unit" in SYSTEM_PROMPT
 
+    def test_langkah_bernomor_tidak_digabung_atau_diringkas(self):
+        """T32: 12 langkah ATM BNI dijawab 7 langkah ("Menu Lainnya → Transfer →
+        Rekening Tabungan → Ke Rekening BNI" jadi satu), dan sekali PIN
+        disebut sebelum pilih bahasa. Aturan "ringkas" mendorong penggabungan."""
+        assert "urutan dan pemisahan yang sama" in SYSTEM_PROMPT
+        assert "Jangan menggabungkan" in SYSTEM_PROMPT
+        assert "tidak berlaku untuk langkah" in SYSTEM_PROMPT
+
+    def test_rujukan_gambar_boleh_dihapus_tanpa_menebak_isinya(self):
+        """T33: langkah yang disalin utuh ikut membawa "akan muncul pesan
+        sebagai berikut." -- merujuk tangkapan layar yang tidak terbaca."""
+        assert "merujuk gambar" in SYSTEM_PROMPT
+        # Versi pertama ("boleh dihapus") membuat model melewati seluruh langkah.
+        assert "tetap ditulis sebagai langkah" in SYSTEM_PROMPT
+        assert "isi gambarnya" in SYSTEM_PROMPT
+        assert "diikuti daftar tertulis bukan rujukan gambar" in SYSTEM_PROMPT
+
     def test_bahasa_jawaban_tidak_mengikuti_pertanyaan(self):
         """T22: pertanyaan Inggris dijawab dalam bahasa Inggris, sementara
         kartu sumber, penolakan, dan kontak tetap berbahasa Indonesia."""

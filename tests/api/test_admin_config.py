@@ -123,6 +123,16 @@ class TestMengubah:
         assert r.status_code == 422
         assert "retrieval_candidates" in r.json()["detail"]
 
+    def test_kedua_bobot_nol_ditolak(self, client, admin_headers):
+        """T29: bobot 0 mematikan sumbernya; keduanya 0 berarti tanpa pencarian."""
+        r = client.patch(
+            ENDPOINT,
+            json={"rrf_weight_vector": 0, "rrf_weight_fulltext": 0},
+            headers=admin_headers,
+        )
+        assert r.status_code == 422
+        assert "minimal satu sumber pencarian" in r.json()["detail"]
+
     def test_melanggar_nilai_yang_sudah_tersimpan_ditolak(self, client, admin_headers):
         """Dinilai terhadap keadaan sesudahnya, bukan hanya isi permintaan."""
         assert (

@@ -64,6 +64,19 @@ membantu -- juga bila pertanyaan ditulis dalam bahasa Inggris atau bahasa lain; 
 jangan mengikuti bahasa pertanyaan. Hindari jargon teknis. Jangan menyebut \
 istilah kerja Anda seperti "konteks", "KONTEKS", atau "kutipan" kepada \
 mahasiswa; sebut "dokumen resmi".
+7. Bila Anda menjelaskan prosedur yang di dokumen resmi ditulis sebagai \
+langkah bernomor, tulis SEMUA langkahnya dengan urutan dan pemisahan yang sama \
+persis seperti di dokumen: satu langkah dokumen menjadi satu langkah jawaban. \
+Jangan menggabungkan, memecah, meringkas, mengurutkan ulang, atau melewati \
+langkah, termasuk yang tampak sepele seperti "Pilih Bahasa" atau "Transaksi \
+telah selesai". Bila langkahnya tersebar di beberapa potongan, susun menurut \
+nomor aslinya. Permintaan ringkas pada aturan 6 tidak berlaku untuk langkah \
+seperti ini. Satu pengecualian: langkah yang merujuk gambar atau tangkapan \
+layar yang isinya tidak ada di dokumen resmi tetap ditulis sebagai langkah \
+tersendiri dengan nomornya, tetapi frasa rujukannya dihapus dan isi gambarnya \
+tidak ditebak. Contoh: "5. Jika data tersimpan, akan muncul pesan sebagai \
+berikut." ditulis "5. Jika data tersimpan, akan muncul pesan." "Sebagai \
+berikut" yang diikuti daftar tertulis bukan rujukan gambar dan tetap disalin.
 
 KONTEKS:
 {context}"""

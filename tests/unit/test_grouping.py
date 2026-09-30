@@ -22,8 +22,9 @@ def item(
     menit: int = 0,
     skor: float | None = 0.2,
     resolved: bool = False,
+    unit: str | None = None,
 ) -> UnansweredItem:
-    return UnansweredItem(id_, teks, skor, T0 + timedelta(minutes=menit), resolved)
+    return UnansweredItem(id_, teks, skor, T0 + timedelta(minutes=menit), resolved, unit)
 
 
 class TestKataKunci:
@@ -122,6 +123,21 @@ class TestPengelompokan:
             ]
         )
         assert grup[0].top_score_rata2 == pytest.approx(0.3)
+
+    def test_unit_kelompok_mengikuti_pertanyaan_wakil(self):
+        """Tautan Uji coba memakai pertanyaan wakil, jadi unitnya harus unit
+        pertanyaan itu -- chatbot hanya mencari di dokumen unit tersebut."""
+        grup = group_questions(
+            [
+                item("lama", "harga sertifikasi TOEIC", unit="BAAK", menit=0),
+                item("baru", "harga sertifikasi TOEIC berapa", unit="UPS", menit=5),
+            ]
+        )
+        assert len(grup) == 1
+        assert grup[0].unit == "UPS"
+
+    def test_unit_kosong_bila_pesan_asal_terhapus(self):
+        assert group_questions([item("1", "jadwal KKN")])[0].unit is None
 
     def test_skor_semua_null(self):
         assert group_questions([item("1", "jadwal KKN", skor=None)])[0].top_score_rata2 is None
