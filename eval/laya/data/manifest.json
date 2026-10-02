@@ -1,0 +1,68 @@
+{
+  "dibuat": "2026-09-30T14:14:28+00:00",
+  "guru": "openrouter/typesafe/jev-1.13",
+  "label": [
+    "academic",
+    "smalltalk",
+    "out_of_scope",
+    "nonsense",
+    "malicious"
+  ],
+  "gerbang_sha256": "48a9d7cd17523198637faabad977b219dcca833f9ad9f4d7302b6e3455ee14dd",
+  "tidak_setuju": "buang",
+  "jumlah": {
+    "pesan": 2432,
+    "train": 2109,
+    "val": 235,
+    "uji": 64,
+    "tinjau": 109,
+    "mirip_uji": 6,
+    "ditinjau": 29,
+    "duplikat": 2
+  },
+  "train_per_label": {
+    "out_of_scope": 456,
+    "academic": 1226,
+    "nonsense": 96,
+    "smalltalk": 145,
+    "malicious": 186
+  },
+  "val_per_label": {
+    "academic": 136,
+    "smalltalk": 16,
+    "out_of_scope": 51,
+    "malicious": 21,
+    "nonsense": 11
+  },
+  "niat_vs_jev": {
+    "academic": {
+      "academic": 1332,
+      "out_of_scope": 25,
+      "malicious": 2,
+      "smalltalk": 2
+    },
+    "out_of_scope": {
+      "out_of_scope": 507,
+      "academic": 28
+    },
+    "smalltalk": {
+      "smalltalk": 161,
+      "academic": 18,
+      "out_of_scope": 1
+    },
+    "malicious": {
+      "malicious": 207,
+      "academic": 1
+    },
+    "nonsense": {
+      "nonsense": 108,
+      "academic": 26,
+      "smalltalk": 6
+    }
+  },
+  "sha256": {
+    "train.jsonl": "199ebaac5b76b8dc2128fcdd2e8808025b5b39b58b56ff2ece78171458a3ca89",
+    "val.jsonl": "f8d76aa22cc80d4450f3c51fc32d4b4ca280c92611a78fcddd4e497440e09a39",
+    "uji.jsonl": "a10900295c269250cf5cbad4dbb56e20d717e8a359640a6a003d83829bf67064"
+  }
+}

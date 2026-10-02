@@ -1,0 +1,32 @@
+{
+ "jumlah": {
+  "pesan": 2432,
+  "train": 2083,
+  "val": 232,
+  "uji": 64,
+  "tinjau": 109,
+  "mirip_uji": 6,
+  "duplikat": 2
+ },
+ "train_per_label": {
+  "nonsense": 96,
+  "out_of_scope": 456,
+  "academic": 1200,
+  "smalltalk": 145,
+  "malicious": 186
+ },
+ "val_per_label": {
+  "academic": 133,
+  "nonsense": 11,
+  "smalltalk": 16,
+  "malicious": 21,
+  "out_of_scope": 51
+ }
+}
+niat -> label JEV (baris = niat):
+  academic      setuju 1332/1361 (98%)  out_of_scope=25, malicious=2, smalltalk=2
+  smalltalk     setuju  161/180  (89%)  academic=18, out_of_scope=1
+  out_of_scope  setuju  507/535  (95%)  academic=28
+  nonsense      setuju  108/140  (77%)  academic=26, smalltalk=6
+  malicious     setuju  207/208  (100%)  academic=1
+-> eval\laya\data
