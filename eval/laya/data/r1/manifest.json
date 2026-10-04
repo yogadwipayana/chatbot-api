@@ -1,6 +1,6 @@
 {
-  "dibuat": "2026-10-02T10:25:32+00:00",
-  "guru": "multilingual",
+  "dibuat": "2026-09-30T14:14:28+00:00",
+  "guru": "openrouter/typesafe/jev-1.13",
   "label": [
     "academic",
     "smalltalk",
@@ -14,8 +14,7 @@
     "pesan": 2432,
     "train": 2109,
     "val": 235,
-    "uji": 100,
-    "kalibrasi": 60,
+    "uji": 64,
     "tinjau": 109,
     "mirip_uji": 6,
     "ditinjau": 29,
@@ -64,7 +63,6 @@
   "sha256": {
     "train.jsonl": "199ebaac5b76b8dc2128fcdd2e8808025b5b39b58b56ff2ece78171458a3ca89",
     "val.jsonl": "f8d76aa22cc80d4450f3c51fc32d4b4ca280c92611a78fcddd4e497440e09a39",
-    "uji.jsonl": "485b6c63ce93b269054a3a711d9c9b63a03d46445e6b19d7b0707e8145e89d8b",
-    "kalibrasi.jsonl": "ed59f13ce3b5a5d98a586838ad13e5c0d55f00df1d592fbecf278952bdc22aa6"
+    "uji.jsonl": "a10900295c269250cf5cbad4dbb56e20d717e8a359640a6a003d83829bf67064"
   }
 }

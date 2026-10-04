@@ -1,4 +1,9 @@
-"""Langkah 5: uji checkpoint Laya pada 64 pesan berlabel (uji.jsonl), dibandingkan JEV.
+"""Langkah 5: uji checkpoint Laya pada set berlabel (uji.jsonl / kalibrasi.jsonl).
+
+uji.jsonl: 100 pesan = 64 putaran 1 (asal "r1", pembanding JEV) + 36 tambahan
+(asal "r2": akronim pendek, riwayat, di luar topik yang mirip akademik).
+kalibrasi.jsonl: 60 pesan untuk memilih ambang; jalankan set uji sekali di akhir.
+Ringkasan dicetak untuk seluruh set dan per asal.
 
 Tidak meng-import `app`, jadi bisa jalan di Kaggle, di laptop, atau di server.
 Dua mode:
@@ -11,12 +16,14 @@ Dua mode:
     LAYA_API_KEY=... python evaluasi.py --uji data/uji.jsonl \
         --url http://127.0.0.1:8001/v1/systemone
 
-Keputusan blokir dihitung dua kali, karena `gate.parse_response` memakai field
-`confidence` bila ada. Pada Laya, untuk pertanyaan `choice`, `confidence` adalah
-entropi ternormalisasi (1 - H/log k) dan TIDAK terkalibrasi; yang terkalibrasi
-adalah `answer_confidence` (= probabilitas label terpilih). Lihat laya.md.
+Keputusan blokir dihitung dua kali. Pada Laya, untuk pertanyaan `choice`,
+`confidence` adalah entropi ternormalisasi (1 - H/log k) dan TIDAK terkalibrasi;
+yang terkalibrasi adalah `answer_confidence` (= probabilitas label terpilih).
+`gate.parse_response` membaca `answer_confidence` sejak 2026-10-02 (laya.md A1);
+baris `confidence` menunjukkan perilaku gerbang sebelumnya.
 
-Syarat lulus (laya.md): 0/38 akademik terblokir dan >= 8/9 di luar topik terblokir.
+Syarat lulus (laya.md): 0 akademik terblokir dan >= 90% di luar topik terblokir,
+dibulatkan ke bawah (8/9 pada 64 pesan putaran 1, 18/20 pada set uji penuh).
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import math
 import os
 import statistics
 import time
@@ -44,6 +52,26 @@ def blokir(label: str, keyakinan: float, ambang: float, ambang_luar: float) -> b
     if label == "academic":
         return False
     return keyakinan >= (ambang_luar if label == "out_of_scope" else ambang)
+
+
+def ringkas(hasil: list[dict], judul: str) -> None:
+    """Akademik terblokir dan di luar topik terblokir, untuk kedua ukuran keyakinan."""
+    ak = [h for h in hasil if h["expected"] == "academic"]
+    luar = [h for h in hasil if h["expected"] == "out_of_scope"]
+    benar = sum(h["choice"] == h["expected"] for h in hasil)
+    n = len(hasil)
+    print(f"\n{judul}: {n} pesan, akurasi {benar}/{n} ({benar / n:.0%})")
+    for nama, kunci in (
+        ("confidence (entropi Laya)", "blok_gate"),
+        ("answer_confidence (gate.py)", "blok_answer"),
+    ):
+        a_blok = sum(h[kunci] for h in ak)
+        l_blok = sum(h[kunci] for h in luar)
+        lulus = a_blok == 0 and l_blok >= math.floor(0.9 * len(luar))
+        print(
+            f"  {nama:28s}: akademik terblokir {a_blok}/{len(ak)}, di luar topik terblokir "
+            f"{l_blok}/{len(luar)} -> {'LULUS' if lulus else 'belum lulus'}"
+        )
 
 
 def prediktor(a):
@@ -104,6 +132,8 @@ def main() -> None:
             {
                 "pesan": row["pesan"],
                 "unit": row["unit"],
+                "asal": row.get("asal", "r1"),
+                "riwayat": bool(row.get("riwayat")),
                 "expected": row["expected"],
                 "choice": j["choice"],
                 "confidence": conf,
@@ -132,27 +162,15 @@ def main() -> None:
             + f"   {c[exp]:>2d}/{len(grup):<3d}  {blok_gate:>3d}/{len(grup):<3d}"
             f"      {blok_answer:>3d}/{len(grup)}"
         )
-    benar = sum(h["choice"] == h["expected"] for h in hasil)
-    ak = [h for h in hasil if h["expected"] == "academic"]
-    luar = [h for h in hasil if h["expected"] == "out_of_scope"]
     ms = sorted(h["ms"] for h in hasil)
-    print(
-        f"\nakurasi {benar}/{len(hasil)} ({benar / len(hasil):.0%}); "
-        f"latensi median {statistics.median(ms):.0f} ms, "
-        f"maks {ms[-1]} ms"
-    )
-    for nama, kunci in (
-        ("confidence (gate.py sekarang)", "blok_gate"),
-        ("answer_confidence", "blok_answer"),
-    ):
-        a_blok = sum(h[kunci] for h in ak)
-        l_blok = sum(h[kunci] for h in luar)
-        lulus = a_blok == 0 and l_blok >= 8
-        print(
-            f"  {nama:30s}: akademik terblokir {a_blok}/{len(ak)}, di luar topik terblokir "
-            f"{l_blok}/{len(luar)} -> {'LULUS' if lulus else 'belum lulus'}"
-        )
-    print(f"  pembanding {JEV}")
+    print(f"\nlatensi median {statistics.median(ms):.0f} ms, maks {ms[-1]} ms")
+    ringkas(hasil, "semua")
+    asal = sorted({h["asal"] for h in hasil})
+    if len(asal) > 1:
+        for nama in asal:
+            ringkas([h for h in hasil if h["asal"] == nama], f"asal {nama}")
+    if "r1" in asal:
+        print(f"\npembanding untuk asal r1: {JEV}")
     salah = [
         h for h in hasil if h["choice"] != h["expected"] or h["blok_gate"] != h["blok_answer"]
     ]
@@ -160,9 +178,10 @@ def main() -> None:
         print("\nsalah label / beda keputusan:")
         for h in salah:
             print(
-                f"  {h['expected'][:5]:5s} -> {h['choice'][:9]:9s} "
+                f"  {h['asal'][:3]:3s} {h['expected'][:5]:5s} -> {h['choice'][:9]:9s} "
                 f"p={h['answer_confidence']:.2f} H={h['confidence']:.2f} "
-                f"{'BLOK' if h['blok_answer'] else '    '} {h['pesan'][:60]}"
+                f"{'BLOK' if h['blok_answer'] else '    '} {'R' if h['riwayat'] else ' '} "
+                f"{h['pesan'][:60]}"
             )
     if a.out:
         a.out.write_text(

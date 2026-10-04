@@ -147,6 +147,10 @@ class GatePolicy:
     """Lebih ketat: pertanyaan akademik mendapat `out_of_scope` sampai 0,57,
     pesan di luar topik sungguhan paling rendah 0,94. Yang lolos di bawah ambang
     ini masih ditandai LLM penjawab (`OFF_TOPIC_MARKER`)."""
+    nonsense_threshold: float | None = None
+    """None = `block_threshold`. Laya hasil latih memberi nonsense sampai 0,81
+    pada pertanyaan akademik yang sangat pendek ("toeic brp"); pesan acak
+    sungguhan sudah dihentikan `rule_gate` sebelum gerbang ini."""
 
     def threshold_for(self, label: GateLabel) -> float | None:
         """Ambang label ini; None berarti label ini tidak pernah memblokir."""
@@ -154,6 +158,8 @@ class GatePolicy:
             return None
         if label is GateLabel.OUT_OF_SCOPE:
             return self.out_of_scope_threshold
+        if label is GateLabel.NONSENSE and self.nonsense_threshold is not None:
+            return self.nonsense_threshold
         return self.block_threshold
 
 
@@ -204,11 +210,23 @@ def build_request(
 
 
 def parse_response(data: Any, policy: GatePolicy) -> GateVerdict:
-    """Terjemahkan jawaban Decisions API menjadi vonis gerbang."""
+    """Terjemahkan jawaban Decisions API menjadi vonis gerbang.
+
+    Keyakinan diambil dari `answer_confidence` bila ada. Laya (`laya-serve`,
+    laya.md) mengirim dua angka: `confidence` untuk pertanyaan `choice` adalah
+    entropi ternormalisasi (1 - H/log k), bukan probabilitas, sedangkan
+    `answer_confidence` adalah probabilitas pilihan yang terkalibrasi. Dengan
+    `confidence`, ambang 0,9 hanya memblokir 1 dari 9 pesan di luar topik yang
+    dilabeli benar (0,62-0,93 untuk p 0,75-0,98). JEV tidak mengirim
+    `answer_confidence`, jadi untuk JEV tidak ada yang berubah.
+    """
     jawaban = data["answers"][QUESTION_KEY]
     label = GateLabel(jawaban["choice"])
     probabilitas = {str(k): float(v) for k, v in (jawaban.get("probabilities") or {}).items()}
-    keyakinan = float(jawaban.get("confidence", probabilitas.get(label.value, 0.0)))
+    keyakinan = jawaban.get("answer_confidence")
+    if keyakinan is None:
+        keyakinan = jawaban.get("confidence", probabilitas.get(label.value, 0.0))
+    keyakinan = float(keyakinan)
     ambang = policy.threshold_for(label)
     biaya = (data.get("usage") or {}).get("cost")
     return GateVerdict(
@@ -315,6 +333,7 @@ def build_gate(settings: Any) -> JevGate | None:
         policy=GatePolicy(
             block_threshold=settings.jev_block_threshold,
             out_of_scope_threshold=settings.jev_out_of_scope_threshold,
+            nonsense_threshold=settings.jev_nonsense_threshold,
         ),
         timeout=settings.jev_timeout_seconds,
         grace_seconds=settings.jev_grace_seconds,

@@ -8,15 +8,16 @@
   `"keputusan": "buang"` pada baris yang sudah ditinjau, lalu bangun ulang:
   baris itu dilatih dengan label hasil tinjauan (target one-hot yang dihaluskan).
 - Pesan yang sama (setelah dinormalisasi) hanya dipakai sekali.
-- Pesan yang sama atau mirip dengan set uji (`set_uji.py`) dibuang agar angka
-  uji tidak bocor.
+- Pesan yang sama atau mirip dengan set uji (`set_uji.py`) atau set kalibrasi
+  (`set_kalibrasi.py`) dibuang agar angka uji dan ambang tidak bocor.
 - `state` dan `questions` dibuat dengan `gate.build_request`, jadi sama persis
   dengan yang dikirim gerbang di produksi. Laya membaca teks instruksi dan
   kriteria sebagai masukan: bila CRITERIA/INSTRUCTIONS di gate.py berubah,
   bangun ulang dataset dan latih ulang (lihat `gerbang_sha256` di manifest).
 
 Masukan di `--dir`: pesan.jsonl, label_jev.jsonl, keputusan.jsonl (opsional).
-Keluaran di `--dir`: train.jsonl, val.jsonl, uji.jsonl, tinjau.jsonl, manifest.json.
+Keluaran di `--dir`: train.jsonl, val.jsonl, uji.jsonl, kalibrasi.jsonl, tinjau.jsonl,
+manifest.json, kaggle.zip.
 Satu baris train/val:
 
     {"id": ..., "state": {...}, "questions": {"kategori": {...}},
@@ -40,7 +41,7 @@ from pathlib import Path
 
 from app.config import get_settings
 from app.rag import gate as G
-from eval.laya.set_uji import SET
+from eval.laya import set_kalibrasi, set_uji
 
 LABEL = [str(k) for k in G.CRITERIA]
 MODEL_LAYA = "multilingual"
@@ -85,6 +86,22 @@ def baris_laya(row: dict, probs: dict[str, float]) -> dict:
     }
 
 
+def baris_uji(i: int, harap: str, unit: str, pesan: str, riwayat, asal: str) -> dict:
+    """Satu baris uji.jsonl / kalibrasi.jsonl; `body` dipakai evaluasi lewat HTTP."""
+    body = G.build_request(MODEL_LAYA, pesan, [tuple(t) for t in riwayat], unit)
+    return {
+        "i": i,
+        "pesan": pesan,
+        "unit": unit,
+        "riwayat": [list(t) for t in riwayat],
+        "asal": asal,
+        "expected": harap,
+        "state": body["state"],
+        "questions": body["questions"],
+        "body": body,
+    }
+
+
 def target_niat(niat: str, halus: float = 0.1) -> dict[str, float]:
     sisa = halus / (len(LABEL) - 1)
     return {k: (1.0 - halus if k == niat else sisa) for k in LABEL}
@@ -110,7 +127,8 @@ def utama(
     for r in baca_jsonl(label):
         if r.get("ok"):
             labels[r["id"]] = r  # yang terakhir menang
-    uji_norm = [norm(p) for _, _, p in SET]
+    kasus_uji = set_uji.semua()
+    uji_norm = [norm(k[2]) for k in kasus_uji] + [norm(k[2]) for k in set_kalibrasi.SET]
     uji_set = set(uji_norm)
 
     stat = collections.Counter()
@@ -188,20 +206,8 @@ def utama(
     rng.shuffle(train)
     rng.shuffle(val)
 
-    uji = []
-    for i, (harap, unit, p) in enumerate(SET):
-        body = G.build_request(MODEL_LAYA, p, (), unit)
-        uji.append(
-            {
-                "i": i,
-                "pesan": p,
-                "unit": unit,
-                "expected": harap,
-                "state": body["state"],
-                "questions": body["questions"],
-                "body": body,
-            }
-        )
+    uji = [baris_uji(i, *k) for i, k in enumerate(kasus_uji)]
+    kalibrasi = [baris_uji(i, *k, "kalibrasi") for i, k in enumerate(set_kalibrasi.SET)]
 
     d.mkdir(parents=True, exist_ok=True)
     pertanyaan = G.build_request(MODEL_LAYA, "x", (), None)["questions"]
@@ -218,6 +224,7 @@ def utama(
             "train": len(train),
             "val": len(val),
             "uji": len(uji),
+            "kalibrasi": len(kalibrasi),
             "tinjau": len(tinjau),
             **dict(stat),
         },
@@ -228,6 +235,7 @@ def utama(
             "train.jsonl": tulis_jsonl(d / "train.jsonl", train),
             "val.jsonl": tulis_jsonl(d / "val.jsonl", val),
             "uji.jsonl": tulis_jsonl(d / "uji.jsonl", uji),
+            "kalibrasi.jsonl": tulis_jsonl(d / "kalibrasi.jsonl", kalibrasi),
         },
     }
     tulis_jsonl(d / "tinjau.jsonl", tinjau)
@@ -241,8 +249,9 @@ def utama(
     with zipfile.ZipFile(d / "kaggle.zip", "w", zipfile.ZIP_DEFLATED) as z:
         for nama in ("latih_laya.py", "evaluasi.py"):
             z.write(skrip / nama, nama)
-        for nama in ("train.jsonl", "val.jsonl", "uji.jsonl", "manifest.json"):
-            z.write(d / nama, nama)
+        for nama in ("train", "val", "uji", "kalibrasi"):
+            z.write(d / f"{nama}.jsonl", f"{nama}.jsonl")
+        z.write(d / "manifest.json", "manifest.json")
 
     print(
         json.dumps(

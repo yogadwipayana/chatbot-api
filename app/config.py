@@ -159,6 +159,11 @@ class Settings(BaseSettings):
     LLM penjawab (`[DI_LUAR_TOPIK]`), sedangkan salah blokir menelan pertanyaan
     akademik tanpa jejak. Akademik paling tinggi 0,57, di luar topik sungguhan
     paling rendah 0,94 (2026-09-29)."""
+    jev_nonsense_threshold: float | None = None
+    """Ambang khusus label nonsense; kosong = `jev_block_threshold` (JEV tidak
+    berubah). Untuk Laya hasil latih (laya.md): pertanyaan akademik yang sangat
+    pendek ("ukm", "toeic brp") mendapat nonsense sampai 0,81, sedangkan pesan
+    acak sungguhan sudah dihentikan `app.rag.rule_gate` lebih dulu."""
 
     # --- Retrieval (FR-2, FR-3) --------------------------------------
     retrieval_candidates: int = 20
@@ -388,9 +393,19 @@ class Settings(BaseSettings):
                 )
             if not self.url_jev():
                 raise ValueError("JEV_ENABLED=true butuh BASE_URL (atau JEV_URL)")
-        for nama in ("jev_block_threshold", "jev_out_of_scope_threshold"):
+            # Tanpa skema, httpx menolak setiap panggilan dan gerbang diam-diam
+            # fail-open: semua pesan lolos tanpa diperiksa (2026-10-02, laya.md).
+            if self.jev_url and not self.jev_url.startswith(("http://", "https://")):
+                raise ValueError(
+                    f"JEV_URL harus diawali http:// atau https://, diberi {self.jev_url!r}"
+                )
+        for nama in (
+            "jev_block_threshold",
+            "jev_out_of_scope_threshold",
+            "jev_nonsense_threshold",
+        ):
             nilai = getattr(self, nama)
-            if not 0.0 < nilai <= 1.0:
+            if nilai is not None and not 0.0 < nilai <= 1.0:
                 raise ValueError(f"{nama} harus di (0, 1], diberi {nilai}")
         return self
 

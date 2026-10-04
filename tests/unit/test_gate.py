@@ -48,6 +48,15 @@ def respons(label: str, confidence: float, cost: float | None = 0.00002) -> dict
     return data
 
 
+def respons_laya(label: str, confidence: float, answer_confidence: float) -> dict:
+    """Bentuk `laya-serve`: `confidence` = entropi ternormalisasi, bukan probabilitas."""
+    data = respons(label, answer_confidence, cost=None)
+    jawaban = data["answers"][QUESTION_KEY]
+    jawaban["confidence"] = confidence
+    jawaban["answer_confidence"] = answer_confidence
+    return data
+
+
 class GerbangPalsu:
     def __init__(self, verdict: GateVerdict) -> None:
         self.verdict = verdict
@@ -118,6 +127,31 @@ class TestParseResponse:
     def test_label_tak_dikenal_melempar(self):
         with pytest.raises(ValueError):
             parse_response(respons("olahraga", 0.9), self.policy)
+
+    def test_answer_confidence_diutamakan(self):
+        """Laya: "resep rendang padang" p 0,95 tetapi entropi 0,86 (2026-10-02).
+        Membaca `confidence` meloloskannya di bawah ambang 0,9."""
+        v = parse_response(respons_laya("out_of_scope", 0.86, 0.951), self.policy)
+        assert v.blocked and v.confidence == 0.951
+
+    def test_answer_confidence_rendah_tetap_diteruskan(self):
+        """Arah sebaliknya: entropi tinggi tidak boleh mengalahkan p yang rendah."""
+        assert not parse_response(respons_laya("nonsense", 0.95, 0.6), self.policy).blocked
+
+
+class TestAmbangNonsense:
+    def test_bawaan_mengikuti_block_threshold(self):
+        policy = GatePolicy(block_threshold=0.8)
+        assert policy.threshold_for(GateLabel.NONSENSE) == 0.8
+        assert parse_response(respons("nonsense", 0.85), policy).blocked
+
+    def test_ambang_sendiri_hanya_untuk_nonsense(self):
+        """Laya: "toeic brp" -> nonsense 0,81. Label lain tetap memakai 0,7."""
+        policy = GatePolicy(block_threshold=0.7, nonsense_threshold=0.95)
+        assert not parse_response(respons_laya("nonsense", 0.6, 0.81), policy).blocked
+        assert parse_response(respons_laya("nonsense", 0.9, 0.97), policy).blocked
+        assert parse_response(respons_laya("malicious", 0.6, 0.81), policy).blocked
+        assert parse_response(respons_laya("smalltalk", 0.6, 0.81), policy).blocked
 
 
 class TestJevGate:
@@ -208,6 +242,44 @@ class TestBuildGate:
         gate = build_gate(s)
         assert isinstance(gate, JevGate)
         assert gate.policy.out_of_scope_threshold == 0.95
+        assert gate.policy.nonsense_threshold is None
+
+    def test_ambang_nonsense_diteruskan_ke_policy(self):
+        s = Settings(
+            _env_file=None,
+            jev_enabled=True,
+            jev_api_key="k",
+            base_url="https://gw.test/v1",
+            jev_nonsense_threshold=0.95,
+        )
+        assert build_gate(s).policy.threshold_for(GateLabel.NONSENSE) == 0.95
+
+    @pytest.mark.parametrize("nilai", [0.0, 1.5])
+    def test_ambang_nonsense_di_luar_rentang_ditolak(self, nilai):
+        with pytest.raises(ValueError, match="jev_nonsense_threshold"):
+            Settings(_env_file=None, jev_nonsense_threshold=nilai)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "100.111.178.48:8001/v1/systemone",  # kejadian 2026-10-02
+            "localhost:8001/v1/systemone",
+            "ftp://laya.test/v1/systemone",
+        ],
+    )
+    def test_jev_url_tanpa_skema_ditolak_saat_start(self, url):
+        """Bukan fail-open diam-diam saat mahasiswa bertanya."""
+        with pytest.raises(ValueError, match="JEV_URL harus diawali"):
+            Settings(_env_file=None, jev_enabled=True, api_key="k", jev_url=url)
+
+    def test_jev_url_lokal_diterima(self):
+        s = Settings(
+            _env_file=None,
+            jev_enabled=True,
+            api_key="k",
+            jev_url="http://127.0.0.1:8001/v1/systemone",
+        )
+        assert build_gate(s).url == "http://127.0.0.1:8001/v1/systemone"
 
 
 class TestGerbangDiAlur:
