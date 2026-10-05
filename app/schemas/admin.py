@@ -345,6 +345,26 @@ class KindBreakdown(BaseModel):
     """Dihentikan gerbang JEV (nonsense, manipulasi, di luar topik)."""
 
 
+class ProgramStat(BaseModel):
+    """Pertanyaan dari satu prodi, menurut profil NIM penanya."""
+
+    code: str
+    name: str
+    """Nama prodi; kodenya sendiri bila sudah tidak ada di `app.prodi`."""
+    level: str | None
+    question_count: int
+    refusal_count: int
+    """Yang ditolak (`kind = refusal`): celah dokumen untuk prodi ini."""
+
+
+class IntakeYearStat(BaseModel):
+    """Pertanyaan dari satu angkatan, menurut profil NIM penanya."""
+
+    intake_year: int
+    question_count: int
+    refusal_count: int
+
+
 class Stats(BaseModel):
     since: date
     until: date
@@ -361,6 +381,13 @@ class Stats(BaseModel):
     """Jawaban yang memanggil LLM tetapi modelnya belum punya tarif di
     `costs.PRICES_PER_MTOK`. Lebih dari nol berarti `running_cost_usd` kurang."""
     latency_p95_ms: int | None
+    questions_with_profile: int
+    """Pertanyaan yang penanyanya mengisi NIM. Penyebut kedua rincian di
+    bawah -- bukan `total_questions`, yang juga memuat penanya tanpa NIM."""
+    program_breakdown: list[ProgramStat]
+    """Semua prodi terdaftar, juga yang nol; terbanyak lebih dulu."""
+    intake_year_breakdown: list[IntakeYearStat]
+    """Hanya angkatan yang pernah bertanya; terbaru lebih dulu."""
 
 
 class CostByModel(BaseModel):

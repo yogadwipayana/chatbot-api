@@ -29,6 +29,7 @@ from app.deps import (
     get_chat_logger,
     get_log_sink,
     guard_kill_switch,
+    profil_terdaftar,
     unit_terdaftar,
 )
 from app.observability.applog import catat_giliran
@@ -39,6 +40,7 @@ from app.observability.tracing import (
     jejak_giliran,
     tandai_sesi,
 )
+from app.prodi import ProfilMahasiswa
 from app.rag.chain import OutcomeKind, PipelineOutcome, run_pipeline
 from app.rag.citations import extract_citations
 from app.rag.rewriter import Turn
@@ -94,6 +96,7 @@ async def chat(
 ) -> ChatResponse:
     """Jawaban sekali kirim. Dipakai kotak uji coba admin (AD-6) dan test."""
     unit = await unit_terdaftar(units, payload.unit) if payload.unit else None
+    profil = profil_terdaftar(payload.profile)
     mulai = time.perf_counter()
     run_id = id_giliran()
     tandai_sesi(payload.session_id, llm_call, rewrite_call)
@@ -112,6 +115,7 @@ async def chat(
                 history=[Turn(t.role, t.content) for t in payload.history],
                 policy=policy_from(settings),
                 unit=unit,
+                profile=profil,
                 callbacks=[giliran.recorder],
             )
             akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
@@ -126,6 +130,7 @@ async def chat(
             retriever,
             run_id,
             unit=unit,
+            profile=profil,
             embed_key=embed_key,
         )
         giliran.selesai(
@@ -156,6 +161,7 @@ async def chat_stream(
     # alih-alih 422 yang jelas.
     sanitize_question(payload.question)
     unit = await unit_terdaftar(units, payload.unit) if payload.unit else None
+    profil = profil_terdaftar(payload.profile)
     mulai = time.perf_counter()
     run_id = id_giliran()
     tandai_sesi(payload.session_id, llm_call, rewrite_call)
@@ -198,6 +204,7 @@ async def chat_stream(
                             on_token=token,
                             on_stage=lambda stage: antrean.put(("status", {"stage": stage})),
                             unit=unit,
+                            profile=profil,
                             callbacks=[giliran.recorder],
                         )
                         akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
@@ -212,6 +219,7 @@ async def chat_stream(
                         retriever,
                         run_id,
                         unit=unit,
+                        profile=profil,
                         embed_key=embed_key,
                     )
                     giliran.selesai(
@@ -372,6 +380,7 @@ async def catat(
     run_id: str | None = None,
     *,
     unit: str | None = None,
+    profile: ProfilMahasiswa | None = None,
     embed_key: str | None = None,
 ) -> str | None:
     """Catat putaran ini (FR-8). None bila pencatatan gagal; jawaban tetap terkirim.
@@ -393,6 +402,7 @@ async def catat(
             usage=getattr(llm_call, "usage", None),
             langsmith_run_id=run_id,
             unit=unit,
+            profile=profile,
             embed_key=embed_key,
             # `getattr` berlapis, sama seperti `llm_call` di atas: test menyuntikkan
             # retriever palsu tanpa alat ukur, dan pencatatan tidak boleh menuntut

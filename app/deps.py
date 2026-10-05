@@ -10,8 +10,9 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import AsyncIterator
+from datetime import date
 from functools import lru_cache
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -21,6 +22,7 @@ from app.admin.permissions import ROLE_LABELS, AdminRole, CurrentAdmin
 from app.config import Settings, get_settings
 from app.db.session import get_session
 from app.observability.tracing import id_run, konfigurasi_run
+from app.prodi import DAFTAR_PRODI, ProfilMahasiswa, cari_prodi
 from app.security.auth import decode_access_token
 from app.security.batas_harian import (
     OLEH_BATAS_HARIAN,
@@ -37,6 +39,9 @@ from app.security.ratelimit import (
     get_chat_limiter,
     get_login_limiter,
 )
+
+if TYPE_CHECKING:
+    from app.schemas.chat import StudentProfileIn
 
 audit = logging.getLogger("app.audit")
 
@@ -108,6 +113,31 @@ async def unit_terdaftar(units: Any, nama: str) -> str:
             f"Unit '{nama}' tidak terdaftar. Pilih salah satu: {pilihan}.",
         )
     return resmi
+
+
+def profil_terdaftar(profile: StudentProfileIn | None) -> ProfilMahasiswa | None:
+    """Profil penanya dari `ChatRequest.profile`; 422 bila prodi atau angkatannya
+    mustahil. Widget sudah memeriksa keduanya sebelum mengirim, jadi penolakan
+    ini hanya menjaga log analitik dari pemanggil langsung.
+
+    Tidak diverifikasi lebih jauh: semua dokumen publik, dan prodi palsu hanya
+    mengubah jawaban untuk pengirimnya sendiri.
+    """
+    if profile is None:
+        return None
+    prodi = cari_prodi(profile.program_code)
+    if prodi is None:
+        pilihan = ", ".join(f"{p.code} ({p.name})" for p in DAFTAR_PRODI)
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"Kode prodi '{profile.program_code}' tidak dikenal. Pilihan: {pilihan}.",
+        )
+    if profile.intake_year > date.today().year:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"Angkatan {profile.intake_year} belum ada.",
+        )
+    return ProfilMahasiswa(prodi=prodi, angkatan=profile.intake_year)
 
 
 def pastikan_unit(admin: CurrentAdmin, unit: str | None, *, apa: str) -> None:

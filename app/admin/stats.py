@@ -7,11 +7,14 @@ tercatat sebagai pertanyaan hari sebelumnya.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from datetime import date
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.prodi import DAFTAR_PRODI, cari_prodi
 
 TOPIK_TERATAS = 10
 
@@ -113,6 +116,23 @@ _TOPIK_SQL = text(
     """
 )
 
+# Satu baris per (prodi, angkatan); `rincian_profil` merangkumnya menjadi dua
+# rincian sekaligus. Profil hanya ada di baris jawaban (`app.observability.
+# chatlog`), dan tidak pernah untuk balasan `support`.
+_PROFIL_SQL = text(
+    f"""
+    SELECT m.meta->>'program_code' AS code,
+        CASE WHEN jsonb_typeof(m.meta->'intake_year') = 'number'
+             THEN (m.meta->>'intake_year')::int END AS intake_year,
+        count(*) AS question_count,
+        count(*) FILTER (WHERE m.meta->>'kind' = 'refusal') AS refusal_count
+    FROM messages m
+    WHERE m.role = 'assistant' AND m.meta->>'program_code' IS NOT NULL
+      AND {_rentang("m.created_at")}
+    GROUP BY 1, 2
+    """
+)
+
 _BIAYA_SQL = text(
     f"""
     SELECT
@@ -209,6 +229,51 @@ def ratio(bagian: int, total: int) -> float | None:
     return min(bagian / total, 1.0)
 
 
+def rincian_profil(baris: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """Rincian per prodi dan per angkatan dari baris `_PROFIL_SQL`.
+
+    Setiap prodi di `DAFTAR_PRODI` selalu muncul, juga yang nol: "DKV belum
+    pernah bertanya" adalah temuan, bukan baris yang boleh hilang. Kode yang
+    sudah tidak terdaftar tetap ditampilkan dengan kodenya sebagai nama, supaya
+    jumlahnya tetap sama dengan `questions_with_profile`.
+    """
+    per_prodi: dict[str, list[int]] = {p.code: [0, 0] for p in DAFTAR_PRODI}
+    per_angkatan: dict[int, list[int]] = {}
+    total = 0
+    for b in baris:
+        jumlah, ditolak = int(b["question_count"]), int(b["refusal_count"])
+        total += jumlah
+        tujuan = [per_prodi.setdefault(b["code"], [0, 0])]
+        if b["intake_year"] is not None:
+            tujuan.append(per_angkatan.setdefault(int(b["intake_year"]), [0, 0]))
+        for hitungan in tujuan:
+            hitungan[0] += jumlah
+            hitungan[1] += ditolak
+
+    urutan = {p.code: i for i, p in enumerate(DAFTAR_PRODI)}
+    prodi = sorted(
+        per_prodi.items(),
+        key=lambda item: (-item[1][0], urutan.get(item[0], len(urutan)), item[0]),
+    )
+    return {
+        "questions_with_profile": total,
+        "program_breakdown": [
+            {
+                "code": kode,
+                "name": p.name if (p := cari_prodi(kode)) else kode,
+                "level": p.level if p else None,
+                "question_count": jumlah,
+                "refusal_count": ditolak,
+            }
+            for kode, (jumlah, ditolak) in prodi
+        ],
+        "intake_year_breakdown": [
+            {"intake_year": tahun, "question_count": jumlah, "refusal_count": ditolak}
+            for tahun, (jumlah, ditolak) in sorted(per_angkatan.items(), reverse=True)
+        ],
+    }
+
+
 async def compute_stats(
     session: AsyncSession, *, since: date, until: date, timezone: str
 ) -> dict[str, Any]:
@@ -224,6 +289,7 @@ async def compute_stats(
         .all()
     )
     topik = (await session.execute(_TOPIK_SQL, {**p, "batas": TOPIK_TERATAS})).mappings().all()
+    profil = (await session.execute(_PROFIL_SQL, p)).mappings().all()
 
     return {
         "since": since,
@@ -248,6 +314,7 @@ async def compute_stats(
         ),
         "messages_without_cost_estimate": pesan["tanpa_biaya"] + pesan["embed_tanpa_biaya"],
         "latency_p95_ms": round(pesan["p95"]) if pesan["p95"] is not None else None,
+        **rincian_profil(profil),
     }
 
 

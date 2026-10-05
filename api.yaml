@@ -102,7 +102,9 @@ tags:
   - name: chat
     description: Endpoint mahasiswa. Tanpa login, dibatasi laju, tunduk pada kill switch.
   - name: units
-    description: Daftar unit layanan untuk menu chatbot dan isian unit di dashboard.
+    description: |
+      Isi menu topik chatbot (unit layanan, pertanyaan per unit, program
+      studi) dan isian unit di dashboard.
   - name: embed
     description: Pemeriksaan kunci sematan oleh portal, untuk asisten yang dipasang di situs lain.
   - name: documents
@@ -442,6 +444,38 @@ paths:
                 - question: Kapan batas akhir pembayaran UKT semester ganjil?
         '422':
           $ref: '#/components/responses/ValidationError'
+
+  /api/programs:
+    get:
+      tags: [units]
+      summary: Daftar program studi
+      operationId: list_programs
+      x-status: implemented
+      description: |
+        Untuk mengurai NIM di widget. NIM INSTIKI berformat `aaabbddccc`:
+        digit 4-7 (`bbdd`, fakultas lalu prodi) dicocokkan dengan `code` di
+        sini, dan hanya kode itu beserta angkatan yang dikirim sebagai
+        `profile` pada `/api/chat/stream`. NIM utuh tidak pernah dikirim.
+
+        Tidak tunduk pada kill switch, sama seperti `GET /api/units`.
+      responses:
+        '200':
+          description: Program studi
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProgramOut'
+              example:
+                - code: '1010'
+                  name: Informatika
+                  level: S1
+                  faculty: Fakultas Teknik Informatika
+                - code: '0301'
+                  name: Magister Informatika
+                  level: S2
+                  faculty: Pascasarjana
 
   /api/embed/keys/{key}:
     get:
@@ -2140,6 +2174,41 @@ components:
             Bila tidak ada dokumen unit ini yang cukup relevan, balasannya
             penolakan biasa (`kind: refusal`) yang menyebut unit tersebut dan
             menyarankan memilih unit lain atau semua unit.
+        profile:
+          oneOf:
+            - $ref: '#/components/schemas/StudentProfileIn'
+            - type: 'null'
+          description: |
+            Prodi dan angkatan penanya, diurai widget dari NIM. Kosongkan atau
+            kirim null bila mahasiswa tidak mengisi NIM.
+
+            BUKAN filter retrieval: diteruskan ke LLM supaya ketentuan yang di
+            dokumen berbeda per prodi atau angkatan (harga sertifikasi per
+            prodi, kurikulum per angkatan) dijawab untuk penanya. Dicatat di
+            `messages.meta` untuk analitik, kecuali untuk balasan `support`.
+
+    StudentProfileIn:
+      type: object
+      required: [program_code, intake_year]
+      description: |
+        Angkatan dan prodi penanya. JANGAN kirim NIM utuh: NIM INSTIKI
+        berformat `aaabbddccc` (angkatan, fakultas, prodi, nomor urut), dan
+        nomor urutnya mengenali orang (PRD §11). Contoh: NIM `2401010101`
+        menjadi `{program_code: "1010", intake_year: 2024}`.
+      properties:
+        program_code:
+          type: string
+          pattern: '^\d{4}$'
+          description: |
+            `code` dari `GET /api/programs` (digit 4-7 NIM). Kode yang tidak
+            dikenal dijawab 422.
+        intake_year:
+          type: integer
+          minimum: 2000
+          maximum: 2099
+          description: |
+            Tahun angkatan: 2000 + dua digit pertama NIM. Tahun yang belum tiba
+            dijawab 422.
 
     CitationOut:
       type: object
@@ -2184,6 +2253,20 @@ components:
         description:
           type: [string, 'null']
           description: Kepanjangan atau cakupan layanan, untuk teks bantu di menu.
+
+    ProgramOut:
+      type: object
+      required: [code, name, level, faculty]
+      description: Satu program studi, untuk mengurai dan menampilkan NIM di widget.
+      properties:
+        code:
+          type: string
+          description: Digit 4-7 NIM; dikirim sebagai `profile.program_code`.
+        name: { type: string }
+        level:
+          type: string
+          description: '`S1` atau `S2`.'
+        faculty: { type: string }
 
     FaqQuestion:
       type: object
@@ -2768,6 +2851,9 @@ components:
         - running_cost_usd
         - messages_without_cost_estimate
         - latency_p95_ms
+        - questions_with_profile
+        - program_breakdown
+        - intake_year_breakdown
       properties:
         since: { type: string, format: date }
         until: { type: string, format: date }
@@ -2815,6 +2901,47 @@ components:
           description: |
             Persentil 95 waktu proses jawaban lengkap. Target PRD §11 (first
             token < 3000 ms) diukur di LangSmith; angka ini batas atasnya.
+        questions_with_profile:
+          type: integer
+          minimum: 0
+          description: |
+            Pertanyaan yang penanyanya mengisi NIM di widget. Penyebut kedua
+            rincian di bawah -- BUKAN `total_questions`, yang juga memuat
+            penanya tanpa NIM. Balasan `support` tidak pernah ikut: profilnya
+            sengaja tidak dicatat.
+        program_breakdown:
+          type: array
+          description: |
+            Semua prodi terdaftar (`GET /api/programs`), juga yang nol;
+            terbanyak lebih dulu.
+          items: { $ref: '#/components/schemas/ProgramStat' }
+        intake_year_breakdown:
+          type: array
+          description: Hanya angkatan yang pernah bertanya; terbaru lebih dulu.
+          items: { $ref: '#/components/schemas/IntakeYearStat' }
+
+    ProgramStat:
+      type: object
+      required: [code, name, level, question_count, refusal_count]
+      properties:
+        code: { type: string }
+        name:
+          type: string
+          description: Nama prodi; kodenya sendiri bila prodi itu sudah tidak terdaftar.
+        level: { type: [string, 'null'] }
+        question_count: { type: integer, minimum: 0 }
+        refusal_count:
+          type: integer
+          minimum: 0
+          description: Yang ditolak (`kind = refusal`) -- celah dokumen untuk prodi ini.
+
+    IntakeYearStat:
+      type: object
+      required: [intake_year, question_count, refusal_count]
+      properties:
+        intake_year: { type: integer }
+        question_count: { type: integer, minimum: 0 }
+        refusal_count: { type: integer, minimum: 0 }
 
     CostByModel:
       type: object

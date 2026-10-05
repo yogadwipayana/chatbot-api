@@ -20,6 +20,7 @@ from typing import Any
 from sqlalchemy import text
 
 from app.observability.costs import try_estimate_cost
+from app.prodi import ProfilMahasiswa
 from app.rag.chain import OutcomeKind, PipelineOutcome, refusal_source, rejection_source
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,9 @@ class ChatLogEntry:
     yang memang belum ada."""
     embed_key: str | None = None
     """Kunci situs penyemat asal pertanyaan (`app/embed_keys.py`); None = portal."""
+    profile: ProfilMahasiswa | None = None
+    """Prodi dan angkatan penanya, untuk analitik per kohort. None = widget tidak
+    mengirim profil."""
     embed_dipanggil: bool = False
     """False untuk FR-7 dan sapaan berbasis aturan: keduanya berhenti sebelum
     retrieval, sehingga pertanyaannya tidak pernah di-embed sama sekali. Pesan
@@ -82,6 +86,11 @@ def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
         estimasi = try_estimate_cost(entry.model, int(input_tokens), int(output_tokens))
         biaya = estimasi.usd if estimasi else None
 
+    # Tidak dicatat untuk pesan FR-7, sama seperti isinya: kohort kecil (S2 satu
+    # angkatan bisa hanya belasan orang) ditambah tanda "dialihkan ke konseling"
+    # sudah cukup untuk menebak siapa orangnya.
+    profil = None if outcome.kind is OutcomeKind.SUPPORT else entry.profile
+
     return {
         "kind": outcome.kind.value,
         # Penolakan yang baru diputuskan LLM berarti konteksnya lolos threshold
@@ -97,6 +106,8 @@ def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
         "llm_cost_usd": biaya,
         "rewritten_query": outcome.rewritten_query,
         "unit": entry.unit,
+        "program_code": profil.prodi.code if profil else None,
+        "intake_year": profil.angkatan if profil else None,
         # Biaya meng-embed pertanyaan mahasiswa. Dipisah dari `llm_cost_usd`, bukan
         # dijumlahkan ke dalamnya: `llm_cost_usd` sudah berarti "biaya LLM" di
         # seluruh baris lama dan di `app/admin/stats.py`, dan mengubah artinya

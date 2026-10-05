@@ -8,7 +8,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.admin.documents import stale_clause
-from app.admin.stats import ratio
+from app.admin.stats import ratio, rincian_profil
+from app.prodi import DAFTAR_PRODI
 from app.rag.filters import active_document_clause
 from app.routers.admin_documents import nama_berkas_aman
 from app.schemas.admin import (
@@ -89,6 +90,69 @@ class TestRasio:
 
     def test_dibatasi_satu(self):
         assert ratio(5, 4) == 1.0
+
+
+def _baris(code, tahun, jumlah, ditolak=0):
+    return {
+        "code": code,
+        "intake_year": tahun,
+        "question_count": jumlah,
+        "refusal_count": ditolak,
+    }
+
+
+class TestRincianProfil:
+    def test_dirangkum_per_prodi_dan_per_angkatan(self):
+        hasil = rincian_profil(
+            [
+                _baris("1010", 2024, 5, 1),
+                _baris("1010", 2025, 3),
+                _baris("2010", 2024, 2, 2),
+            ]
+        )
+        assert hasil["questions_with_profile"] == 10
+        informatika = hasil["program_breakdown"][0]
+        assert informatika == {
+            "code": "1010",
+            "name": "Informatika",
+            "level": "S1",
+            "question_count": 8,
+            "refusal_count": 1,
+        }
+        assert hasil["intake_year_breakdown"] == [
+            {"intake_year": 2025, "question_count": 3, "refusal_count": 0},
+            {"intake_year": 2024, "question_count": 7, "refusal_count": 3},
+        ]
+
+    def test_prodi_yang_belum_bertanya_tetap_muncul_sebagai_nol(self):
+        """Prodi yang belum pernah bertanya adalah temuan, bukan baris yang hilang."""
+        hasil = rincian_profil([_baris("2020", 2024, 4)])
+        kode = [p["code"] for p in hasil["program_breakdown"]]
+        assert kode[0] == "2020"
+        assert sorted(kode) == sorted(p.code for p in DAFTAR_PRODI)
+        nol = [p for p in hasil["program_breakdown"] if p["code"] != "2020"]
+        assert all(p["question_count"] == 0 for p in nol)
+
+    def test_seri_nol_mengikuti_urutan_daftar_prodi(self):
+        hasil = rincian_profil([])
+        assert [p["code"] for p in hasil["program_breakdown"]] == [
+            p.code for p in DAFTAR_PRODI
+        ]
+        assert hasil["questions_with_profile"] == 0
+        assert hasil["intake_year_breakdown"] == []
+
+    def test_kode_yang_sudah_tidak_terdaftar_tetap_terhitung(self):
+        """Tanpa ini jumlah per prodi tidak lagi sama dengan
+        `questions_with_profile` setelah satu prodi dihapus dari daftar."""
+        hasil = rincian_profil([_baris("9901", 2020, 2)])
+        lama = next(p for p in hasil["program_breakdown"] if p["code"] == "9901")
+        assert (lama["name"], lama["level"]) == ("9901", None)
+        assert sum(p["question_count"] for p in hasil["program_breakdown"]) == 2
+
+    def test_angkatan_tak_terbaca_tetap_masuk_rincian_prodi(self):
+        hasil = rincian_profil([_baris("1010", None, 3)])
+        assert hasil["program_breakdown"][0]["question_count"] == 3
+        assert hasil["intake_year_breakdown"] == []
 
 
 class TestNamaBerkas:

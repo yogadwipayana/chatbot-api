@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from app.prodi import ProfilMahasiswa
 from app.rag import risk as risk_module
 from app.rag import sensitive as sensitive_module
 from app.rag.citations import extract_citations
@@ -170,6 +171,7 @@ async def run_pipeline(
     on_token: Callable[[str], Awaitable[None]] | None = None,
     on_stage: Callable[[str], Awaitable[None]] | None = None,
     unit: str | None = None,
+    profile: ProfilMahasiswa | None = None,
     callbacks: Sequence[Any] = (),
 ) -> PipelineOutcome:
     """Jalankan satu putaran tanya-jawab lewat graf `app.rag.graph`.
@@ -190,6 +192,8 @@ async def run_pipeline(
             menyusun kalimat pertamanya.
         unit: nama resmi unit pilihan mahasiswa; retrieval hanya mencari di
             dokumen unit itu. None berarti semua unit.
+        profile: prodi dan angkatan penanya. Bukan filter retrieval: hanya
+            diteruskan ke LLM (`app.prodi`). None berarti tanpa penyesuaian.
         callbacks: callback LangChain untuk seluruh graf, mis. perekam durasi
             per node (`app.observability.applog.NodeRecorder`).
 
@@ -209,7 +213,12 @@ async def run_pipeline(
         on_stage=on_stage,
     )
     return await run_graph(
-        question, deps, history=list(history or []), unit=unit, callbacks=callbacks
+        question,
+        deps,
+        history=list(history or []),
+        unit=unit,
+        profile=profile,
+        callbacks=callbacks,
     )
 
 

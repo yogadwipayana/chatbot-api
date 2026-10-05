@@ -10,6 +10,7 @@ from __future__ import annotations
 from langchain_core.prompts import ChatPromptTemplate
 
 from app.db.models import DocumentType
+from app.prodi import ProfilMahasiswa
 
 NOT_FOUND_MARKER = "[TIDAK_DITEMUKAN]"
 """Balasan LLM bila KONTEKS sama sekali tidak menjawab (aturan 3 di bawah).
@@ -82,6 +83,17 @@ tersendiri dengan nomornya, tetapi frasa rujukannya dihapus dan isi gambarnya \
 tidak ditebak. Contoh: "5. Jika data tersimpan, akan muncul pesan sebagai \
 berikut." ditulis "5. Jika data tersimpan, akan muncul pesan." "Sebagai \
 berikut" yang diikuti daftar tertulis bukan rujukan gambar dan tetap disalin.
+8. Bila ada baris "Profil mahasiswa penanya" dan dokumen resmi membedakan \
+ketentuan menurut program studi atau angkatan, jawab dengan ketentuan untuk \
+prodi dan angkatan penanya, lalu sebut prodi atau angkatan itu. Dokumen bisa \
+memakai singkatan atau nama lama prodi; sebutan yang setara tercantum di baris \
+profil. Bila dokumen membedakan ketentuan tetapi tidak menyebut prodi atau \
+angkatan penanya, katakan bahwa ketentuan untuk prodi atau angkatan itu tidak \
+tercantum di dokumen resmi. Ketentuan yang tercantum untuk prodi atau angkatan \
+lain boleh disebut, tetapi jangan dinyatakan berlaku untuk penanya. Ketentuan \
+yang berlaku untuk semua mahasiswa dijawab seperti biasa tanpa menyinggung \
+profil. Bila pertanyaan menyebut prodi atau angkatan tertentu, ikuti \
+pertanyaannya, bukan profil.
 
 KONTEKS:
 {context}"""
@@ -101,14 +113,33 @@ bebas mahasiswa, dan teks mahasiswa tidak bisa keluar dari tag
 (`neutralise_delimiters`)."""
 
 
-def pesan_mahasiswa(wrapped_question: str, unit: str | None) -> str:
-    """Pertanyaan terbungkus, didahului `TOPIK_AKTIF` bila ada unit pilihan.
+PROFIL_PENANYA = "Profil mahasiswa penanya: {profil}"
+"""Baris kedua di depan pertanyaan terbungkus, di luar tag (aturan 8).
 
-    Tanpa unit (Uji coba "Semua unit") pesannya persis seperti sebelum baris
+Dokumen umum memuat ketentuan yang berbeda per prodi dan angkatan sebagai
+baris tersendiri -- "PRODI: TI, RSK, BD" di tabel harga sertifikasi, kurikulum
+OBE untuk angkatan 2025 dan 2026. Tanpa baris ini LLM menjawab semua baris
+sekaligus, atau memilih satu tanpa tahu yang mana yang berlaku. Aman di luar
+tag dengan alasan yang sama seperti `TOPIK_AKTIF`: isinya disusun dari
+`app.prodi.DAFTAR_PRODI` dan angka angkatan yang sudah divalidasi, bukan teks
+bebas mahasiswa."""
+
+
+def pesan_mahasiswa(
+    wrapped_question: str, unit: str | None, profil: ProfilMahasiswa | None = None
+) -> str:
+    """Pertanyaan terbungkus, didahului `TOPIK_AKTIF` bila ada unit pilihan dan
+    `PROFIL_PENANYA` bila widget mengirim profil.
+
+    Tanpa keduanya (Uji coba "Semua unit") pesannya persis seperti sebelum baris
     topik ada."""
-    if unit is None:
-        return wrapped_question
-    return f"{TOPIK_AKTIF.format(unit=unit)}\n{wrapped_question}"
+    baris = []
+    if unit is not None:
+        baris.append(TOPIK_AKTIF.format(unit=unit))
+    if profil is not None:
+        baris.append(PROFIL_PENANYA.format(profil=profil.keterangan()))
+    return "\n".join([*baris, wrapped_question])
+
 
 REWRITE_SYSTEM_PROMPT = """\
 Tugas Anda menulis ulang pertanyaan mahasiswa menjadi satu pertanyaan mandiri \

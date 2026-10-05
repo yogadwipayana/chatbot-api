@@ -14,11 +14,13 @@ from app.observability.chatlog import (
     retrieved_chunk_ids,
 )
 from app.observability.costs import estimate_cost
+from app.prodi import ProfilMahasiswa, cari_prodi
 from app.rag.chain import OutcomeKind, PipelineOutcome, run_pipeline
 from tests.fixtures.fakes import make_document
 
 USAGE = {"input_tokens": 1000, "output_tokens": 200}
 CHAT_MODEL = "cx/gpt-5.5"
+PROFIL = ProfilMahasiswa(prodi=cari_prodi("1010"), angkatan=2024)
 
 
 def entri(outcome: PipelineOutcome, **kw) -> ChatLogEntry:
@@ -76,6 +78,23 @@ class TestMeta:
         assert meta["kind"] == OutcomeKind.SUPPORT
         assert meta["sensitivity"] == "distress"
         assert meta["topics"] == []
+
+    async def test_profil_penanya_tercatat_untuk_analitik(self, strong_retriever, llm):
+        outcome = await run_pipeline("kapan KRS?", retriever=strong_retriever, llm_call=llm)
+        meta = build_meta(entri(outcome, profile=PROFIL))
+        assert (meta["program_code"], meta["intake_year"]) == ("1010", 2024)
+        tanpa = build_meta(entri(outcome))
+        assert (tanpa["program_code"], tanpa["intake_year"]) == (None, None)
+
+    async def test_profil_tidak_dicatat_untuk_pesan_sensitif(self, strong_retriever, llm):
+        """Kohort kecil ditambah tanda "dialihkan ke konseling" cukup untuk
+        menebak orangnya; isinya sendiri pun sudah disembunyikan."""
+        outcome = await run_pipeline(
+            "saya depresi takut bayar UKT", retriever=strong_retriever, llm_call=llm
+        )
+        meta = build_meta(entri(outcome, profile=PROFIL))
+        assert meta["kind"] == OutcomeKind.SUPPORT
+        assert (meta["program_code"], meta["intake_year"]) == (None, None)
 
 
 class TestSapaan:

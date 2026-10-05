@@ -51,6 +51,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 
 from app.db.models import DocumentType
+from app.prodi import ProfilMahasiswa
 from app.rag import risk as risk_module
 from app.rag import rule_gate as rule_gate_module
 from app.rag import sensitive as sensitive_module
@@ -107,6 +108,7 @@ class PipelineState(TypedDict, total=False):
     question: str
     history: list[Turn]
     unit: str | None
+    profile: ProfilMahasiswa | None
     clean: str
     sensitivity: sensitive_module.SensitivityAssessment
     gate: GateVerdict | None
@@ -349,7 +351,9 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
         await deps.on_stage("menyusun jawaban")
     answer = await _jawab(
         deps.llm_call,
-        pesan_mahasiswa(wrap_user_input(state["clean"]), state.get("unit")),
+        pesan_mahasiswa(
+            wrap_user_input(state["clean"]), state.get("unit"), state.get("profile")
+        ),
         state["documents"],
         deps.on_token,
     )
@@ -482,12 +486,13 @@ async def run_graph(
     *,
     history: list[Turn],
     unit: str | None,
+    profile: ProfilMahasiswa | None = None,
     callbacks: Sequence[Any] = (),
 ) -> PipelineOutcome:
     """`callbacks` menerima event per node, mis. `applog.NodeRecorder`."""
     config = {"callbacks": list(callbacks)} if callbacks else None
     state = await build_graph().ainvoke(
-        {"question": question, "history": history, "unit": unit},
+        {"question": question, "history": history, "unit": unit, "profile": profile},
         config=config,
         context=deps,
     )

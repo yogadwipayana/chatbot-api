@@ -9,7 +9,9 @@ from __future__ import annotations
 import pytest
 
 from app.db.models import DocumentType
+from app.prodi import ProfilMahasiswa, cari_prodi
 from app.rag.prompts import (
+    PROFIL_PENANYA,
     REWRITE_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
     TOPIK_AKTIF,
@@ -77,6 +79,49 @@ class TestBarisTopik:
 
         terbungkus = wrap_user_input("kapan KIP dibuka?")
         assert pesan_mahasiswa(terbungkus, None) == terbungkus
+        assert pesan_mahasiswa(terbungkus, None, None) == terbungkus
+
+
+class TestBarisProfil:
+    def test_aturan_8_menyebut_baris_profil_yang_benar_benar_dipakai(self):
+        label = PROFIL_PENANYA.split(":")[0]
+        assert f'"{label}"' in SYSTEM_PROMPT
+
+    def test_profil_ditulis_sesudah_topik_dan_di_luar_tag(self):
+        from app.security.sanitize import OPEN_TAG, wrap_user_input
+
+        profil = ProfilMahasiswa(prodi=cari_prodi("1010"), angkatan=2024)
+        hasil = pesan_mahasiswa(wrap_user_input("berapa biaya IC3?"), "UPS", profil)
+        topik, baris_profil, sisanya = hasil.split("\n", 2)
+        assert topik == "Topik yang sedang dipilih mahasiswa: UPS"
+        assert baris_profil == (
+            "Profil mahasiswa penanya: Informatika (S1; disebut juga Teknik "
+            "Informatika, TI), Fakultas Teknik Informatika, angkatan 2024"
+        )
+        assert sisanya.startswith(OPEN_TAG)
+
+    def test_profil_tanpa_unit(self):
+        from app.security.sanitize import wrap_user_input
+
+        profil = ProfilMahasiswa(prodi=cari_prodi("2010"), angkatan=2023)
+        hasil = pesan_mahasiswa(wrap_user_input("berapa biaya TOEIC?"), None, profil)
+        assert hasil.startswith("Profil mahasiswa penanya: Desain Komunikasi Visual (S1;")
+
+    def test_sebutan_lain_prodi_ikut_supaya_singkatan_di_dokumen_cocok(self):
+        """Tabel harga sertifikasi menulis "PRODI: TI, RSK, BD, DKV"."""
+        for kode, singkatan in (
+            ("1010", "TI"),
+            ("1020", "RSK"),
+            ("2010", "DKV"),
+            ("2020", "BD"),
+        ):
+            keterangan = ProfilMahasiswa(prodi=cari_prodi(kode), angkatan=2024).keterangan()
+            assert singkatan in keterangan
+
+    def test_magister_menyebut_jenjang_s2(self):
+        keterangan = ProfilMahasiswa(prodi=cari_prodi("0301"), angkatan=2025).keterangan()
+        assert keterangan.startswith("Magister Informatika (S2;")
+        assert "Pascasarjana" in keterangan
 
 
 class TestPromptTulisUlang:

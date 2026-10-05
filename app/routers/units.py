@@ -1,4 +1,5 @@
-"""Menu topik chatbot (unit layanan dan pertanyaan per unit), juga isian unit di dashboard."""
+"""Menu topik chatbot (unit layanan, pertanyaan per unit, program studi), juga
+isian unit di dashboard."""
 
 from __future__ import annotations
 
@@ -7,7 +8,8 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 from app.deps import UnitDirectoryDep, unit_terdaftar
-from app.schemas.chat import FaqQuestion, UnitOut
+from app.prodi import DAFTAR_PRODI
+from app.schemas.chat import FaqQuestion, ProgramOut, UnitOut
 from app.schemas.common import Error
 
 router = APIRouter(prefix="/api", tags=["units"])
@@ -42,3 +44,17 @@ async def list_faq_questions(
     """
     resmi = await unit_terdaftar(units, unit) if unit and unit.strip() else None
     return [FaqQuestion(question=p) for p in await units.pertanyaan(resmi, limit)]
+
+
+@router.get("/programs", response_model=list[ProgramOut])
+async def list_programs() -> list[ProgramOut]:
+    """Program studi, untuk mengurai NIM di widget (`app.prodi`).
+
+    Widget mencocokkan digit 4-7 NIM dengan `code` di sini dan hanya mengirim
+    kode itu beserta angkatan. Tidak tunduk pada kill switch, sama seperti
+    `GET /api/units`.
+    """
+    return [
+        ProgramOut(code=p.code, name=p.name, level=p.level, faculty=p.faculty)
+        for p in DAFTAR_PRODI
+    ]
