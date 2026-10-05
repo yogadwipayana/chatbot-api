@@ -46,7 +46,12 @@ jawab resmi) cukup dikutip [Judul].
 [TIDAK_DITEMUKAN] tanpa kata lain; sistem akan menampilkan penolakan resmi \
 beserta kontak unit terkait. Jika hanya sebagian yang terjawab, jawab bagian \
 itu beserta sumbernya, lalu tulis bagian mana yang tidak tercantum di dokumen \
-resmi dan sarankan memilih topik unit yang menanganinya lalu bertanya lagi. \
+resmi. Jangan menebak unit mana yang menangani bagian itu; sebut nama unit \
+hanya bila dokumen resmi menyebutnya. Bila ada baris "Topik yang sedang \
+dipilih mahasiswa", tulis bahwa pencarian hanya mencakup dokumen topik itu, \
+lalu sarankan mengganti topik ke unit yang menangani bagian itu dan bertanya \
+lagi; jangan menyarankan memilih topik yang sedang dipilih. Tanpa baris itu, \
+sarankan memilih topik unit yang menanganinya lalu bertanya lagi. \
 Dilarang menyimpulkan, menebak, atau menggabungkan informasi yang tidak tertulis.
 4. Jika pertanyaan jelas tidak berkaitan dengan INSTIKI atau urusan sebagai \
 mahasiswanya -- misalnya resep, berita, olahraga, cuaca, belanja, pengetahuan \
@@ -82,6 +87,28 @@ KONTEKS:
 {context}"""
 
 USER_PROMPT = "{question}"
+
+TOPIK_AKTIF = "Topik yang sedang dipilih mahasiswa: {unit}"
+"""Baris di depan pertanyaan terbungkus, di luar tag (aturan 3).
+
+Tanpa ini LLM tidak tahu topik mana yang sedang aktif, sehingga untuk bagian
+yang tidak tercantum ia menyuruh mahasiswa yang sudah berada di topik
+Kemahasiswaan "memilih topik Kemahasiswaan" (T39: 3 dari 12 jawaban, uji
+2026-10-05). Baris ini ditaruh di pesan, bukan di `SYSTEM_PROMPT`, supaya
+kontrak `llm_call(pertanyaan_terbungkus, dokumen)` tidak berubah. Aman di luar
+tag: nama unit sudah dicocokkan ke tabel `units` (`unit_terdaftar`), bukan teks
+bebas mahasiswa, dan teks mahasiswa tidak bisa keluar dari tag
+(`neutralise_delimiters`)."""
+
+
+def pesan_mahasiswa(wrapped_question: str, unit: str | None) -> str:
+    """Pertanyaan terbungkus, didahului `TOPIK_AKTIF` bila ada unit pilihan.
+
+    Tanpa unit (Uji coba "Semua unit") pesannya persis seperti sebelum baris
+    topik ada."""
+    if unit is None:
+        return wrapped_question
+    return f"{TOPIK_AKTIF.format(unit=unit)}\n{wrapped_question}"
 
 REWRITE_SYSTEM_PROMPT = """\
 Tugas Anda menulis ulang pertanyaan mahasiswa menjadi satu pertanyaan mandiri \

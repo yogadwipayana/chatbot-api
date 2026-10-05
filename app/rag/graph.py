@@ -72,6 +72,7 @@ from app.rag.chain import (
 from app.rag.citations import ringkas_sitasi_tanpa_halaman
 from app.rag.gate import REPLIES as GATE_REPLIES
 from app.rag.gate import GateLabel, GateVerdict, lolos
+from app.rag.prompts import pesan_mahasiswa
 from app.rag.rewriter import HISTORY_WINDOW, Turn, format_history, needs_rewrite
 from app.rag.threshold import Decision, ThresholdDecision, ThresholdPolicy, evaluate
 from app.security.sanitize import sanitize_question, wrap_user_input
@@ -347,7 +348,10 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
     if deps.on_stage is not None:
         await deps.on_stage("menyusun jawaban")
     answer = await _jawab(
-        deps.llm_call, wrap_user_input(state["clean"]), state["documents"], deps.on_token
+        deps.llm_call,
+        pesan_mahasiswa(wrap_user_input(state["clean"]), state.get("unit")),
+        state["documents"],
+        deps.on_token,
     )
     # Pertanyaan di luar urusan kampus yang lolos gerbang (atau JEV mati):
     # dibalas dan dicatat seperti blokir JEV `out_of_scope` -- bukan celah

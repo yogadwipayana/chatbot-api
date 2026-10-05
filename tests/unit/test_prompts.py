@@ -12,8 +12,10 @@ from app.db.models import DocumentType
 from app.rag.prompts import (
     REWRITE_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
+    TOPIK_AKTIF,
     answer_prompt,
     format_context,
+    pesan_mahasiswa,
     rewrite_prompt,
 )
 from app.rag.rewriter import Turn, format_history, looks_english, needs_rewrite
@@ -52,6 +54,29 @@ class TestInstruksiWajibFR5:
 
     def test_menyediakan_slot_konteks(self):
         assert "{context}" in SYSTEM_PROMPT
+
+    def test_aturan_3_menyebut_baris_topik_yang_benar_benar_dipakai(self):
+        """T39: aturan yang melarang menyarankan topik aktif harus menunjuk
+        baris yang memang dikirim `pesan_mahasiswa`; nama baris yang berbeda
+        membuat larangannya kosong."""
+        label = TOPIK_AKTIF.split(":")[0]
+        assert f'"{label}"' in SYSTEM_PROMPT
+
+
+class TestBarisTopik:
+    def test_unit_ditulis_di_luar_tag_pertanyaan(self):
+        from app.security.sanitize import OPEN_TAG, wrap_user_input
+
+        hasil = pesan_mahasiswa(wrap_user_input("kapan KIP dibuka?"), "Kemahasiswaan")
+        baris_topik, sisanya = hasil.split("\n", 1)
+        assert baris_topik == "Topik yang sedang dipilih mahasiswa: Kemahasiswaan"
+        assert sisanya.startswith(OPEN_TAG)
+
+    def test_tanpa_unit_pesan_tidak_berubah(self):
+        from app.security.sanitize import wrap_user_input
+
+        terbungkus = wrap_user_input("kapan KIP dibuka?")
+        assert pesan_mahasiswa(terbungkus, None) == terbungkus
 
 
 class TestPromptTulisUlang:
@@ -130,7 +155,13 @@ class TestIstilahInternal:
         assert "dokumen resmi" in SYSTEM_PROMPT
 
     def test_jawaban_sebagian_menyarankan_ganti_topik(self):
-        assert "topik unit" in SYSTEM_PROMPT
+        assert "mengganti topik ke unit" in SYSTEM_PROMPT
+
+    def test_jawaban_sebagian_tidak_menebak_unit(self):
+        """T39: LLM tidak tahu unit mana menangani apa. Tanpa larangan ini,
+        biaya TOEIC (UPS) disarankan ditanyakan ke Kemahasiswaan dan jadwal
+        KIP (Kemahasiswaan) ke Keuangan -- yaitu ke topik yang sedang aktif."""
+        assert "Jangan menebak unit" in SYSTEM_PROMPT
 
     def test_langkah_bernomor_tidak_digabung_atau_diringkas(self):
         """T32: 12 langkah ATM BNI dijawab 7 langkah ("Menu Lainnya → Transfer →

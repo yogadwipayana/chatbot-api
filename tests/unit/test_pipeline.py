@@ -450,6 +450,26 @@ class TestPilihanUnit:
         )
         assert strong_retriever.units == ["BAAK"]
 
+    async def test_llm_diberi_tahu_unit_pilihan(self, strong_retriever, llm):
+        """T39: tanpa tahu topik aktif, LLM menyarankan memilih topik yang
+        sudah dipilih untuk bagian yang tidak tercantum."""
+        await run_pipeline(
+            "kapan KRS",
+            retriever=strong_retriever,
+            llm_call=llm,
+            policy=POLICY,
+            unit="BAAK",
+        )
+        baris_topik, pertanyaan = llm.last_question.split("\n", 1)
+        assert baris_topik.endswith(": BAAK")
+        assert pertanyaan.startswith(OPEN_TAG)
+
+    async def test_tanpa_pilihan_llm_tidak_diberi_baris_topik(self, strong_retriever, llm):
+        await run_pipeline(
+            "kapan KRS", retriever=strong_retriever, llm_call=llm, policy=POLICY
+        )
+        assert llm.last_question.startswith(OPEN_TAG)
+
     async def test_penolakan_menyebut_unit_pilihan(self, weak_retriever, llm):
         """Mahasiswa yang salah memilih unit harus tahu bahwa pilihannya yang
         membatasi, bukan menyimpulkan informasinya memang tidak ada."""
