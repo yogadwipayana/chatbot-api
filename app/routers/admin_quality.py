@@ -23,6 +23,7 @@ from app.deps import (
     build_llm_call,
     build_retriever,
     build_rewrite_call,
+    build_tool_registry,
     require_admin,
     require_role,
     unit_terdaftar,
@@ -147,6 +148,7 @@ async def admin_test_query(
     llm_call: Any = Depends(build_llm_call),
     rewrite_call: Any = Depends(build_rewrite_call),
     gate_call: Any = Depends(build_gate_call),
+    tool_registry: Any = Depends(build_tool_registry),
 ) -> TestQueryResponse:
     """AD-6. Alur yang sama persis dengan `/api/chat`, ditambah rincian retrieval.
 
@@ -155,6 +157,12 @@ async def admin_test_query(
     mahasiswa melihat penolakan JEV). Uji coba tanpa riwayat, jadi penulisan
     ulang query (FR-4) hanya berjalan untuk menerjemahkan pertanyaan berbahasa
     Inggris, persis seperti pesan pertama mahasiswa.
+
+    Termasuk tool-calling dengan alasan yang sama (docs/tool-call.md): tanpanya
+    pertanyaan seperti "siapa dosen pengampu mata kuliah X" tampil `refusal` di
+    sini padahal mahasiswa menerima jawaban dari data SADS. `retrieved` tetap
+    hanya memuat chunk hasil retrieval -- sumber tool bukan chunk dan tidak punya
+    skor RRF, jadi ia tidak dipalsukan menjadi baris di tabel itu.
 
     Tidak tunduk pada kill switch (admin perlu mendiagnosis justru saat
     layanan dimatikan) dan tidak dicatat ke log percakapan, supaya uji coba
@@ -188,6 +196,8 @@ async def admin_test_query(
                 gate_call=gate_call,
                 policy=policy,
                 unit=unit,
+                tool_registry=tool_registry,
+                tool_max_rounds=settings.tools_max_rounds,
             )
             akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
     latency_ms = round((time.perf_counter() - mulai) * 1000)
@@ -215,7 +225,10 @@ async def admin_test_query(
                 ranks=dict(doc.metadata.get("ranks", {})),
                 neighbor_of=doc.metadata.get("neighbor_of"),
             )
+            # Sumber tool (Document semu, tanpa `chunk_id`) dilewati: tabel ini
+            # menjanjikan chunk hasil retrieval beserta skornya.
             for doc in outcome.documents
+            if doc.metadata.get("chunk_id")
         ],
         decision=(
             ThresholdDecisionOut(

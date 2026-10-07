@@ -372,6 +372,15 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
         and bool(state.get("tool_eligible"))
         and hasattr(deps.llm_call, "run_tools")
     )
+    # Sampai di `generate` dengan vonis REFUSE hanya mungkin karena pertanyaannya
+    # tool-eligible (`route_context`). Bila tool ternyata TIDAK dapat dijalankan
+    # -- mis. `llm_call` pengganti tanpa `run_tools` -- konteksnya tetap lemah,
+    # jadi kembalikan penolakan FR-3 tanpa memanggil LLM. Tanpa penjagaan ini
+    # LLM dipanggil dengan konteks kosong hanya untuk membalas
+    # [TIDAK_DITEMUKAN]: satu panggilan berbayar, dan penolakannya tercatat
+    # `refusal_source = llm` padahal yang menolak adalah ambang.
+    if not pakai_tool and state["decision"].decision is Decision.REFUSE:
+        return {"outcome": _penolakan(state, assessment, llm_called=False)}
     if pakai_tool:
         answer, tool_docs = await deps.llm_call.run_tools(
             wrapped,
@@ -389,7 +398,15 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
     # Pertanyaan di luar urusan kampus yang lolos gerbang (atau JEV mati):
     # dibalas dan dicatat seperti blokir JEV `out_of_scope` -- bukan celah
     # dokumen, jadi tidak masuk AD-4.
-    if is_off_topic(answer):
+    # Sumber tak berhalaman (entri tanya jawab, kartu tool) dikutip `[Judul]`.
+    # Tanpa daftar ini jawaban parsial bersumber tool yang menyebut "tidak
+    # ditemukan" untuk sebagian pertanyaan dianggap penolakan dan dibuang.
+    tanpa_hal = {
+        doc.metadata.get("judul", ""): doc.metadata.get("halaman", 1)
+        for doc in documents
+        if doc.metadata.get("jenis") == DocumentType.TANYA_JAWAB
+    }
+    if is_off_topic(answer, tanpa_hal):
         return {
             "outcome": PipelineOutcome(
                 kind=OutcomeKind.REJECTED,
@@ -405,7 +422,7 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
     # Konteks lolos threshold tetapi tidak menjawab: tampilkan dan catat sebagai
     # penolakan, bukan sebagai jawaban berisi "tidak menemukan" yang membawa
     # kartu sitasi dokumen yang tidak relevan dan tidak pernah sampai ke AD-4.
-    if is_not_found(answer):
+    if is_not_found(answer, tanpa_hal):
         return {"outcome": _penolakan(state, assessment, llm_called=True)}
     tanya_jawab = [
         doc.metadata.get("judul", "")

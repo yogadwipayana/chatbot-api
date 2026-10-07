@@ -102,7 +102,7 @@ _NOT_FOUND_PROSE = re.compile(
 )
 
 
-def is_not_found(answer: str) -> bool:
+def is_not_found(answer: str, tanpa_halaman: dict[str, int] | None = None) -> bool:
     """Apakah jawaban LLM sebenarnya penolakan (aturan 3 `SYSTEM_PROMPT`).
 
     Jalur utamanya `NOT_FOUND_MARKER`. Kalimat "tidak menemukan ..." tanpa satu
@@ -111,18 +111,20 @@ def is_not_found(answer: str) -> bool:
     bagian yang tidak ditemukan: itu jawaban parsial yang tetap berguna, dan
     kartu sitasinya justru yang membuatnya dapat diverifikasi.
     """
-    if extract_citations(answer):
+    if extract_citations(answer, tanpa_halaman):
         return False
     return NOT_FOUND_MARKER in answer or bool(_NOT_FOUND_PROSE.search(answer))
 
 
-def is_off_topic(answer: str) -> bool:
+def is_off_topic(answer: str, tanpa_halaman: dict[str, int] | None = None) -> bool:
     """Apakah LLM menilai pertanyaannya di luar urusan kampus (aturan 4 `SYSTEM_PROMPT`).
 
     Jawaban bersitasi tidak pernah dianggap di luar topik: sitasi berarti
     dokumen kampus menjawabnya, dan penandanya cukup dibuang (`strip_markers`).
     """
-    return OFF_TOPIC_MARKER in answer and not extract_citations(answer)
+    # `tanpa_halaman`: sumber tak berhalaman (tanya jawab, kartu tool) yang dikutip
+    # `[Judul]`; tanpa daftar ini kutipannya tidak terbaca sebagai sitasi.
+    return OFF_TOPIC_MARKER in answer and not extract_citations(answer, tanpa_halaman)
 
 
 def rejection_source(outcome: PipelineOutcome) -> str | None:

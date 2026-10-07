@@ -57,9 +57,11 @@ class ToolSpec:
     handler: Callable[..., Awaitable[ToolResult]]
     """Async, menerima argumen bernama yang sudah divalidasi, mengembalikan ToolResult."""
     triggers: tuple[str, ...] = ()
-    """Kata kunci rute kelayakan (docs/tool-call.md §8). Kosong = tak pernah eligible."""
+    """Kata kunci rute kelayakan (docs/tool-call.md §8). Kosong = tak pernah eligible.
+
+    Pemicu tidak melihat unit pilihan mahasiswa: data SADS bersifat lintas-unit,
+    dan kelayakan dihitung hanya dari teks pertanyaan (`ToolRegistry.eligible`)."""
     citation_label: str = ""
-    unit: str | None = None
 
     def openai_schema(self) -> dict[str, Any]:
         return {

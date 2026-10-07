@@ -26,6 +26,7 @@ from app.rag.chain import _PenahanPenanda
 from app.rag.prompts import TOOL_SYSTEM_PROMPT, format_context
 from app.rag.providers import PenyaringGalatGateway
 from app.rag.tools.base import (
+    MAKS_PANJANG_ARGUMEN,
     ToolArgumentError,
     ToolResult,
     ToolSpec,
@@ -102,6 +103,18 @@ async def _satu_giliran(
     return gathered, "".join(bagian)
 
 
+def _args_untuk_log(args: Any) -> dict[str, Any]:
+    """Argumen mentah model, dipotong untuk `messages.meta`.
+
+    Mentah (bukan hasil validasi) supaya argumen yang dihalusinasi tetap terlihat
+    di log, tetapi dibatasi panjangnya: tanpa ini satu string raksasa dari model
+    ikut tersimpan utuh di kolom `meta` setiap giliran."""
+    return {
+        k: (v[:MAKS_PANJANG_ARGUMEN] if isinstance(v, str) else v)
+        for k, v in (args or {}).items()
+    }
+
+
 async def _jalankan_tool(tc: dict, by_name: dict[str, ToolSpec]) -> ToolResult:
     spec = by_name.get(tc.get("name", ""))
     if spec is None:
@@ -158,7 +171,7 @@ async def run_tool_loop(
             jejak.append(
                 {
                     "name": tc.get("name"),
-                    "args": tc.get("args") or {},
+                    "args": _args_untuk_log(tc.get("args")),
                     "ok": r.ok,
                     "latency_ms": round((time.perf_counter() - mulai) * 1000),
                 }

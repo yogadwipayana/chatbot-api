@@ -157,9 +157,11 @@ kembalikan fallback "data tidak tersedia"    # batas putaran tercapai
 - **Panggilan paralel**: bila satu giliran memuat beberapa `tool_calls`,
   jalankan handler-nya bersamaan (`anyio`/`asyncio.gather`), masing-masing di
   klien HTTP sendiri — seperti FTS ∥ pgvector pada retrieval.
-- **Hanya bind tool yang relevan** (lewat gerbang kelayakan §8), bukan seluruh
-  registry pada setiap giliran akademik — skema tool ikut menambah token di
-  tiap prompt.
+- **Bind hanya bila pertanyaannya lolos gerbang kelayakan** (§8), bukan pada
+  setiap giliran akademik — skema tool ikut menambah token di tiap prompt. Tetapi
+  begitu gerbang terbuka, **seluruh tool di-bind**, bukan hanya yang pemicunya
+  cocok: pemilihan tool adalah tugas model lewat `description`. Pemicu yang tidak
+  simetris kalau tidak justru menyembunyikan tool yang benar (lihat §18).
 
 ---
 
@@ -221,8 +223,14 @@ Solusi (sejalan filosofi `rule_gate` — murah & dapat diaudit): **gerbang
 kelayakan deterministik** sebelum FR-3.
 
 ```text
-tool_eligible = ada ToolSpec yang `triggers`-nya cocok pertanyaan bersih
+tool_eligible = ADA ToolSpec yang `triggers`-nya cocok pertanyaan bersih
+                -> seluruh tool di-bind (ToolRegistry.eligible, §18)
 ```
+
+Gerbang ini **tidak melihat unit pilihan mahasiswa**: data SADS bersifat
+lintas-unit, dan kelayakan dihitung hanya dari teks pertanyaan. Unit tetap
+memfilter retrieval RAG dan tetap diberitahukan ke LLM (baris `TOPIK_AKTIF`),
+tetapi tidak menentukan ketersediaan tool.
 
 Routing `validate_context` menjadi:
 
@@ -394,3 +402,44 @@ lokal dan sudah diuji lewat `POST /api/chat` (jawaban + kartu sumber + `meta.too
 5. ✅ **Nyalakan** — `TOOLS_ENABLED=true` aktif di `.env` lokal, terverifikasi
    lewat `/api/chat`. Untuk produksi: set `TOOLS_ENABLED=true` + `SADS_*` di env
    server.
+
+---
+
+## 18. Tinjauan 2026-10-07: yang diperbaiki & yang masih terbuka
+
+### Diperbaiki
+
+| Cacat | Akibat | Perbaikan |
+|---|---|---|
+| **Invarian FR-3 bocor.** `generate` dapat dicapai dengan vonis REFUSE (karena tool-eligible); bila tool ternyata tak dapat dijalankan (`llm_call` tanpa `run_tools`), ia memanggil LLM dengan KONTEKS kosong | satu panggilan LLM berbayar hanya untuk membalas `[TIDAK_DITEMUKAN]`, dan penolakannya tercatat `refusal_source = llm` padahal ambang yang menolak | `generate` mengembalikan penolakan FR-3 tanpa memanggil LLM bila `not pakai_tool` dan vonisnya REFUSE |
+| **Pemicu tidak simetris.** `eligible()` hanya mem-bind tool yang pemicunya cocok | "ada berapa dosen?" hanya mem-bind `get_mk_diampu_dosen` (wajib `matkul`); `get_daftar_dosen` — satu-satunya yang bisa menjawab — tak terlihat, jadi model mengarang `matkul` atau menolak | `eligible()` membuka **seluruh** tool begitu ada satu pemicu cocok (§5, §8). Terverifikasi live: model kini memilih `get_daftar_dosen` dan menjawab "Terdapat 223 dosen … [Data akademik SADS]" |
+| **Uji coba admin (AD-6) tanpa tool** | admin melihat `refusal` untuk pertanyaan yang dijawab mahasiswa — persis kekeliruan yang dicegah docstring-nya sendiri untuk JEV | `admin_quality.test_query` meneruskan `tool_registry`; `retrieved` tetap hanya chunk asli (sumber tool dilewati) |
+| **Argumen model ditulis mentah ke `meta`** | string raksasa dari model menggelembungkan kolom `meta` setiap giliran | dipotong `MAKS_PANJANG_ARGUMEN` (`_args_untuk_log`) |
+| **Field `ToolSpec.unit` mati** | menyiratkan scoping per-unit yang tidak ada | dibuang; alasannya didokumentasikan di `triggers` |
+
+### Terverifikasi live (2026-10-07, setelah gateway pulih)
+
+- **Jalur batas putaran** (`max_rounds` habis): giliran paksa lewat `llm_plain`
+  mengirim riwayat yang memuat `role:"tool"` **tanpa** `tools` dideklarasikan.
+  Gateway menerimanya dan menjawab normal — kekhawatiran gateway ketat tidak
+  terbukti pada `cx/gpt-6-luna`.
+- **Streaming** `/api/chat/stream`: stage `mengambil data akademik` muncul, tidak
+  ada JSON `tool_calls` yang bocor ke token, dan token gabungan == teks final.
+
+### Masih terbuka (sengaja tidak diubah tanpa keputusan)
+
+1. **`eval/run_generation.py` tidak memakai tool.** Evaluasi RAGAS karena itu
+   melihat `refusal` untuk pertanyaan yang di produksi dijawab tool. Tidak
+   diwire supaya metodologi evaluasi yang sedang berjalan tidak berubah diam-diam.
+2. **Penolakan jalur tool masuk AD-4** (`unanswered_questions`). Padahal itu
+   bukan celah dokumen — menambah PDF tidak menyelesaikannya, dan dengan alasan
+   yang sama `rejected` sengaja TIDAK masuk AD-4. Dapat dibedakan lewat
+   `meta.tool_calls` yang terisi.
+3. **Jawaban tool membawa `ThresholdDecision` REFUSE.** Akibatnya
+   `messages.top_score` mendekati 0 untuk jawaban yang benar, dan `applog`
+   mencatat `decision=refuse` pada node `validate_context` untuk giliran yang
+   berakhir `answer`. Jujur apa adanya, tetapi perlu diingat saat membaca statistik.
+4. **Asumsi giliran tool tanpa konten.** Gateway ini mengirim `content:null`
+   pada giliran tool, jadi tidak ada token yang bocor. Model yang mengirim konten
+   *dan* `tool_calls` dalam satu giliran akan membuat konten itu ikut mengalir
+   sebelum jawaban final.

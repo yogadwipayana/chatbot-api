@@ -73,6 +73,15 @@ class TestRegistry:
     def test_tidak_eligible_di_luar_topik(self):
         assert _registry().eligible("resep rendang yang enak") == []
 
+    def test_eligible_membuka_semua_tool_bukan_hanya_yang_cocok(self):
+        """Regresi: pemicu asimetris pernah menyembunyikan tool yang benar.
+
+        "ada berapa dosen?" hanya cocok pemicu `get_mk_diampu_dosen` (yang
+        mewajibkan `matkul`). `get_daftar_dosen` -- satu-satunya tool yang bisa
+        menjawabnya -- harus tetap ter-bind supaya model dapat memilihnya."""
+        names = {s.name for s in _registry().eligible("ada berapa dosen?")}
+        assert names == {"get_daftar_dosen", "get_mk_diampu_dosen"}
+
     def test_schema_openai_berbentuk_benar(self):
         fn = _registry().get("get_mk_diampu_dosen").openai_schema()
         assert fn["type"] == "function"
@@ -98,6 +107,15 @@ class TestValidasiArgumen:
             validasi_argumen(_spec(None), {})
         with pytest.raises(ToolArgumentError):
             validasi_argumen(_spec(None), {"matkul": "   "})
+
+    def test_args_yang_dicatat_ke_meta_dipotong(self):
+        """Argumen raksasa dari model tidak boleh menggelembungkan kolom `meta`."""
+        from app.rag.tools.base import MAKS_PANJANG_ARGUMEN
+        from app.rag.tools.loop import _args_untuk_log
+
+        out = _args_untuk_log({"matkul": "x" * 5000, "n": 3})
+        assert len(out["matkul"]) == MAKS_PANJANG_ARGUMEN
+        assert out["n"] == 3
 
 
 # --- Handler SADS (normalisasi) ------------------------------------------
@@ -400,6 +418,41 @@ class TestIntegrasiPipeline:
         assert outcome.kind is OutcomeKind.REFUSAL
         assert not llm.called  # LLM tidak dipanggil pada penolakan FR-3
 
+    async def test_tool_eligible_tanpa_run_tools_tetap_menolak_tanpa_llm(self):
+        """Invarian FR-3 tetap berlaku bila tool ternyata tak dapat dijalankan.
+
+        Regresi: `llm_call` tanpa `run_tools` (test, atau LLM pengganti) pernah
+        membuat pertanyaan tool-eligible berkonteks lemah lolos ke LLM dengan
+        KONTEKS kosong -- satu panggilan berbayar yang hanya menghasilkan
+        [TIDAK_DITEMUKAN], dan tercatat `refusal_source = llm`."""
+        from app.rag.chain import refusal_source
+
+        llm = RecordingLLM()  # tidak punya run_tools
+        registry = ToolRegistry([_spec(lambda **_: None)])
+        outcome = await run_pipeline(
+            "siapa dosen pengampu mata kuliah Web Programming?",
+            retriever=FakeRetriever([]),
+            llm_call=llm,
+            tool_registry=registry,
+        )
+        assert outcome.kind is OutcomeKind.REFUSAL
+        assert not llm.called
+        assert outcome.llm_called is False
+        assert refusal_source(outcome) == "threshold"
+
+    async def test_konteks_kuat_tetap_dijawab_walau_tool_tak_tersedia(self, strong_documents):
+        """Penjagaan di atas tidak boleh ikut menolak konteks yang kuat."""
+        llm = RecordingLLM()
+        registry = ToolRegistry([_spec(lambda **_: None)])
+        outcome = await run_pipeline(
+            "siapa dosen pengampu mata kuliah Web Programming?",
+            retriever=FakeRetriever(strong_documents),
+            llm_call=llm,
+            tool_registry=registry,
+        )
+        assert outcome.kind is OutcomeKind.ANSWER
+        assert llm.called
+
     async def test_pertanyaan_di_luar_topik_tidak_eligible(self):
         llm = ToolLLM("x", [])
         registry = ToolRegistry([_spec(lambda **_: None)])
@@ -412,3 +465,13 @@ class TestIntegrasiPipeline:
         # Tidak cocok pemicu -> tetap jalur FR-3, tool tidak dipanggil.
         assert outcome.kind is OutcomeKind.REFUSAL
         assert llm.tool_calls_made == 0
+
+
+def test_jawaban_parsial_tool_tidak_dibuang_jadi_penolakan():
+    """Regresi: kutipan `[Data akademik SADS]` tak terbaca sebagai sitasi, sehingga
+    jawaban parsial yang menyebut "tidak ditemukan" berubah menjadi refusal."""
+    from app.rag.chain import is_not_found
+
+    jawab = f"Basis Data diampu oleh Budi [{LABEL}]. Untuk Kalkulus tidak ditemukan."
+    assert not is_not_found(jawab, {LABEL: 1})
+    assert is_not_found("[TIDAK_DITEMUKAN]", {LABEL: 1})
