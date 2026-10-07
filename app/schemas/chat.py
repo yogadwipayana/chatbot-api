@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.db.models import DocumentType
 from app.prodi import POLA_NIM
 from app.rag.chain import OutcomeKind
 from app.rag.rewriter import HISTORY_WINDOW
@@ -99,6 +99,17 @@ class EmbedKeyInfo(BaseModel):
     """Menjadi `frame-ancestors` halaman `/embed`. Kosong = situs mana pun."""
 
 
+class CitationType(StrEnum):
+    """Jenis kartu sitasi: `DocumentType` ditambah `data` untuk hasil tool.
+
+    Hasil tool bukan baris `documents`, jadi `data` sengaja tidak masuk enum
+    database."""
+
+    PDF = "pdf"
+    TANYA_JAWAB = "tanya_jawab"
+    DATA = "data"
+
+
 class CitationOut(BaseModel):
     """Isi kartu sitasi FE-2 -- cukup untuk membuka PDF di halaman yang tepat."""
 
@@ -107,10 +118,12 @@ class CitationOut(BaseModel):
     document_id: str
     file_path: str
     """Kosong untuk sumber tanpa berkas; jangan dijadikan tautan."""
-    type: DocumentType = DocumentType.PDF
+    type: CitationType = CitationType.PDF
     """`tanya_jawab` berarti sumbernya diketik admin di dashboard, bukan PDF:
     tidak ada berkas yang bisa dibuka dan nomor halaman tidak berarti apa-apa,
-    jadi kartunya harus tampil tanpa tautan dan tanpa "hal. N"."""
+    jadi kartunya harus tampil tanpa tautan dan tanpa "hal. N". `data` juga
+    tanpa tautan dan halaman, tetapi sumbernya data langsung dari layanan
+    kampus lewat tool (mis. "Data akademik SADS"), bukan tanya jawab admin."""
 
 
 class ContactOut(BaseModel):

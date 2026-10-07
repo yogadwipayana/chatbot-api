@@ -13,7 +13,6 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 
-from app.db.models import DocumentType
 from app.deps import (
     EmbedKeyDep,
     SessionDep,
@@ -51,6 +50,7 @@ from app.schemas.chat import (
     ChatRequest,
     ChatResponse,
     CitationOut,
+    CitationType,
     ContactOut,
     FeedbackRequest,
 )
@@ -360,16 +360,22 @@ def citations_for(outcome: PipelineOutcome) -> list[CitationOut]:
             # menjadi string kosong, dan `type` memberi tahu frontend agar
             # kartunya tidak dibuat sebagai tautan yang buntu.
             file_path=meta.get("file_path") or "",
-            type=meta.get("jenis") or DocumentType.PDF,
+            # Hasil tool menumpang `jenis` tanya_jawab di pipeline, tetapi
+            # kartunya bukan tanya jawab admin (T44).
+            type=(
+                CitationType.DATA
+                if meta.get("dari_tool")
+                else meta.get("jenis") or CitationType.PDF
+            ),
         )
         # Chunk berbeda dari halaman yang sama menghasilkan kartu yang sama.
         tersedia.setdefault((kartu.title.casefold(), kartu.page), kartu)
 
-    # Entri tanya jawab dikutip `[Judul]` tanpa halaman (T25).
+    # Entri tanya jawab dan kartu tool dikutip `[Judul]` tanpa halaman (T25).
     tanpa_halaman = {
         kartu.title: kartu.page
         for kartu in tersedia.values()
-        if kartu.type == DocumentType.TANYA_JAWAB
+        if kartu.type != CitationType.PDF
     }
 
     # Urutan mengikuti kemunculan di jawaban, bukan peringkat retrieval: itu

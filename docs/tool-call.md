@@ -330,11 +330,14 @@ untuk tool yang berhasil:
 
 ```text
 judul = "Data akademik SADS", jenis = tanya_jawab, halaman = 1,
-file_path = "", document_id = "", tanpa chunk_id
+file_path = "", document_id = "", dari_tool = True, tanpa chunk_id
 ```
 
-- `tanya_jawab` membuat frontend menampilkan kartu **tanpa tautan dan tanpa
-  "hal. N"** (`CitationOut.type`). Tidak ada stempel waktu pengambilan.
+- `jenis` `tanya_jawab` membuat pipeline memperlakukannya sebagai sumber tak
+  berhalaman (penanda `[Judul]`). `dari_tool` membuat `citations_for` memberi
+  kartunya `CitationOut.type` **`data`**: widget menampilkannya tanpa tautan dan
+  tanpa "hal. N", berikon basis data dan berlabel "Data langsung", bukan "Tanya
+  jawab resmi" (T44). Tidak ada stempel waktu pengambilan.
 - Model mengutip `[Data akademik SADS]` (aturan T3). `citations_for` membuat
   kartu hanya bila penanda itu benar-benar dikutip.
 - `is_not_found` dan `is_off_topic` menerima daftar sumber tak berhalaman dari

@@ -2209,12 +2209,21 @@ components:
             Lintasan internal. Untuk ditampilkan, bukan untuk diakses langsung.
             Kosong bila sumbernya entri tanya jawab, yang memang tak berberkas.
         type:
-          $ref: '#/components/schemas/DocumentType'
+          $ref: '#/components/schemas/CitationType'
           default: pdf
           description: |
             `tanya_jawab` berarti tidak ada PDF yang bisa dibuka dan nomor
             halamannya tidak berarti apa-apa: tampilkan kartunya tanpa tautan
-            dan tanpa "hal. N".
+            dan tanpa "hal. N". `data` juga tanpa tautan dan halaman, tetapi
+            sumbernya data langsung dari layanan kampus lewat tool (mis.
+            `Data akademik SADS`), bukan entri tanya jawab admin.
+
+    CitationType:
+      type: string
+      enum: [pdf, tanya_jawab, data]
+      description: |
+        Jenis kartu sitasi: `DocumentType` ditambah `data` untuk hasil tool,
+        yang bukan baris di tabel `documents`.
 
     ContactOut:
       type: object

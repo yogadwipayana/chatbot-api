@@ -151,9 +151,12 @@ def hasil_tool_ke_dokumen(hasil: Iterable[ToolResult]) -> list[Document]:
 
     Hasil tool bukan baris di tabel `documents`; Document semu ini hanya
     menumpang mesin sitasi yang ada (`citations_for`, `ringkas_sitasi_tanpa_halaman`).
-    Ditandai `tanya_jawab` agar frontend menampilkannya tanpa tautan dan tanpa
-    "hal. N" (lihat `CitationOut.type`). Gabungan per label supaya "Data akademik
-    SADS" menjadi satu kartu walau beberapa tool dipanggil.
+    `jenis` `tanya_jawab` membuatnya diperlakukan sebagai sumber tak berhalaman
+    di pipeline (penanda `[Judul]`). `dari_tool` membedakannya dari entri tanya
+    jawab admin di kartu: `citations_for` memberinya `CitationOut.type` `data`,
+    karena label "Tanya jawab resmi" keliru untuk data SADS (T44). Gabungan per
+    label supaya "Data akademik SADS" menjadi satu kartu walau beberapa tool
+    dipanggil.
     """
     per_label: dict[str, list[str]] = {}
     for r in hasil:
@@ -168,6 +171,7 @@ def hasil_tool_ke_dokumen(hasil: Iterable[ToolResult]) -> list[Document]:
                 "halaman": 1,
                 "file_path": "",
                 "document_id": "",
+                "dari_tool": True,
             },
         )
         for label, teks in per_label.items()

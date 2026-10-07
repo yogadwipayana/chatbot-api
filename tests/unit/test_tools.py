@@ -198,6 +198,30 @@ def test_hasil_tool_ke_dokumen_satu_kartu_per_label():
     assert docs[0].metadata["judul"] == LABEL
     assert docs[0].metadata["jenis"].value == "tanya_jawab"
     assert docs[0].metadata["file_path"] == ""
+    assert docs[0].metadata["dari_tool"] is True
+
+
+def test_kartu_tool_bertipe_data_bukan_tanya_jawab():
+    """T44: kartu "Data akademik SADS" dulu bertipe `tanya_jawab`, sehingga widget
+    melabelinya "Tanya jawab resmi". Entri tanya jawab admin tetap `tanya_jawab`,
+    dan keduanya tetap dikutip tanpa halaman."""
+    from app.rag.chain import PipelineOutcome
+    from app.routers.chat import citations_for
+    from app.schemas.chat import CitationType
+    from tests.fixtures.fakes import make_document
+
+    faq = make_document("f1", judul="Berapa biaya TOEIC?", halaman=1)
+    faq.metadata["jenis"] = "tanya_jawab"
+    tool = hasil_tool_ke_dokumen([ToolResult("a", LABEL, "Budi", True)])
+    outcome = PipelineOutcome(
+        kind=OutcomeKind.ANSWER,
+        text=f"Diampu Budi [{LABEL}]. TOEIC Rp675.000 [Berapa biaya TOEIC?].",
+        documents=(*tool, faq),
+    )
+    assert [(c.title, c.type) for c in citations_for(outcome)] == [
+        (LABEL, CitationType.DATA),
+        ("Berapa biaya TOEIC?", CitationType.TANYA_JAWAB),
+    ]
 
 
 def test_pesan_tool_membingkai_sebagai_data():
