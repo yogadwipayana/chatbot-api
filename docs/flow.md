@@ -590,7 +590,7 @@ Answer + Sources + kontak unit (bila topik berisiko)
 Berjalan bila `TOOLS_ENABLED=true` dan pertanyaannya tool-eligible (§4). Rinciannya di `docs/tool-call.md`.
 
 ```text
-System Prompt + aturan alat T1–T5 (TOOL_SYSTEM_PROMPT)
+System Prompt + aturan alat T1–T6 (TOOL_SYSTEM_PROMPT)
 + <pertanyaan_mahasiswa> pertanyaan + versi mandiri hasil rewrite </...>
 + Konteks (hasil retrieval; boleh lemah atau kosong)
         │
@@ -609,7 +609,7 @@ per giliran              memancarkan token)
         maks. TOOLS_MAX_ROUNDS; lewat batas → jawaban dipaksa tanpa tool
 ```
 
-- **Tool perdana**: `get_daftar_dosen(nama?, gelar?)` dan `get_mk_diampu_dosen(matkul)` ke `https://sads.instiki.ac.id/service/tp/chatbot/*`, dengan header `secret`. Jumlah dan saringan (nama, gelar) dihitung handler, bukan model.
+- **Tool SADS**: `get_daftar_dosen(nama?, gelar?)`, `get_mk_diampu_dosen(matkul)`, dan `get_mk_dosen(nama)` ke `https://sads.instiki.ac.id/service/tp/chatbot/*`, dengan header `secret`. Jumlah dan saringan (nama, gelar, nama dosen) dihitung handler, bukan model. Hasil kosong adalah jawaban sah ("0 …"), bukan galat.
 - **Lampiran**: daftar dari `get_daftar_dosen` dikirim ke widget sebagai `ChatResponse.attachments` dan tampil per 10 baris di bawah jawaban. Model hanya merangkum (jumlah, jawaban singkat) dan tidak menyalin daftarnya (aturan T5). Lampiran hanya ikut bila jawaban mengutip sumbernya.
 - **Sitasi**: hasil tool menjadi kartu sintetis "Data akademik SADS" bertipe `data` (`CitationOut.type`), yang tampil tanpa tautan dan tanpa nomor halaman dengan label "Data langsung" (T44). Di pipeline kartunya tetap berjenis `tanya_jawab` (sumber tak berhalaman). Penanda `[Data akademik SADS]` dikenali sebagai sitasi, jadi jawaban parsial yang menyebut "tidak ditemukan" untuk sebagian pertanyaan tidak dibuang menjadi penolakan.
 - **Keamanan**: hasil tool masuk sebagai pesan `role:"tool"` dan diperlakukan sebagai data (aturan T2 + aturan 5). Model tidak pernah memberi URL; argumennya divalidasi skema, dibersihkan, dan dibatasi panjangnya.

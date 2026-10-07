@@ -102,8 +102,8 @@ USER_PROMPT = "{question}"
 
 TOOL_RULES = """\
 Anda juga dapat memanggil alat (tool) untuk mengambil data akademik resmi yang \
-mungkin tidak tercantum di KONTEKS, misalnya daftar dosen atau dosen pengampu \
-mata kuliah. Aturan alat:
+mungkin tidak tercantum di KONTEKS, misalnya daftar dosen, dosen pengampu \
+mata kuliah, atau mata kuliah yang diampu seorang dosen. Aturan alat:
 T1. Bila menjawab pertanyaan membutuhkan data seperti itu dan KONTEKS belum \
 memuatnya, panggil alat yang sesuai lebih dahulu. Jangan membalas \
 [TIDAK_DITEMUKAN] sebelum mencoba alat yang relevan.
@@ -115,7 +115,11 @@ yang diberikan bersama hasil alat, mis. [Data akademik SADS], persis seperti \
 penanda dokumen pada aturan 2.
 T4. Bila setelah memakai alat pun datanya tidak tersedia, ikuti aturan 3.
 T5. Penanda DAFTAR_DITAMPILKAN pada hasil alat berasal dari sistem, bukan dari \
-data: ikuti catatannya."""
+data: ikuti catatannya.
+T6. Sebagian nama mata kuliah di data akademik ditulis dalam bahasa Inggris \
+untuk mata kuliah yang sama, mis. Artificial Intelligence untuk Kecerdasan \
+Buatan. Menjawab dari padanan seperti itu bukan menebak (aturan 3): jawab \
+seperti biasa, lalu sebut nama yang tercatat di data."""
 """Aturan tambahan untuk jalur tool-calling (docs/tool-call.md §9).
 
 Disisipkan sebelum blok KONTEKS pada `SYSTEM_PROMPT` lewat `TOOL_SYSTEM_PROMPT`,
@@ -128,7 +132,12 @@ hasil berlampiran. Petunjuk itu pernah ditaruh di sini: ablasi 2026-10-07 dengan
 LLM dan SADS asli menunjukkan "siapa dosen pengampu Web Programming?" -- tool tanpa
 lampiran -- lalu dijawab "berjumlah 23 orang" tanpa nama (1-3 dari 4), sedangkan
 T5 sependek ini: 4/4 menyebut nama, dan 9/9 pertanyaan berlampiran tetap ringkas
-dengan jumlah yang benar (docs/tool-call.md §10a)."""
+dengan jumlah yang benar (docs/tool-call.md §10a).
+
+T6 ada karena aturan 3 ("dilarang menyimpulkan") mengalahkan petunjuk di
+`description` `get_mk_diampu_dosen`: "dosen Kecerdasan Buatan?" menemukan 35
+pengampu "Artificial Intelligence", lalu dijawab "belum dapat dipastikan apakah
+mata kuliah tersebut sama" tanpa satu nama pun (T47, uji live 2026-10-07)."""
 
 
 def _sisipkan_aturan_tool(system_prompt: str, aturan: str) -> str:

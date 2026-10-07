@@ -74,16 +74,23 @@ class ToolResult:
 
 CATATAN_LAMPIRAN = (
     "(DAFTAR_DITAMPILKAN: daftar di bawah ditampilkan otomatis kepada mahasiswa "
-    "tepat di bawah jawaban Anda. Jangan menyalin seluruh daftarnya; salin "
-    "jumlahnya persis seperti tertulis di data, lalu jawab pertanyaannya secara "
-    "ringkas. Nama tertentu boleh disebut bila pertanyaannya tentang orang itu.)"
+    "tepat di bawah jawaban Anda. Jangan menyalin seluruh daftarnya, juga bila "
+    "pertanyaannya meminta daftar; salin jumlahnya persis seperti tertulis di "
+    "data, lalu jawab pertanyaannya secara ringkas. Butir tertentu boleh disebut "
+    "bila pertanyaannya menanyakan butir itu, mis. 'apakah Pak Totok dosen "
+    "INSTIKI?' atau 'apakah Pak Asroni mengajar Database?'.)"
 )
 """Sisipan pesan `role:"tool"` untuk hasil berlampiran; dirujuk aturan T5.
 
 Hanya hasil berlampiran yang membawanya. Aturan T5 yang berlaku umum ("jangan
 menyalin, cukup jumlahnya") pernah membuat "siapa dosen pengampu Web
 Programming?" -- tool tanpa lampiran -- dijawab "berjumlah 23 orang" tanpa satu
-nama pun (uji live 2026-10-07)."""
+nama pun (uji live 2026-10-07).
+
+Kalimat terakhirnya dulu "Nama tertentu boleh disebut bila pertanyaannya tentang
+orang itu". Untuk `get_mk_dosen` setiap pertanyaan memang tentang satu orang,
+sehingga "mata kuliah apa saja yang diajar Ahmad Asroni?" disalin model
+lengkap 25 butir di atas lampiran yang sama (uji live 2026-10-07)."""
 
 
 @dataclass(frozen=True)

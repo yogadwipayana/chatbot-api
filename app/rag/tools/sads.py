@@ -1,4 +1,4 @@
-"""Tool SADS perdana: daftar dosen dan dosen pengampu mata kuliah.
+"""Tool SADS: daftar dosen, dosen pengampu mata kuliah, dan mata kuliah per dosen.
 
 Handler tipis: panggil endpoint, normalisasi (data SADS punya spasi & koma di
 ujung `nmdosen`), ratakan jadi teks ringkas. Menambah endpoint = menambah satu
@@ -7,14 +7,18 @@ handler + satu `ToolSpec` di sini, lalu registry memungutnya (docs/tool-call.md 
 
 from __future__ import annotations
 
+import asyncio
 import re
 from functools import partial
+from typing import Any
 
 from app.config import Settings
 from app.rag.tools.base import Lampiran, ToolResult, ToolSpec
 from app.rag.tools.client import SadsClient
 
 LABEL_SADS = "Data akademik SADS"
+
+PATH_MK_DIAMPU = "/service/tp/chatbot/mk-diampu-dosen"
 
 _GELAR_DEPAN = re.compile(r"^(?:(?:prof|drs|dra|dr|ir)\b\.?\s*)+", re.IGNORECASE)
 """Gelar di depan nama SADS: "Dr. Ir. I Putu ...", "Dr.Ir. Aniek ...", "Ir.  Adi ...".
@@ -118,22 +122,112 @@ async def _daftar_dosen(client: SadsClient, *, nama: str = "", gelar: str = "") 
     )
 
 
+def _gabung_per_dosen(*respons: Any) -> dict[str, list[str]]:
+    """Ratakan respons `mk-diampu-dosen` menjadi {nama dosen: [mata kuliah]}.
+
+    Beberapa respons (varian ejaan) digabung per dosen tanpa duplikat; urutan
+    mengikuti kemunculan pertama di SADS. Dosen tanpa mata kuliah dibuang."""
+    per_dosen: dict[str, list[str]] = {}
+    for data in respons:
+        for d in data:
+            nm = _bersih(d.get("nmdosen"))
+            mk = [_bersih(m.get("matkul")) for m in (d.get("matkul") or [])]
+            mk = [m for m in mk if m]
+            if not (nm and mk):
+                continue
+            daftar = per_dosen.setdefault(nm, [])
+            daftar += [m for m in mk if m not in daftar]
+    return per_dosen
+
+
+def _varian_ejaan(matkul: str) -> list[str]:
+    """Kata kunci beserta varian huruf gandanya dirapatkan ("Intelligence" ->
+    "Inteligence").
+
+    SADS mencocokkan `matkul` sebagai potongan teks persis, dan ejaannya tidak
+    seragam: "Artificial Intelligence" (34 dosen) dan "Artificial Inteligence"
+    (1 dosen) adalah mata kuliah yang sama (T47, uji 2026-10-07)."""
+    rapat = re.sub(r"(\w)\1", r"\1", matkul)
+    return [matkul] if rapat == matkul else [matkul, rapat]
+
+
 async def _mk_diampu_dosen(client: SadsClient, *, matkul: str) -> ToolResult:
-    data = await client.get_json(
-        "/service/tp/chatbot/mk-diampu-dosen", params={"matkul": matkul}
+    respons = await asyncio.gather(
+        *(client.get_json(PATH_MK_DIAMPU, params={"matkul": v}) for v in _varian_ejaan(matkul))
     )
-    baris: list[str] = []
-    for d in data:
-        nm = _bersih(d.get("nmdosen"))
-        mk = [_bersih(m.get("matkul")) for m in (d.get("matkul") or [])]
-        mk = [m for m in mk if m]
-        if nm and mk:
-            baris.append(f"- {nm}: {', '.join(mk)}")
+    per_dosen = _gabung_per_dosen(*respons)
+    if not per_dosen:
+        # Tidak ada yang cocok adalah jawaban sah dari SADS, bukan galat (T43).
+        # DATA_TIDAK_TERSEDIA ("tidak dapat diambil saat ini") membuat model
+        # mengira layanannya gangguan: ia tidak mencoba nama Inggris, lalu
+        # menolak dengan kontak FO ("Kecerdasan Buatan" -> 0, padahal
+        # "Artificial Intelligence" diampu 35 dosen; T47). Petunjuk mencoba
+        # kata kunci lain ada di `description`, bukan di sini: isi pesan tool
+        # adalah data (aturan T2).
+        teks = (
+            f'Tidak ada mata kuliah di SADS yang namanya memuat "{matkul}": 0 dosen pengampu.'
+        )
+        return ToolResult(name="get_mk_diampu_dosen", label=LABEL_SADS, text=teks)
+    baris = [f"- {nm}: {', '.join(mk)}" for nm, mk in per_dosen.items()]
     teks = (
         f'Dosen pengampu untuk mata kuliah yang cocok dengan "{matkul}" '
         f"(jumlah: {len(baris)} orang):\n" + "\n".join(baris)
     )
-    return ToolResult(name="get_mk_diampu_dosen", label=LABEL_SADS, text=teks, ok=bool(baris))
+    return ToolResult(name="get_mk_diampu_dosen", label=LABEL_SADS, text=teks)
+
+
+MAKS_DOSEN_DIRINCI = 5
+"""Dosen yang mata kuliahnya dirinci oleh `get_mk_dosen` dalam satu panggilan.
+
+Satu dosen mengampu sampai sekitar 25 mata kuliah. Nama pendek seperti "Wayan"
+cocok dengan 15 dosen, dan merinci semuanya hanya membebani prompt; di atas
+batas ini hanya nama-namanya yang dikirim."""
+
+_SAPAAN = re.compile(r"^(?:bapak|pak|ibu|bu)\b\.?\s*", re.IGNORECASE)
+
+
+async def _mk_dosen(client: SadsClient, *, nama: str) -> ToolResult:
+    # Tanpa `matkul`, SADS mengembalikan semua dosen beserta seluruh mata
+    # kuliahnya (220 dosen, sekitar 98 KB; uji 2026-10-07). Endpointnya tidak
+    # bisa disaring menurut dosen, jadi saringan nama dikerjakan di sini.
+    per_dosen = _gabung_per_dosen(await client.get_json(PATH_MK_DIAMPU))
+    if not per_dosen:
+        return ToolResult(name="get_mk_dosen", label=LABEL_SADS, text="", ok=False)
+    dicari = _SAPAAN.sub("", nama).strip()
+    cocok = {
+        nm: sorted(mk, key=str.casefold)
+        for nm, mk in sorted(per_dosen.items())
+        if _cocok(nm, nama=dicari, gelar="")
+    }
+    if not cocok:
+        teks = (
+            f'Tidak ada dosen pengampu dengan nama memuat "{dicari}": 0 orang '
+            f"(dari {len(per_dosen)} dosen yang mengampu mata kuliah)."
+        )
+        return ToolResult(name="get_mk_dosen", label=LABEL_SADS, text=teks)
+    if len(cocok) > MAKS_DOSEN_DIRINCI:
+        teks = (
+            f'Ada {len(cocok)} dosen dengan nama memuat "{dicari}", terlalu banyak '
+            f"untuk dirinci mata kuliahnya (paling banyak {MAKS_DOSEN_DIRINCI}). "
+            "Nama-nama dosen:\n" + "\n".join(f"- {nm}" for nm in cocok)
+        )
+        return ToolResult(name="get_mk_dosen", label=LABEL_SADS, text=teks)
+    bagian = [
+        f"Mata kuliah yang diampu {nm} (jumlah: {len(mk)} mata kuliah):\n"
+        + "\n".join(f"- {m}" for m in mk)
+        for nm, mk in cocok.items()
+    ]
+    lampiran = None
+    if len(cocok) == 1:
+        # Satu dosen bisa mengampu 25 mata kuliah: daftarnya tampil langsung di
+        # widget, model cukup merangkum (docs/tool-call.md §10a).
+        [(nm, mk)] = cocok.items()
+        lampiran = Lampiran(
+            title=f"Mata kuliah yang diampu {nm}", source=LABEL_SADS, items=tuple(mk)
+        )
+    return ToolResult(
+        name="get_mk_dosen", label=LABEL_SADS, text="\n\n".join(bagian), attachment=lampiran
+    )
 
 
 def tool_specs(settings: Settings) -> list[ToolSpec]:
@@ -180,17 +274,33 @@ def tool_specs(settings: Settings) -> list[ToolSpec]:
         ),
         ToolSpec(
             name="get_mk_diampu_dosen",
+            # Petunjuk "coba nama Inggris" ditaruh di sini karena isi pesan tool
+            # adalah data (aturan T2). Kalimat "bukan nama dosen" ada karena
+            # model pernah mengisi `matkul="Ahmad Asroni"` (T48, 2026-10-07).
             description=(
-                "Daftar dosen pengampu suatu mata kuliah di INSTIKI. Berikan "
-                "argumen 'matkul' berisi nama atau kata kunci mata kuliah "
-                "(mis. 'Programming', 'Basis Data')."
+                "Daftar dosen pengampu suatu mata kuliah di INSTIKI, dicari menurut "
+                "NAMA MATA KULIAH, bukan nama dosen (untuk mata kuliah yang diampu "
+                "seorang dosen, pakai get_mk_dosen). 'matkul' dicocokkan sebagai "
+                "potongan teks persis pada nama mata kuliah di SADS, dan sebagian "
+                "nama itu berbahasa Inggris, mis. 'Artificial Intelligence' "
+                "(Kecerdasan Buatan), 'Algorithms', 'Database'. Satu mata kuliah "
+                "per panggilan; untuk beberapa mata kuliah, panggil sekali per mata "
+                "kuliah. Bila hasilnya 0 dosen, panggil lagi dengan padanan Inggris, "
+                "sinonim, atau kata kunci yang lebih pendek sebelum menyimpulkan "
+                "mata kuliah itu tidak ada. Bila padanannya yang ditemukan, jawab "
+                "dengan dosen dari hasil itu seperti biasa dan sebut nama yang "
+                "tercatat di SADS, mis. 'Kecerdasan Buatan (tercatat sebagai "
+                "Artificial Intelligence)'."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "matkul": {
                         "type": "string",
-                        "description": "nama atau kata kunci mata kuliah",
+                        "description": (
+                            "nama atau kata kunci SATU mata kuliah, mis. "
+                            "'Basis Data', 'Programming'"
+                        ),
                     }
                 },
                 "required": ["matkul"],
@@ -210,6 +320,34 @@ def tool_specs(settings: Settings) -> list[ToolSpec]:
                 "lecturer",
                 "teach",
             ),
+            citation_label=LABEL_SADS,
+        ),
+        ToolSpec(
+            name="get_mk_dosen",
+            description=(
+                "Daftar mata kuliah yang diampu SEORANG dosen INSTIKI, dicari menurut "
+                "NAMA DOSEN, beserta jumlahnya. Untuk pertanyaan seperti 'mata kuliah "
+                "apa yang diajar Pak X' atau 'apakah Bu Y mengajar Basis Data'. Nama "
+                "yang terlalu umum (cocok dengan banyak dosen) hanya mengembalikan "
+                "nama-nama dosennya."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "nama": {
+                        "type": "string",
+                        "description": (
+                            "bagian nama dosen tanpa sapaan (Pak/Bu) dan tanpa "
+                            "gelar, mis. 'Ahmad Asroni' atau 'Totok'"
+                        ),
+                    }
+                },
+                "required": ["nama"],
+            },
+            handler=partial(_mk_dosen, client),
+            # Bukan "course": "how do I register for courses (KRS)?" bukan
+            # pertanyaan data dosen. "What courses does X teach?" tertangkap "teach".
+            triggers=("diajar", "diampu", "mata kuliah", "matkul"),
             citation_label=LABEL_SADS,
         ),
     ]

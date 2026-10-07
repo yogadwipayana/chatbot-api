@@ -121,7 +121,7 @@ Gerbang lain tidak berubah:
 | Loop agentik | LLM ↔ tool, eksekusi paralel, batas, streaming | `app/rag/tools/loop.py` |
 | Binding ke LLM | `build_llm(...).bind(tools=…, tool_choice="auto")` | `app/deps.py` (`LLMCall.run_tools`) |
 | Kelayakan & routing | `tool_eligible`, penolakan FR-3 bila tool tak tersedia, pertanyaan untuk loop | `app/rag/graph.py` (`_tool_eligible`, `route_context`, `_pesan_tool`, `generate`) |
-| Aturan prompt | Aturan alat T1–T5 disisipkan sebelum KONTEKS | `app/rag/prompts.py` (`TOOL_SYSTEM_PROMPT`) |
+| Aturan prompt | Aturan alat T1–T6 disisipkan sebelum KONTEKS | `app/rag/prompts.py` (`TOOL_SYSTEM_PROMPT`) |
 | Lampiran | Daftar hasil tool tampil langsung di widget, per 10 baris (§10a) | `app/rag/tools/base.py` (`Lampiran`), `app/rag/graph.py` (`generate`), `ChatResponse.attachments`, `client/src/components/chat/chat-message.tsx` (`Lampiran`) |
 | Pencatatan | `messages.meta.tool_calls`, `messages.meta.attachments` | `app/observability/chatlog.py` |
 
@@ -211,7 +211,7 @@ unit pilihan mahasiswa (§8).
 
 ---
 
-## 7. Tool perdana (SADS)
+## 7. Tool SADS
 
 Host `https://sads.instiki.ac.id`, auth **header `secret: <token>`**, bukan
 Bearer dan bukan query param (terverifikasi 2026-10-06). Base dari
@@ -245,10 +245,44 @@ Bearer dan bukan query param (terverifikasi 2026-10-06). Base dari
 
 ### `get_mk_diampu_dosen`
 - `GET /service/tp/chatbot/mk-diampu-dosen?matkul=<kata kunci>`.
-- Argumen: `matkul: string` (wajib).
+- Argumen: `matkul: string` (wajib), satu mata kuliah per panggilan.
 - Respons: `[{"nmdosen":"...","matkul":[{"matkul":"..."}]}]`, yaitu dosen yang
-  mengampu mata kuliah yang cocok dengan kata kunci.
+  mengampu mata kuliah yang cocok dengan kata kunci. SADS mencocokkan `matkul`
+  sebagai **potongan teks persis**.
 - Normalisasi: ratakan menjadi `- Nama: MK1, MK2`, plus jumlah dosen.
+- **Varian ejaan** (`_varian_ejaan`): kata kunci berhuruf ganda juga ditanyakan
+  dengan huruf ganda dirapatkan, lalu hasilnya digabung per dosen. SADS menulis
+  "Artificial Intelligence" (34 dosen) dan "Artificial Inteligence" (1 dosen).
+- **Tidak ada yang cocok bukan galat** (T43): `ok=True`, "Tidak ada mata kuliah
+  di SADS yang namanya memuat "…": 0 dosen pengampu.". Dulu dibalas
+  `DATA_TIDAK_TERSEDIA` ("tidak dapat diambil saat ini"), sehingga model mengira
+  layanannya gangguan dan menolak dengan kontak FO.
+- **Nama Inggris** (T47): sebagian nama mata kuliah di SADS berbahasa Inggris
+  ("Artificial Intelligence", "Algorithms", "Database"). `description` meminta
+  model mencoba padanan Inggris, sinonim, atau kata kunci yang lebih pendek bila
+  hasilnya 0, dan menegaskan bahwa pencarian ini menurut nama mata kuliah, bukan
+  nama dosen. Petunjuk itu sengaja di `description` (dipercaya), bukan di hasil
+  tool (data, aturan T2). Aturan T6 menyatakan bahwa menjawab dari padanan
+  seperti itu bukan menebak; tanpa T6 aturan 3 membuat model menjawab "belum
+  dapat dipastikan apakah mata kuliah tersebut sama" tanpa satu nama pun.
+
+### `get_mk_dosen`
+- `GET /service/tp/chatbot/mk-diampu-dosen` **tanpa** `matkul`: SADS
+  mengembalikan semua dosen beserta seluruh mata kuliahnya (220 dosen, 2.309
+  pasangan, sekitar 98 KB, 1–3 dtk; uji 2026-10-07). Endpoint-nya tidak bisa
+  disaring menurut dosen, jadi saringan dikerjakan handler.
+- Argumen: `nama: string` (wajib), dicocokkan ke nama inti seperti saringan
+  `nama` `get_daftar_dosen` (`_cocok`). Sapaan di depan (Pak, Bapak, Bu, Ibu)
+  dibuang.
+- Satu dosen cocok: daftar mata kuliahnya (urut abjad) beserta jumlahnya, dan
+  **lampiran** "Mata kuliah yang diampu <nama>". Dua sampai
+  `MAKS_DOSEN_DIRINCI` (5) dosen: dirinci tanpa lampiran. Lebih dari itu ("Pak
+  Wayan" = 15 dosen): hanya nama-namanya, supaya model meminta nama lengkap.
+- Tidak ada yang cocok: `ok=True`, "… 0 orang (dari N dosen …)". SADS kosong:
+  `ok=False`.
+- Ada karena T48: "mata kuliah apa yang diajar Ahmad Asroni?" dulu membuat model
+  mengisi `get_mk_diampu_dosen(matkul="Ahmad Asroni")`, lalu menjawab "belum
+  dapat diambil saat ini" atau menolak.
 
 > **Catatan enumerasi.** Satu panggilan mengembalikan seluruh dosen yang cocok,
 > tidak seperti retrieval yang mengambil top-k. Pertanyaan "sebutkan **semua**
@@ -388,10 +422,17 @@ Batasan:
 - Lampiran tidak ikut riwayat percakapan. `history` yang dikirim widget hanya
   berisi `text`, jadi "yang nomor 11 siapa?" tidak dapat dijawab dari lampiran
   sebelumnya.
-- Hanya `get_daftar_dosen` yang berlampiran. `get_mk_diampu_dosen` sengaja
-  belum: SADS mencocokkan `matkul` sebagai substring, dan model yang menyaring
-  hasilnya ("Basis Data" tanpa "Basis Data Lanjut"). Lampiran mentah akan
-  berbeda dari jawaban model.
+- `get_daftar_dosen` dan `get_mk_dosen` (satu dosen) berlampiran.
+  `get_mk_diampu_dosen` sengaja belum: SADS mencocokkan `matkul` sebagai
+  substring, dan model yang menyaring hasilnya ("Basis Data" tanpa "Basis Data
+  Lanjut"). Lampiran mentah akan berbeda dari jawaban model. Akibatnya daftar
+  panjang tetap disalin model: "Kecerdasan Buatan" (35 dosen) dari 5 percobaan
+  2 lengkap, 2 kehilangan 1 nama, dan 1 hanya menyebut 4 nama ("antara lain").
+- `CATATAN_LAMPIRAN` dulu membolehkan "nama tertentu bila pertanyaannya tentang
+  orang itu". Untuk `get_mk_dosen` setiap pertanyaan memang tentang satu orang,
+  sehingga 25 mata kuliah Ahmad Asroni disalin lengkap di atas lampiran yang
+  sama. Kini hanya butir yang ditanyakan secara khusus yang boleh disebut
+  ("apakah Pak Totok mengajar Basis Data?").
 
 ---
 
@@ -420,7 +461,8 @@ Batasan:
 |---|---|
 | Tool HTTP galat / timeout / respons tak terduga | pesan `role:"tool"` = `DATA_TIDAK_TERSEDIA`; model menjawab apa adanya atau menolak |
 | Saringan `get_daftar_dosen` tanpa hasil | `ok=True`, "Tidak ada dosen …: 0 orang", tanpa lampiran; model menjawab "tidak ada" bersumber SADS |
-| `get_mk_diampu_dosen` tanpa hasil | masih `DATA_TIDAK_TERSEDIA`, sama dengan galat (§18, masih terbuka) |
+| `get_mk_diampu_dosen` tanpa hasil | `ok=True`, "… 0 dosen pengampu"; model mencoba padanan Inggris atau kata kunci lain (§7) |
+| `get_mk_dosen` tanpa hasil / nama terlalu umum | `ok=True`, "0 orang" / hanya nama-nama dosen, tanpa lampiran |
 | Argumen tool bukan JSON sah (`invalid_tool_calls`) | dibalas "argumen tidak dapat dibaca", loop berlanjut; tercatat `error = argumen_rusak` |
 | Lebih dari 4 tool dalam satu giliran | sisanya dibalas "batas tercapai" tanpa dijalankan; `error = batas_per_giliran` |
 | Model terus memanggil tool sampai batas putaran | giliran terakhir dipanggil tanpa `tools`, jadi model pasti menjawab teks |
@@ -451,7 +493,7 @@ menjawab.** Kegagalan tool tidak boleh memunculkan jawaban ngawur.
   jejaknya ada di `meta.tool_calls`.
 - **Token**: `usage` dijumlahkan lintas giliran (§2). Pertanyaan ber-tool
   memakai sekitar 7–8 ribu token input dengan `cx/gpt-6-luna`, karena skema tool,
-  aturan T1–T5, dan hasil tool. `get_daftar_dosen` tanpa saringan membawa sekitar
+  aturan T1–T6, dan hasil tool. `get_daftar_dosen` tanpa saringan membawa sekitar
   220 nama (~13 ribu token input untuk dua giliran). Dengan lampiran, keluarannya
   tidak lagi memuat daftar itu: sebelumnya ~3,8 ribu token keluaran untuk
   "sebutkan semua dosen".
@@ -503,6 +545,14 @@ Polanya mengikuti `RERANK_*`: fitur di belakang sakelar, bawaan mati, nilai di
 - **Lampiran** (`TestLampiran`): sisipan `DAFTAR_DITAMPILKAN` sesuai aturan T5,
   loop mengumpulkan lampiran, pipeline meneruskan hanya yang sumbernya dikutip,
   penolakan tanpa lampiran, `ChatResponse` dan `messages.meta` membawanya.
+- **`get_mk_diampu_dosen`** (`TestHandlerSads`): hasil kosong tetap `ok` tanpa
+  `DATA_TIDAK_TERSEDIA`, varian huruf ganda ditanyakan dan digabung per dosen,
+  kata kunci tanpa huruf ganda satu panggilan, `description` mengarah ke nama
+  Inggris dan `get_mk_dosen`.
+- **`get_mk_dosen`** (`TestMkDosen`): SADS dipanggil tanpa `matkul`, satu dosen
+  dirinci + dihitung + berlampiran, sapaan dan gelar dibuang, nama umum hanya
+  nama-nama, beberapa dosen tanpa lampiran, 0 hasil tetap `ok`, SADS kosong
+  gagal, pemicu Indonesia/Inggris.
 
 Yang **tidak** diuji otomatis: ketahanan model terhadap instruksi yang disisipkan
 di hasil tool. Itu perilaku model, dan pertahanannya ada di aturan T2 + aturan 5.
@@ -620,6 +670,23 @@ varian): T5 umum 3/4 menyebut nama dan selalu dibuka dengan jumlah; tanpa T5
 dan benar pada pertanyaan berlampiran, jadi petunjuknya dipindah ke
 `CATATAN_LAMPIRAN`, yang hanya menyertai hasil berlampiran.
 
+### Mata kuliah: nama Inggris dan per dosen (2026-10-07)
+
+Uji browser `get_mk_diampu_dosen` di widget dan Uji coba, dicocokkan ke SADS
+mentah, menemukan T47 (nama mata kuliah Indonesia vs Inggris) dan T48 (mata
+kuliah per dosen tidak didukung). Perbaikannya di §7, aturan T6, dan
+`CATATAN_LAMPIRAN` (§10a).
+
+| Pertanyaan (topik Prodi, LLM + SADS asli) | Sebelum | Sesudah |
+|---|---|---|
+| Siapa dosen pengampu Jaringan Komputer? | 8/8, "Lanjut" tersaring | (tidak diubah) |
+| Siapa dosen yang mengajar Kecerdasan Buatan? | penolakan + kontak FO (`matkul` "Kecerdasan Buatan" → 0) | "Kecerdasan Buatan" → 0 → "Artificial Intelligence" → 35; nama disebut 35/35 ×3, 34/35 ×2, 4 nama "antara lain" ×1 |
+| Mata kuliah apa saja yang diajar oleh Ahmad Asroni? | `matkul="Ahmad Asroni"` → "belum dapat diambil" / penolakan | `get_mk_dosen` → "25 mata kuliah", lampiran 25 |
+| Pak Wayan ngajar mata kuliah apa aja? | (belum diuji) | 15 nama, meminta nama lengkap |
+| Apakah Pak Totok mengajar Basis Data? | (belum diuji) | "Ya", lampiran 17 |
+| Siapa dosen pengampu Basis Data dan Kalkulus? | 1 panggilan gabungan → 0 → penolakan | dua panggilan + "Calculus"; Basis Data 10/10, Kalkulus "tidak ditemukan" |
+| Siapa saja dosen yang bergelar Dr.? (regresi `CATATAN_LAMPIRAN`) | 25, ringkas | 25, ringkas |
+
 ### Masih terbuka (sengaja tidak diubah tanpa keputusan)
 
 1. **`eval/run_generation.py` tidak memakai tool.** RAGAS melihat `refusal` untuk
@@ -642,9 +709,6 @@ dan benar pada pertanyaan berlampiran, jadi petunjuknya dipindah ke
 6. **Asumsi giliran tool tanpa konten.** Model yang mengirim konten *dan*
    `tool_calls` dalam satu giliran akan membuat konten itu ikut mengalir sebelum
    jawaban final.
-7. **`get_mk_diampu_dosen` tanpa hasil dibalas `DATA_TIDAK_TERSEDIA`.** Model
-   kadang menggabung beberapa mata kuliah dalam satu `matkul` ("Basis Data dan
-   Kalkulus" → 0 hasil), lalu menolak dengan kontak FO seolah SADS mati, padahal
-   19 dosen Basis Data ada. `get_daftar_dosen` sudah membedakan "tidak cocok"
-   dari galat; `get_mk_diampu_dosen` belum, dan deskripsinya belum meminta satu
-   mata kuliah per panggilan.
+7. ~~`get_mk_diampu_dosen` tanpa hasil dibalas `DATA_TIDAK_TERSEDIA`.~~ Selesai
+   2026-10-07 (T43/T47, §7). Sisa: daftar panjang dari tool ini tetap disalin
+   model dan kadang kehilangan nama (§10a, Batasan).

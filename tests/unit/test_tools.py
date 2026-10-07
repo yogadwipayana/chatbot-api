@@ -69,6 +69,7 @@ class TestRegistry:
         assert {s.name for s in _registry().specs} == {
             "get_daftar_dosen",
             "get_mk_diampu_dosen",
+            "get_mk_dosen",
         }
 
     def test_eligible_cocok_kata_kunci(self):
@@ -94,7 +95,7 @@ class TestRegistry:
         mewajibkan `matkul`). `get_daftar_dosen` -- satu-satunya tool yang bisa
         menjawabnya -- harus tetap ter-bind supaya model dapat memilihnya."""
         names = {s.name for s in _registry().eligible("ada berapa dosen?")}
-        assert names == {"get_daftar_dosen", "get_mk_diampu_dosen"}
+        assert names == {"get_daftar_dosen", "get_mk_diampu_dosen", "get_mk_dosen"}
 
     def test_schema_openai_berbentuk_benar(self):
         fn = _registry().get("get_mk_diampu_dosen").openai_schema()
@@ -173,14 +174,146 @@ class TestHandlerSads:
             ]
         )
         r = await sads._mk_diampu_dosen(client, matkul="Programming")
+        # Varian huruf ganda ikut ditanyakan (T47); hasil yang sama tidak berlipat.
         assert client.calls == [
-            ("/service/tp/chatbot/mk-diampu-dosen", {"matkul": "Programming"})
+            ("/service/tp/chatbot/mk-diampu-dosen", {"matkul": "Programming"}),
+            ("/service/tp/chatbot/mk-diampu-dosen", {"matkul": "Programing"}),
         ]
-        assert "- Budi: Web Programming, Mobile" in r.text and r.ok
+        assert r.text.count("- Budi: Web Programming, Mobile") == 1 and r.ok
+        assert "(jumlah: 1 orang)" in r.text
 
-    async def test_hasil_kosong_tidak_ok(self):
-        r = await sads._mk_diampu_dosen(FakeSads([]), matkul="xyz")
+    async def test_hasil_kosong_bukan_kegagalan(self):
+        """T43/T47: tidak ada yang cocok adalah jawaban sah SADS. Dulu dibalas
+        DATA_TIDAK_TERSEDIA ("tidak dapat diambil saat ini"), sehingga model
+        mengira layanannya gangguan dan tidak mencoba nama Inggrisnya."""
+        r = await sads._mk_diampu_dosen(FakeSads([]), matkul="Kecerdasan Buatan")
+        assert r.ok and r.attachment is None
+        assert '"Kecerdasan Buatan": 0 dosen pengampu' in r.text
+        assert "DATA_TIDAK_TERSEDIA" not in r.pesan_untuk_model()
+
+    async def test_varian_ejaan_digabung_per_dosen(self):
+        """T47: SADS menulis "Artificial Intelligence" dan "Artificial Inteligence";
+        kata kunci yang benar ejaannya melewatkan dosen yang hanya ada di varian."""
+        client = FakeSadsPerKataKunci(
+            {
+                "Artificial Intelligence": [
+                    {"nmdosen": "Ani", "matkul": [{"matkul": "Artificial Intelligence"}]},
+                    {"nmdosen": "Budi", "matkul": [{"matkul": "Artificial Intelligence"}]},
+                ],
+                "Artificial Inteligence": [
+                    {"nmdosen": "Budi", "matkul": [{"matkul": "Artificial Inteligence"}]},
+                    {"nmdosen": "Citra", "matkul": [{"matkul": "Artificial Inteligence"}]},
+                ],
+            }
+        )
+        r = await sads._mk_diampu_dosen(client, matkul="Artificial Intelligence")
+        assert "(jumlah: 3 orang)" in r.text
+        assert "- Budi: Artificial Intelligence, Artificial Inteligence" in r.text
+        assert "- Citra: Artificial Inteligence" in r.text
+
+    async def test_tanpa_huruf_ganda_satu_panggilan(self):
+        client = FakeSads([])
+        await sads._mk_diampu_dosen(client, matkul="Basis Data")
+        assert client.calls == [
+            ("/service/tp/chatbot/mk-diampu-dosen", {"matkul": "Basis Data"})
+        ]
+
+    def test_deskripsi_mengarahkan_ke_nama_inggris_dan_get_mk_dosen(self):
+        """T47/T48: petunjuknya di `description` (dipercaya), bukan di hasil tool
+        (data, aturan T2)."""
+        desc = _registry().get("get_mk_diampu_dosen").description
+        assert "bukan nama dosen" in desc and "get_mk_dosen" in desc
+        assert "Inggris" in desc and "0 dosen" in desc
+
+
+class FakeSadsPerKataKunci:
+    """SADS palsu yang menjawab menurut `matkul`; tanpa `matkul` = semua data."""
+
+    def __init__(self, per_kata: dict[str, Any], semua: Any = None) -> None:
+        self.per_kata = per_kata
+        self.semua = semua
+        self.calls: list[tuple[str, dict | None]] = []
+
+    async def get_json(self, path: str, params: dict | None = None) -> Any:
+        self.calls.append((path, params))
+        if not params:
+            return self.semua
+        return self.per_kata.get(params["matkul"], [])
+
+
+def _mk(nama: str, *matkul: str) -> dict[str, Any]:
+    return {"nmdosen": nama, "matkul": [{"matkul": m} for m in matkul]}
+
+
+_MK_SEMUA = [
+    _mk("Ahmad Asroni, S.Kom., M.Kom  ", "Web Programming", "Database", "Algorithms"),
+    _mk("Dr. I Gede Totok Suryawan, S.Kom., M.T.", "Basis Data"),
+    _mk("I Wayan Satu, S.Kom", "A"),
+    _mk("I Wayan Dua, S.Kom", "B"),
+    _mk("I Wayan Tiga, S.Kom", "C"),
+    _mk("I Wayan Empat, S.Kom", "D"),
+    _mk("I Wayan Lima, S.Kom", "E"),
+    _mk("I Wayan Enam, S.Kom", "F"),
+    _mk("Tanpa MK"),
+]
+
+
+class TestMkDosen:
+    """T48: "mata kuliah apa yang diajar dosen X?" -- dulu model mengisi
+    `get_mk_diampu_dosen(matkul="Ahmad Asroni")` lalu menolak."""
+
+    async def test_satu_dosen_dirinci_dihitung_dan_berlampiran(self):
+        client = FakeSadsPerKataKunci({}, semua=_MK_SEMUA)
+        r = await sads._mk_dosen(client, nama="Ahmad Asroni")
+        # Tanpa `matkul`: SADS mengembalikan semua dosen beserta seluruh MK-nya.
+        assert client.calls == [("/service/tp/chatbot/mk-diampu-dosen", None)]
+        assert r.ok and r.label == LABEL
+        assert "Ahmad Asroni, S.Kom., M.Kom (jumlah: 3 mata kuliah)" in r.text
+        assert r.attachment is not None
+        assert r.attachment.items == ("Algorithms", "Database", "Web Programming")
+        assert r.attachment.title == "Mata kuliah yang diampu Ahmad Asroni, S.Kom., M.Kom"
+        assert r.attachment.source == LABEL
+
+    @pytest.mark.parametrize(
+        "nama", ["totok", "Pak Totok", "bapak totok suryawan", "Bu. Totok"]
+    )
+    async def test_nama_tanpa_sapaan_dan_gelar(self, nama):
+        r = await sads._mk_dosen(FakeSadsPerKataKunci({}, semua=_MK_SEMUA), nama=nama)
+        assert r.attachment is not None
+        assert r.attachment.items == ("Basis Data",)
+
+    async def test_nama_umum_hanya_nama_dosen(self):
+        r = await sads._mk_dosen(FakeSadsPerKataKunci({}, semua=_MK_SEMUA), nama="Wayan")
+        assert r.ok and r.attachment is None
+        assert 'Ada 6 dosen dengan nama memuat "Wayan"' in r.text
+        assert "- I Wayan Enam, S.Kom" in r.text
+        assert "Mata kuliah yang diampu" not in r.text
+
+    async def test_beberapa_dosen_dirinci_tanpa_lampiran(self):
+        semua = [_mk("Budi Satu", "A"), _mk("Budi Dua", "B", "C")]
+        r = await sads._mk_dosen(FakeSadsPerKataKunci({}, semua=semua), nama="budi")
+        assert r.attachment is None
+        assert "Mata kuliah yang diampu Budi Dua (jumlah: 2 mata kuliah)" in r.text
+        assert "Mata kuliah yang diampu Budi Satu (jumlah: 1 mata kuliah)" in r.text
+
+    async def test_tidak_ada_dosen_bukan_kegagalan(self):
+        r = await sads._mk_dosen(FakeSadsPerKataKunci({}, semua=_MK_SEMUA), nama="Zaenal")
+        assert r.ok and r.attachment is None
+        assert '"Zaenal": 0 orang (dari 8 dosen yang mengampu mata kuliah)' in r.text
+
+    async def test_sads_kosong_tetap_kegagalan(self):
+        r = await sads._mk_dosen(FakeSadsPerKataKunci({}, semua=[]), nama="Asroni")
         assert not r.ok
+
+    def test_skema_nama_wajib(self):
+        params = _registry().get("get_mk_dosen").parameters
+        assert params["required"] == ["nama"]
+        assert set(params["properties"]) == {"nama"}
+
+    def test_pertanyaan_mk_per_dosen_eligible(self):
+        assert _registry().eligible("Pak Asroni ngajar apa aja?")
+        assert _registry().eligible("Matkul yang diampu Bu Ayu apa saja?")
+        assert _registry().eligible("What courses does Asroni teach?")
 
 
 # --- Kartu sitasi sintetis ----------------------------------------------
