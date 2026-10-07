@@ -319,8 +319,8 @@ Kolom `langsmith_run_id` menghubungkan feedback mahasiswa ke trace LangSmith —
 | Ketersediaan | 99% pada jam kerja |
 | Beban puncak | 500 pertanyaan/hari (musim KRS bisa 3× lipat) |
 | Backup | Postgres harian, retensi 30 hari |
-| Privasi | Tidak menyimpan identitas mahasiswa; `user_hash` anonim. NIM opsional di widget diurai di peramban: hanya kode prodi dan tahun angkatan yang dikirim, dicatat, dan diteruskan ke LLM. Nomor urutnya tidak pernah keluar dari peramban (2026-10-05) |
-| Data keluar | Hanya dokumen publik + pertanyaan + prodi dan angkatan penanya (bila NIM diisi) |
+| Privasi | Identitas mahasiswa yang disimpan hanya NIM; `user_hash` anonim. NIM wajib di widget dan dicatat utuh di `messages.meta` bersama prodi dan angkatannya; untuk pesan sensitif (FR-7) hanya NIM-nya, isinya tetap disembunyikan. Tidak dicocokkan ke data mahasiswa. Hanya prodi dan angkatan yang diteruskan ke LLM; NIM tidak pernah ke LLM, trace, atau log aplikasi (2026-10-07; sebelumnya opsional dan tidak pernah keluar dari peramban, 2026-10-05) |
+| Data keluar | Hanya dokumen publik + pertanyaan + prodi dan angkatan penanya. NIM tidak ikut |
 
 ---
 

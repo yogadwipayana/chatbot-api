@@ -56,8 +56,10 @@ class ChatLogEntry:
     embed_key: str | None = None
     """Kunci situs penyemat asal pertanyaan (`app/embed_keys.py`); None = portal."""
     profile: ProfilMahasiswa | None = None
-    """Prodi dan angkatan penanya, untuk analitik per kohort. None = widget tidak
-    mengirim profil."""
+    """Prodi dan angkatan penanya, diurai dari `nim`, untuk analitik per kohort."""
+    nim: str | None = None
+    """NIM penanya apa adanya. Hanya untuk `messages.meta`: tidak ikut ke LLM,
+    trace, maupun log aplikasi."""
     embed_dipanggil: bool = False
     """False untuk FR-7 dan sapaan berbasis aturan: keduanya berhenti sebelum
     retrieval, sehingga pertanyaannya tidak pernah di-embed sama sekali. Pesan
@@ -86,9 +88,10 @@ def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
         estimasi = try_estimate_cost(entry.model, int(input_tokens), int(output_tokens))
         biaya = estimasi.usd if estimasi else None
 
-    # Tidak dicatat untuk pesan FR-7, sama seperti isinya: kohort kecil (S2 satu
-    # angkatan bisa hanya belasan orang) ditambah tanda "dialihkan ke konseling"
-    # sudah cukup untuk menebak siapa orangnya.
+    # Prodi dan angkatan tidak dicatat untuk pesan FR-7, sama seperti isinya:
+    # rincian per kohort di statistik AD-5 tidak memuat pesan konseling. NIM
+    # tetap dicatat (2026-10-07), jadi pesan FR-7 tetap dapat ditelusuri ke
+    # penanyanya walau isinya disembunyikan.
     profil = None if outcome.kind is OutcomeKind.SUPPORT else entry.profile
 
     return {
@@ -108,6 +111,7 @@ def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
         "unit": entry.unit,
         "program_code": profil.prodi.code if profil else None,
         "intake_year": profil.angkatan if profil else None,
+        "nim": entry.nim,
         # Biaya meng-embed pertanyaan mahasiswa. Dipisah dari `llm_cost_usd`, bukan
         # dijumlahkan ke dalamnya: `llm_cost_usd` sudah berarti "biaya LLM" di
         # seluruh baris lama dan di `app/admin/stats.py`, dan mengubah artinya

@@ -208,7 +208,11 @@ def client(make_client, strong_documents) -> TestClient:
 
 @pytest.fixture
 def payload() -> dict:
-    return {"question": "kapan pengisian KRS dibuka?", "session_id": "sesi-uji-12345"}
+    return {
+        "question": "kapan pengisian KRS dibuka?",
+        "session_id": "sesi-uji-12345",
+        "nim": "2401010101",
+    }
 
 
 @pytest.fixture

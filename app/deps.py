@@ -12,7 +12,7 @@ import math
 from collections.abc import AsyncIterator
 from datetime import date
 from functools import lru_cache
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import Annotated, Any
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -22,7 +22,7 @@ from app.admin.permissions import ROLE_LABELS, AdminRole, CurrentAdmin
 from app.config import Settings, get_settings
 from app.db.session import get_session
 from app.observability.tracing import id_run, konfigurasi_run
-from app.prodi import DAFTAR_PRODI, ProfilMahasiswa, cari_prodi
+from app.prodi import DAFTAR_PRODI, ProfilMahasiswa, cari_prodi, urai_nim
 from app.security.auth import decode_access_token
 from app.security.batas_harian import (
     OLEH_BATAS_HARIAN,
@@ -39,9 +39,6 @@ from app.security.ratelimit import (
     get_chat_limiter,
     get_login_limiter,
 )
-
-if TYPE_CHECKING:
-    from app.schemas.chat import StudentProfileIn
 
 audit = logging.getLogger("app.audit")
 
@@ -115,29 +112,28 @@ async def unit_terdaftar(units: Any, nama: str) -> str:
     return resmi
 
 
-def profil_terdaftar(profile: StudentProfileIn | None) -> ProfilMahasiswa | None:
-    """Profil penanya dari `ChatRequest.profile`; 422 bila prodi atau angkatannya
+def profil_dari_nim(nim: str) -> ProfilMahasiswa:
+    """Profil penanya dari `ChatRequest.nim`; 422 bila prodi atau angkatannya
     mustahil. Widget sudah memeriksa keduanya sebelum mengirim, jadi penolakan
-    ini hanya menjaga log analitik dari pemanggil langsung.
+    ini hanya menjaga log dari pemanggil langsung.
 
-    Tidak diverifikasi lebih jauh: semua dokumen publik, dan prodi palsu hanya
-    mengubah jawaban untuk pengirimnya sendiri.
+    Tidak dicocokkan ke data mahasiswa: NIM yang berbentuk sah tetapi milik
+    orang lain -- atau tidak pernah ada -- tetap diterima.
     """
-    if profile is None:
-        return None
-    prodi = cari_prodi(profile.program_code)
+    kode, angkatan = urai_nim(nim)
+    prodi = cari_prodi(kode)
     if prodi is None:
         pilihan = ", ".join(f"{p.code} ({p.name})" for p in DAFTAR_PRODI)
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
-            f"Kode prodi '{profile.program_code}' tidak dikenal. Pilihan: {pilihan}.",
+            f"Kode prodi '{kode}' pada NIM tidak dikenal. Pilihan: {pilihan}.",
         )
-    if profile.intake_year > date.today().year:
+    if angkatan > date.today().year:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
-            f"Angkatan {profile.intake_year} belum ada.",
+            f"Angkatan {angkatan} pada NIM belum ada.",
         )
-    return ProfilMahasiswa(prodi=prodi, angkatan=profile.intake_year)
+    return ProfilMahasiswa(prodi=prodi, angkatan=angkatan)
 
 
 def pastikan_unit(admin: CurrentAdmin, unit: str | None, *, apa: str) -> None:

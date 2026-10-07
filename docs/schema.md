@@ -496,8 +496,9 @@ Hanya diisi pada baris `role = 'assistant'`.
 | `llm_cost_usd` | float \| null | `null` bila tarif modelnya tidak dikenal |
 | `rewritten_query` | string \| null | Hasil penulisan ulang query (FR-4) |
 | `unit` | string \| null | Unit pilihan mahasiswa di menu; `null` = semua unit. Membedakan penolakan akibat salah pilih unit dari dokumen yang memang belum ada |
-| `program_code` | string \| null | Kode prodi penanya (`app/prodi.py`, digit 4-7 NIM, mis. `1010`), untuk analitik per kohort. `null` bila widget tidak mengirim profil, dan **selalu `null` untuk `support`**: kohort kecil ditambah tanda FR-7 cukup untuk menebak orangnya. NIM utuh tidak pernah sampai ke API |
+| `program_code` | string \| null | Kode prodi penanya (`app/prodi.py`, digit 4-7 NIM, mis. `1010`), untuk analitik per kohort. `null` untuk pesan dari sebelum NIM tersedia (2026-10-05), dan **selalu `null` untuk `support`**: kohort kecil ditambah tanda FR-7 cukup untuk menebak orangnya |
 | `intake_year` | int \| null | Tahun angkatan penanya (mis. `2024`); aturan `null`-nya sama dengan `program_code` |
+| `nim` | string \| null | NIM penanya apa adanya, wajib di widget sejak 2026-10-07. Tidak dicocokkan ke data mahasiswa, jadi bisa saja NIM orang lain atau NIM yang tidak pernah ada. Hanya tersimpan di sini: tidak ikut ke LLM, trace LangSmith, maupun log aplikasi. `null` untuk pesan dari sebelum 2026-10-07. **Tetap terisi untuk `support`**, berbeda dari `program_code`: pesan konseling dapat ditelusuri ke penanyanya walau isinya disembunyikan |
 | `embed_called` | bool | `false` untuk FR-7 dan sapaan berbasis aturan — keduanya berhenti sebelum retrieval. Pesan yang diblokir JEV (`rejected`, atau `smalltalk` dari JEV) bisa `true`: pencarian berjalan paralel dengan gerbang dan baru dihentikan saat vonis blokir tiba |
 | `embed_model` | string \| null | Model yang **diminta**, bukan yang dilaporkan gateway |
 | `embed_tokens` | int \| null | `usage.prompt_tokens`; `null` bila endpoint tidak melaporkannya |
@@ -580,9 +581,11 @@ re-index seluruh dokumen, jadi pekerjaan ini ikut di dalamnya.
 
 Ini bagian skema yang paling mudah dilanggar tanpa sadar (PRD §11):
 
-- **Identitas mahasiswa.** `conversations.user_hash` adalah hash anonim dan tidak
-  boleh dapat dikembalikan ke identitas. `session_id` berasal dari localStorage
-  peramban, bukan dari NIM.
+- **Identitas mahasiswa selain NIM.** `messages.meta.nim` (sejak 2026-10-07)
+  adalah satu-satunya pengenal yang disimpan, termasuk untuk pesan FR-7
+  (isinya tetap disembunyikan). `conversations.user_hash` adalah hash anonim dan tidak boleh dapat
+  dikembalikan ke identitas. `session_id` berasal dari localStorage peramban,
+  bukan dari NIM.
 - **Isi pertanyaan sensitif (FR-7).** `messages.content` untuk pertanyaan sensitif
   diganti penanda tetap: `[disembunyikan: pertanyaan sensitif, dialihkan ke
   layanan konseling]`. Jumlahnya tetap tercatat untuk statistik, tetapi curahan

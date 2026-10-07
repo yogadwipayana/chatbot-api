@@ -199,7 +199,7 @@ class TestBerlakuSaatMenjawab:
         assert sesudah.json()["thresholds"]["vector"] == 0.95
 
     def test_ambang_baru_langsung_dipakai_chat_mahasiswa(self, client, admin_headers):
-        payload = {**self.PERTANYAAN, "session_id": "sesi-uji-12345"}
+        payload = {**self.PERTANYAAN, "session_id": "sesi-uji-12345", "nim": "2401010101"}
         assert client.post("/api/chat", json=payload).json()["kind"] == "answer"
 
         client.patch(ENDPOINT, json={"vector_threshold": 0.95}, headers=admin_headers)

@@ -1,10 +1,11 @@
 """Program studi INSTIKI dan profil penanya yang diurai dari NIM.
 
 NIM INSTIKI berformat `aaabbddccc`: tiga digit angkatan ("240" = 2024), dua
-digit fakultas, dua digit prodi, lalu nomor urut. Widget mengurainya di
-peramban dan hanya mengirim angkatan beserta kode prodi (`bbdd`); NIM utuh dan
-nomor urutnya tidak pernah sampai ke API (PRD §11). Angkatan dan prodi adalah
-kelompok berisi puluhan sampai ratusan orang, bukan identitas.
+digit fakultas, dua digit prodi, lalu nomor urut. NIM wajib diisi di widget dan
+dikirim utuh (`ChatRequest.nim`, PRD §11, 2026-10-07); API mengurainya sendiri
+di sini, jadi profil yang dicatat dan diteruskan ke LLM selalu sesuai NIM-nya.
+NIM-nya sendiri hanya masuk `messages.meta` -- tidak pernah ke LLM, ke trace
+LangSmith, atau ke log aplikasi.
 
 Profil BUKAN filter retrieval seperti unit. Tidak ada dokumen yang khusus satu
 prodi: ketentuan per prodi dan angkatan tertulis sebagai baris di dalam dokumen
@@ -66,11 +67,20 @@ DAFTAR_PRODI: tuple[Prodi, ...] = (
 """Urutan tampil di `GET /api/programs`. Prodi baru cukup ditambahkan di sini."""
 
 ANGKATAN_PERTAMA = 2000
-"""NIM hanya membawa dua digit tahun; widget menafsirkannya sebagai 20xx."""
+"""NIM hanya membawa dua digit tahun, dibaca sebagai 20xx."""
+
+POLA_NIM = r"^\d{10}$"
 
 
 def cari_prodi(code: str) -> Prodi | None:
     return next((p for p in DAFTAR_PRODI if p.code == code), None)
+
+
+def urai_nim(nim: str) -> tuple[str, int]:
+    """Kode prodi (digit 4-7) dan tahun angkatan (dua digit pertama) dari NIM
+    yang sudah cocok `POLA_NIM`. Digit ketiga tidak dipakai. Sama dengan
+    `uraiNim` di widget (`client/src/lib/nim.ts`)."""
+    return nim[3:7], ANGKATAN_PERTAMA + int(nim[:2])
 
 
 @dataclass(frozen=True)

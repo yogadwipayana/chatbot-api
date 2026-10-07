@@ -12,6 +12,10 @@ from app.observability import tracing
 from app.rag.chain import OutcomeKind
 from app.rag.risk import KONTAK_FRONT_OFFICE
 
+NIM = "2401010101"
+SESI = {"session_id": "sesi-uji-12345", "nim": NIM}
+"""Pelengkap payload yang ditulis langsung, tanpa fixture `payload`."""
+
 
 def events(response) -> list[tuple[str, dict]]:
     """Urai aliran SSE menjadi daftar `(nama event, data)` sesuai urutannya."""
@@ -221,7 +225,7 @@ class TestPertanyaanSensitif:
     def test_diarahkan_ke_konseling(self, client):
         data = client.post(
             "/api/chat",
-            json={"question": "saya stres berat mau menyerah", "session_id": "sesi-uji-12345"},
+            json={"question": "saya stres berat mau menyerah", **SESI},
         ).json()
         assert data["kind"] == OutcomeKind.SUPPORT
         assert any("Konseling" in c["unit"] for c in data["contacts"])
@@ -229,7 +233,7 @@ class TestPertanyaanSensitif:
     def test_tanpa_sitasi_dan_tanpa_llm(self, client, api_llm):
         data = client.post(
             "/api/chat",
-            json={"question": "saya depresi", "session_id": "sesi-uji-12345"},
+            json={"question": "saya depresi", **SESI},
         ).json()
         assert data["citations"] == []
         assert api_llm.calls == []
@@ -238,7 +242,7 @@ class TestPertanyaanSensitif:
 class TestSapaan:
     def test_dibalas_singkat_tanpa_llm(self, client, api_llm):
         data = client.post(
-            "/api/chat", json={"question": "hai", "session_id": "sesi-uji-12345"}
+            "/api/chat", json={"question": "hai", **SESI}
         ).json()
         assert data["kind"] == OutcomeKind.SMALLTALK
         assert data["text"].strip()
@@ -248,7 +252,7 @@ class TestSapaan:
         """Sapaan bukan jawaban bersumber dokumen, dan tidak perlu mengarahkan
         siapa pun ke loket biro."""
         data = client.post(
-            "/api/chat", json={"question": "halo", "session_id": "sesi-uji-12345"}
+            "/api/chat", json={"question": "halo", **SESI}
         ).json()
         assert data["citations"] == []
         assert data["contacts"] == []
@@ -262,7 +266,7 @@ class TestEskalasi:
             "/api/chat",
             json={
                 "question": "kapan deadline pembayaran UKT?",
-                "session_id": "sesi-uji-12345",
+                **SESI,
             },
         ).json()
         assert data["escalated"] is True
@@ -274,20 +278,23 @@ class TestEskalasi:
 
 class TestValidasiRequest:
     def test_pertanyaan_kosong_ditolak(self, client):
-        r = client.post("/api/chat", json={"question": "", "session_id": "sesi-uji-12345"})
+        r = client.post("/api/chat", json={"question": "", **SESI})
         assert r.status_code == 422
 
     def test_pertanyaan_terlalu_panjang_ditolak(self, client):
         r = client.post(
-            "/api/chat", json={"question": "a" * 2001, "session_id": "sesi-uji-12345"}
+            "/api/chat", json={"question": "a" * 2001, **SESI}
         )
         assert r.status_code == 422
 
     def test_session_id_wajib(self, client):
-        assert client.post("/api/chat", json={"question": "halo"}).status_code == 422
+        r = client.post("/api/chat", json={"question": "halo", "nim": NIM})
+        assert r.status_code == 422
 
     def test_session_id_terlalu_pendek_ditolak(self, client):
-        r = client.post("/api/chat", json={"question": "halo", "session_id": "abc"})
+        r = client.post(
+            "/api/chat", json={"question": "halo", "session_id": "abc", "nim": NIM}
+        )
         assert r.status_code == 422
 
     def test_peran_riwayat_dibatasi(self, client, payload):
@@ -396,7 +403,7 @@ class TestPertanyaanKosongSetelahSanitasi:
     @pytest.mark.parametrize("pertanyaan", ["   ", "​​", "\n\t"])
     def test_ditolak_422_bukan_500(self, client, path, pertanyaan):
         """Lolos `min_length=1`, tetapi kosong setelah karakter kontrol dibuang."""
-        r = client.post(path, json={"question": pertanyaan, "session_id": "sesi-uji-12345"})
+        r = client.post(path, json={"question": pertanyaan, **SESI})
         assert r.status_code == 422
 
 
@@ -414,7 +421,7 @@ class TestPencatatan:
     def test_yang_dicatat_pertanyaan_tersanitasi(self, client, chat_logger):
         client.post(
             "/api/chat",
-            json={"question": "  kapan   KRS dibuka?​ ", "session_id": "sesi-uji-12345"},
+            json={"question": "  kapan   KRS dibuka?​ ", **SESI},
         )
         entri = chat_logger.entries[0]
         assert entri.question == "kapan KRS dibuka?"

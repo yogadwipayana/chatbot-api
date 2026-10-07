@@ -79,21 +79,23 @@ class TestMeta:
         assert meta["sensitivity"] == "distress"
         assert meta["topics"] == []
 
-    async def test_profil_penanya_tercatat_untuk_analitik(self, strong_retriever, llm):
+    async def test_nim_dan_profil_penanya_tercatat(self, strong_retriever, llm):
         outcome = await run_pipeline("kapan KRS?", retriever=strong_retriever, llm_call=llm)
-        meta = build_meta(entri(outcome, profile=PROFIL))
+        meta = build_meta(entri(outcome, profile=PROFIL, nim="2401010101"))
         assert (meta["program_code"], meta["intake_year"]) == ("1010", 2024)
+        assert meta["nim"] == "2401010101"
         tanpa = build_meta(entri(outcome))
-        assert (tanpa["program_code"], tanpa["intake_year"]) == (None, None)
+        assert (tanpa["program_code"], tanpa["intake_year"], tanpa["nim"]) == (None,) * 3
 
-    async def test_profil_tidak_dicatat_untuk_pesan_sensitif(self, strong_retriever, llm):
-        """Kohort kecil ditambah tanda "dialihkan ke konseling" cukup untuk
-        menebak orangnya; isinya sendiri pun sudah disembunyikan."""
+    async def test_pesan_sensitif_tetap_mencatat_nim_tanpa_profil(self, strong_retriever, llm):
+        """Pesan konseling tetap dapat ditelusuri ke penanyanya, tetapi tidak
+        ikut rincian per prodi dan angkatan di statistik."""
         outcome = await run_pipeline(
             "saya depresi takut bayar UKT", retriever=strong_retriever, llm_call=llm
         )
-        meta = build_meta(entri(outcome, profile=PROFIL))
+        meta = build_meta(entri(outcome, profile=PROFIL, nim="2401010101"))
         assert meta["kind"] == OutcomeKind.SUPPORT
+        assert meta["nim"] == "2401010101"
         assert (meta["program_code"], meta["intake_year"]) == (None, None)
 
 

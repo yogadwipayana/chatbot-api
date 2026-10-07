@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 from app.db.models import DocumentType
-from app.prodi import ANGKATAN_PERTAMA
+from app.prodi import POLA_NIM
 from app.rag.chain import OutcomeKind
 from app.rag.rewriter import HISTORY_WINDOW
 
@@ -36,18 +36,6 @@ class TurnIn(BaseModel):
         return v[:MAKS_KONTEN_RIWAYAT]
 
 
-class StudentProfileIn(BaseModel):
-    """Angkatan dan prodi penanya, diurai widget dari NIM. Bukan NIM itu sendiri:
-    nomor urutnya tidak pernah meninggalkan peramban (PRD §11)."""
-
-    program_code: str = Field(pattern=r"^\d{4}$")
-    """`code` dari `GET /api/programs` -- digit 4-7 NIM. Kode yang tidak dikenal
-    ditolak 422."""
-    intake_year: int = Field(ge=ANGKATAN_PERTAMA, le=2099)
-    """Tahun angkatan, mis. 2024 untuk NIM berawalan "240". Tahun yang belum
-    tiba ditolak 422."""
-
-
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=MAKS_PERTANYAAN)
     session_id: str = Field(min_length=8, max_length=128)
@@ -59,10 +47,12 @@ class ChatRequest(BaseModel):
     unit: str | None = Field(default=None, max_length=200)
     """`name` dari `GET /api/units`: retrieval hanya mencari di dokumen unit itu.
     Kosong berarti semua unit. Nama yang tidak terdaftar ditolak 422."""
-    profile: StudentProfileIn | None = None
-    """Bukan filter retrieval: diteruskan ke LLM supaya ketentuan yang berbeda
-    per prodi atau angkatan dijawab untuk penanya (`app.prodi`). Kosong = tanpa
-    penyesuaian."""
+    nim: str = Field(pattern=POLA_NIM)
+    """Wajib. API mengurai prodi dan angkatannya (`app.prodi.urai_nim`) dan
+    meneruskan keduanya -- bukan NIM-nya -- ke LLM, supaya ketentuan yang berbeda
+    per prodi atau angkatan dijawab untuk penanya. Bukan filter retrieval. NIM
+    utuh dicatat di `messages.meta`, juga untuk pesan sensitif. Prodi yang
+    tidak dikenal atau angkatan yang belum tiba ditolak 422."""
 
     @field_validator("history")
     @classmethod
@@ -87,7 +77,7 @@ class ProgramOut(BaseModel):
     """Satu program studi, untuk mengurai dan menampilkan NIM di widget."""
 
     code: str
-    """Digit 4-7 NIM; dikirim sebagai `profile.program_code`."""
+    """Digit 4-7 NIM."""
     name: str
     level: str
     """`S1` atau `S2`."""

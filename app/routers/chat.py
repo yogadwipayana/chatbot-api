@@ -29,7 +29,7 @@ from app.deps import (
     get_chat_logger,
     get_log_sink,
     guard_kill_switch,
-    profil_terdaftar,
+    profil_dari_nim,
     unit_terdaftar,
 )
 from app.observability.applog import catat_giliran
@@ -96,7 +96,7 @@ async def chat(
 ) -> ChatResponse:
     """Jawaban sekali kirim. Dipakai kotak uji coba admin (AD-6) dan test."""
     unit = await unit_terdaftar(units, payload.unit) if payload.unit else None
-    profil = profil_terdaftar(payload.profile)
+    profil = profil_dari_nim(payload.nim)
     mulai = time.perf_counter()
     run_id = id_giliran()
     tandai_sesi(payload.session_id, llm_call, rewrite_call)
@@ -161,7 +161,7 @@ async def chat_stream(
     # alih-alih 422 yang jelas.
     sanitize_question(payload.question)
     unit = await unit_terdaftar(units, payload.unit) if payload.unit else None
-    profil = profil_terdaftar(payload.profile)
+    profil = profil_dari_nim(payload.nim)
     mulai = time.perf_counter()
     run_id = id_giliran()
     tandai_sesi(payload.session_id, llm_call, rewrite_call)
@@ -403,6 +403,7 @@ async def catat(
             langsmith_run_id=run_id,
             unit=unit,
             profile=profile,
+            nim=payload.nim,
             embed_key=embed_key,
             # `getattr` berlapis, sama seperti `llm_call` di atas: test menyuntikkan
             # retriever palsu tanpa alat ukur, dan pencatatan tidak boleh menuntut
