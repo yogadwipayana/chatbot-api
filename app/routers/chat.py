@@ -26,6 +26,7 @@ from app.deps import (
     build_llm_call,
     build_retriever,
     build_rewrite_call,
+    build_tool_registry,
     get_chat_logger,
     get_log_sink,
     guard_kill_switch,
@@ -91,6 +92,7 @@ async def chat(
     llm_call: Any = Depends(build_llm_call),
     rewrite_call: Any = Depends(build_rewrite_call),
     gate_call: Any = Depends(build_gate_call),
+    tool_registry: Any = Depends(build_tool_registry),
     chat_logger: Any = Depends(get_chat_logger),
     log_sink: Any = Depends(get_log_sink),
 ) -> ChatResponse:
@@ -117,6 +119,8 @@ async def chat(
                 unit=unit,
                 profile=profil,
                 callbacks=[giliran.recorder],
+                tool_registry=tool_registry,
+                tool_max_rounds=settings.tools_max_rounds,
             )
             akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
 
@@ -152,6 +156,7 @@ async def chat_stream(
     llm_call: Any = Depends(build_llm_call),
     rewrite_call: Any = Depends(build_rewrite_call),
     gate_call: Any = Depends(build_gate_call),
+    tool_registry: Any = Depends(build_tool_registry),
     chat_logger: Any = Depends(get_chat_logger),
     log_sink: Any = Depends(get_log_sink),
 ) -> StreamingResponse:
@@ -206,6 +211,8 @@ async def chat_stream(
                             unit=unit,
                             profile=profil,
                             callbacks=[giliran.recorder],
+                            tool_registry=tool_registry,
+                            tool_max_rounds=settings.tools_max_rounds,
                         )
                         akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
 

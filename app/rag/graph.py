@@ -102,6 +102,10 @@ class PipelineDeps:
     """Dinyalakan `jev_gate` saat memblokir; `rewrite` dan `retrieve` berhenti
     begitu melihatnya. Tanpa ini pesan yang sudah diblokir tetap menunggu --
     dan ikut gagal bersama -- cabang pencarian yang hasilnya akan dibuang."""
+    tool_registry: Any = None
+    """Registry tool-calling, atau None bila TOOLS_ENABLED=false (docs/tool-call.md).
+    Dipakai sebagai gerbang kelayakan di `validate_context` dan di `generate`."""
+    tool_max_rounds: int = 2
 
 
 class PipelineState(TypedDict, total=False):
@@ -116,6 +120,7 @@ class PipelineState(TypedDict, total=False):
     rewritten: str | None
     documents: list[Any]
     decision: ThresholdDecision
+    tool_eligible: bool
     outcome: PipelineOutcome
 
 
@@ -306,8 +311,15 @@ async def validate_context(state: PipelineState, runtime: Rt) -> dict:
     """
     if "outcome" in state:
         return {}
+    deps = runtime.context
     hits = _hits_from_documents(state["documents"])
-    return {"decision": evaluate(hits, runtime.context.policy)}
+    hasil: dict[str, Any] = {"decision": evaluate(hits, deps.policy)}
+    # Gerbang kelayakan tool (docs/tool-call.md §8): pertanyaan yang cocok pemicu
+    # tool boleh maju ke `generate` walau konteks retrieval lemah, tanpa itu
+    # "siapa dosen Web Programming" ditolak FR-3 sebelum tool sempat dipanggil.
+    if deps.tool_registry is not None and deps.tool_registry.eligible(state["clean"]):
+        hasil["tool_eligible"] = True
+    return hasil
 
 
 async def refuse(state: PipelineState) -> dict:
@@ -344,19 +356,36 @@ def _penolakan(
 
 
 async def generate(state: PipelineState, runtime: Rt) -> dict:
-    """FR-6 (eskalasi) lalu FR-5 (jawaban bersumber, pertanyaan terbungkus)."""
+    """FR-6 (eskalasi) lalu FR-5 (jawaban bersumber, pertanyaan terbungkus).
+
+    Pertanyaan tool-eligible (TOOLS_ENABLED) disusun lewat loop agentik
+    tool-calling (docs/tool-call.md): LLM boleh memanggil tool, dan hasilnya
+    menjadi kartu sumber sintetis yang digabung ke `documents`."""
     deps = runtime.context
     assessment = risk_module.detect(state["clean"])
-    if deps.on_stage is not None:
-        await deps.on_stage("menyusun jawaban")
-    answer = await _jawab(
-        deps.llm_call,
-        pesan_mahasiswa(
-            wrap_user_input(state["clean"]), state.get("unit"), state.get("profile")
-        ),
-        state["documents"],
-        deps.on_token,
+    wrapped = pesan_mahasiswa(
+        wrap_user_input(state["clean"]), state.get("unit"), state.get("profile")
     )
+    documents = list(state["documents"])
+    pakai_tool = (
+        deps.tool_registry is not None
+        and bool(state.get("tool_eligible"))
+        and hasattr(deps.llm_call, "run_tools")
+    )
+    if pakai_tool:
+        answer, tool_docs = await deps.llm_call.run_tools(
+            wrapped,
+            documents,
+            specs=deps.tool_registry.eligible(state["clean"]),
+            on_token=deps.on_token,
+            on_stage=deps.on_stage,
+            max_rounds=deps.tool_max_rounds,
+        )
+        documents = [*documents, *tool_docs]
+    else:
+        if deps.on_stage is not None:
+            await deps.on_stage("menyusun jawaban")
+        answer = await _jawab(deps.llm_call, wrapped, documents, deps.on_token)
     # Pertanyaan di luar urusan kampus yang lolos gerbang (atau JEV mati):
     # dibalas dan dicatat seperti blokir JEV `out_of_scope` -- bukan celah
     # dokumen, jadi tidak masuk AD-4.
@@ -365,7 +394,7 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
             "outcome": PipelineOutcome(
                 kind=OutcomeKind.REJECTED,
                 text=GATE_REPLIES[GateLabel.OUT_OF_SCOPE],
-                documents=tuple(state["documents"]),
+                documents=tuple(documents),
                 decision=state["decision"],
                 sensitivity=state["sensitivity"],
                 gate=state.get("gate"),
@@ -380,14 +409,14 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
         return {"outcome": _penolakan(state, assessment, llm_called=True)}
     tanya_jawab = [
         doc.metadata.get("judul", "")
-        for doc in state["documents"]
+        for doc in documents
         if doc.metadata.get("jenis") == DocumentType.TANYA_JAWAB
     ]
     return {
         "outcome": PipelineOutcome(
             kind=OutcomeKind.ANSWER,
             text=ringkas_sitasi_tanpa_halaman(strip_markers(answer), tanya_jawab),
-            documents=tuple(state["documents"]),
+            documents=tuple(documents),
             decision=state["decision"],
             risk=assessment,
             sensitivity=state["sensitivity"],
@@ -418,7 +447,11 @@ def _selesai_atau(*berikutnya: str) -> Callable[[PipelineState], str | list[str]
 def route_context(state: PipelineState) -> str:
     if "outcome" in state:
         return "selesai"
-    return "refuse" if state["decision"].decision is Decision.REFUSE else "generate"
+    # Konteks lemah tetap ke `generate` bila pertanyaannya tool-eligible: tool
+    # yang akan menyediakan datanya, bukan retrieval (docs/tool-call.md §8).
+    if state["decision"].decision is Decision.REFUSE and not state.get("tool_eligible"):
+        return "refuse"
+    return "generate"
 
 
 SEARCH_NODE = "cari"

@@ -98,6 +98,19 @@ class Settings(BaseSettings):
     otomatis, dan vektor yang lebih pendek dari 1024 diisi nol di ekornya --
     cosine similarity tidak berubah, jadi skema database tidak perlu diubah."""
 
+    # --- Tool-calling (data layanan akademik; docs/tool-call.md) ------
+    tools_enabled: bool = False
+    """Sakelar utama tool-calling, seperti JEV_ENABLED/RERANK_ENABLED. Mati =
+    LLM tidak pernah diberi tool dan jalur chat persis seperti sebelumnya."""
+    tools_max_rounds: int = Field(default=2, ge=1, le=5)
+    """Batas putaran loop agentik: berapa kali LLM boleh memanggil tool sebelum
+    dipaksa menjawab tanpa tool (docs/tool-call.md §5)."""
+    sads_base_url: str | None = None
+    """Host layanan akademik SADS, mis. `https://sads.instiki.ac.id`."""
+    sads_api_secret: SecretStr | None = None
+    """Nilai header `secret` SADS. Hanya di env; tidak pernah dikirim ke LLM."""
+    sads_timeout_seconds: float = Field(default=10.0, gt=0)
+
     # --- Reranker (setelah RRF, sebelum threshold) -------------------
     rerank_enabled: bool = False
     """Sakelar reranker, seperti JEV_ENABLED. Mati = urutan RRF langsung dipakai
@@ -348,6 +361,10 @@ class Settings(BaseSettings):
         """API_KEY, atau None bila kosong."""
         return _terisi(self.api_key)
 
+    def kunci_sads(self) -> SecretStr | None:
+        """SADS_API_SECRET, atau None bila kosong -- sengaja tidak jatuh ke API_KEY."""
+        return _terisi(self.sads_api_secret)
+
     def kunci_rerank(self) -> SecretStr | None:
         """RERANK_API_KEY, atau None bila kosong -- sengaja tidak jatuh ke API_KEY."""
         return _terisi(self.rerank_api_key)
@@ -385,6 +402,17 @@ class Settings(BaseSettings):
             raise ValueError(f"rerank_candidates harus >= 1, diberi {self.rerank_candidates}")
         if self.rerank_threshold is not None and not 0.0 <= self.rerank_threshold <= 1.0:
             raise ValueError(f"rerank_threshold di luar 0..1: {self.rerank_threshold}")
+
+        if self.tools_enabled:
+            if not self.sads_base_url:
+                raise ValueError("TOOLS_ENABLED=true butuh SADS_BASE_URL")
+            if not self.sads_base_url.startswith(("http://", "https://")):
+                raise ValueError(
+                    f"SADS_BASE_URL harus diawali http:// atau https://, "
+                    f"diberi {self.sads_base_url!r}"
+                )
+            if self.kunci_sads() is None:
+                raise ValueError("TOOLS_ENABLED=true butuh SADS_API_SECRET")
 
         if self.jev_enabled:
             if self.kunci_jev() is None:

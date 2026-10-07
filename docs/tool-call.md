@@ -6,9 +6,13 @@ menjawab. Melengkapi `flow.md`: di sana LLM hanya meringkas konteks hasil
 retrieval; di sini LLM boleh **meminta data terstruktur yang segar** lewat API
 yang sudah terdaftar.
 
-> **Status: desain + gateway terverifikasi, belum diimplementasikan.**
-> Dukungan tool-calling gateway sudah diuji nyata (lihat §2). Kode di `api/`
-> belum punya jalur ini; bagian "berkas" menyebut tempat kode akan ditambahkan.
+> **Status: terimplementasi, di belakang `TOOLS_ENABLED` (default mati).**
+> Modul ada di `app/rag/tools/`, terintegrasi di node `generate`
+> (`app/rag/graph.py`). Diuji `tests/unit/test_tools.py` (registry, validasi,
+> handler, loop, integrasi pipeline) dan diverifikasi live ke gateway + SADS
+> (2026-10-07): pertanyaan "dosen pengampu mata kuliah Programming" dan "daftar
+> dosen" dijawab lengkap dengan kartu sumber "Data akademik SADS". Nyalakan di
+> produksi dengan `TOOLS_ENABLED=true` (butuh `SADS_BASE_URL` + `SADS_API_SECRET`).
 
 Nama berkas di dalam `( )` relatif terhadap `api/`.
 
@@ -113,15 +117,15 @@ Keterkaitan dengan gerbang lain tidak berubah:
 
 ## 4. Komponen & berkas
 
-| Komponen | Tugas | Berkas (rencana) |
+| Komponen | Tugas | Berkas |
 |---|---|---|
-| Registry tool | Daftar tool: nama, skema JSON, handler, pemicu, label sitasi | `app/rag/tools/registry.py` |
-| Spesifikasi tool | Dataclass satu tool (§6) | `app/rag/tools/base.py` |
+| Spesifikasi & primitif | `ToolSpec`, `ToolResult`, validasi argumen, kartu sitasi (§6, §10, §11) | `app/rag/tools/base.py` |
+| Registry tool | Daftar tool + rute kelayakan `eligible()` | `app/rag/tools/registry.py` |
 | Handler SADS | Panggil endpoint SADS + normalisasi hasil | `app/rag/tools/sads.py` |
-| Klien HTTP | `httpx.AsyncClient`, header `secret`, timeout, retry | `app/rag/tools/client.py` |
-| Loop agentik | Orkestrasi LLM ↔ tool di `generate` | `app/rag/graph.py`, `app/rag/chain.py` (`_jawab`) |
-| Binding tools ke LLM | `build_llm(...).bind_tools(specs)` | `app/rag/providers.py`, `app/deps.py` (`LLMCall`) |
-| Gerbang kelayakan | Tandai `tool_eligible` sebelum FR-3 | `app/rag/tools/routing.py`, `app/rag/graph.py::validate_context` |
+| Klien HTTP | `httpx.AsyncClient`, header `secret`, timeout | `app/rag/tools/client.py` |
+| Loop agentik | Orkestrasi LLM ↔ tool, streaming giliran final | `app/rag/tools/loop.py` |
+| Binding tools ke LLM | `build_llm(...).bind(tools=…, tool_choice="auto")` + loop | `app/deps.py` (`LLMCall.run_tools`) |
+| Gerbang kelayakan | Tandai `tool_eligible` sebelum FR-3, integrasi `generate` | `app/rag/graph.py` (`validate_context`, `route_context`, `generate`) |
 
 Prinsip: **registry deklaratif, handler tipis.** Menambah endpoint = menambah
 satu spesifikasi + satu handler + test — tanpa menyentuh loop atau graf (§16).
@@ -371,10 +375,16 @@ Loop, streaming, sitasi, dan gerbang kelayakan **tidak** perlu disentuh.
 
 ## 17. Rencana bertahap
 
-1. **Fondasi** — `ToolSpec`, registry, klien HTTP, loop non-stream, di belakang
-   `TOOLS_ENABLED=false`. Tool SADS perdana + test handler.
-2. **Streaming** — buffer `tool_calls`, stream giliran final, `on_stage`.
-3. **Integrasi gerbang** — `tool_eligible` sebelum FR-3, kartu sumber sintetis.
-4. **Kalibrasi & observability** — log `messages.meta`, pantau latensi p95,
-   kalibrasi `triggers` dari log nyata.
-5. **Nyalakan** — `TOOLS_ENABLED=true` setelah test hijau & latensi terukur.
+Fase 1–3 sudah diimplementasikan (2026-10-07); fase 4–5 adalah operasional.
+
+1. ✅ **Fondasi** — `ToolSpec`, registry, klien HTTP, loop, di belakang
+   `TOOLS_ENABLED=false`. Dua tool SADS perdana + test.
+2. ✅ **Streaming** — giliran tool di-buffer (tak berkonten), hanya giliran
+   jawaban final yang mengalir; penyaring `[Error]` + penahan penanda dipakai ulang.
+3. ✅ **Integrasi gerbang** — `tool_eligible` sebelum FR-3 (`validate_context` +
+   `route_context`), kartu sumber sintetis di `generate`.
+4. ⏳ **Kalibrasi & observability** — `usage` sudah tercatat lewat `LLMCall`;
+   berikutnya: perkaya `messages.meta` dengan nama tool/argumen/latensi, pantau
+   latensi p95, kalibrasi `triggers` dari log nyata.
+5. ⏳ **Nyalakan** — set `TOOLS_ENABLED=true` di produksi setelah latensi terukur
+   (gateway + SADS sudah diverifikasi berfungsi di lokal).

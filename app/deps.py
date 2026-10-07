@@ -486,6 +486,43 @@ class LLMCall:
             yield sisa
         self.usage = getattr(utuh, "usage_metadata", None)
 
+    async def run_tools(
+        self,
+        wrapped_question: str,
+        documents: Any,
+        *,
+        specs: Any,
+        on_token: Any = None,
+        on_stage: Any = None,
+        max_rounds: int = 2,
+    ) -> tuple[str, list[Any]]:
+        """Loop agentik tool-calling (docs/tool-call.md §5, §9).
+
+        Mengembalikan (jawaban_utuh, dokumen_sumber_tool) dan mencatat `usage`
+        gabungan semua giliran LLM ke `self.usage`, sama seperti `__call__`,
+        supaya estimasi biaya AD-5 tetap tercatat (dengan catatan akunting token
+        gateway tidak presisi -- ai-gateway-facts)."""
+        from app.rag.providers import build_llm
+        from app.rag.tools.loop import run_tool_loop
+
+        base = build_llm(self.settings, streaming=True)
+        llm_tools = base.bind(
+            tools=[s.openai_schema() for s in specs], tool_choice="auto"
+        )
+        result = await run_tool_loop(
+            llm_tools=llm_tools,
+            llm_plain=base,
+            wrapped_question=wrapped_question,
+            documents=documents,
+            specs=specs,
+            on_token=on_token,
+            on_stage=on_stage,
+            max_rounds=max_rounds,
+            config=self._config(),
+        )
+        self.usage = result.usage
+        return result.text, result.documents
+
 
 def build_llm_call(settings: SettingsDep) -> Any:
     """Kembalikan callable (pertanyaan_terbungkus, dokumen) -> teks jawaban.
@@ -523,6 +560,18 @@ class RewriteCall:
 def build_rewrite_call(settings: SettingsDep) -> Any:
     """Dependency terpisah agar rewrite produksi dapat diganti tanpa jaringan di test."""
     return RewriteCall(settings)
+
+
+def build_tool_registry(settings: SettingsDep) -> Any:
+    """Registry tool-calling, atau None bila TOOLS_ENABLED=false (docs/tool-call.md).
+
+    None membuat jalur chat persis seperti sebelum tool ada: `generate` memakai
+    `_jawab` biasa dan gerbang kelayakan tidak pernah mengubah routing FR-3."""
+    if not settings.tools_enabled:
+        return None
+    from app.rag.tools.registry import build_registry
+
+    return build_registry(settings)
 
 
 def get_embeddings(settings: SettingsDep) -> Any:

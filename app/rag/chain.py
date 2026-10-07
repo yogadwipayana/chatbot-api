@@ -173,6 +173,8 @@ async def run_pipeline(
     unit: str | None = None,
     profile: ProfilMahasiswa | None = None,
     callbacks: Sequence[Any] = (),
+    tool_registry: Any = None,
+    tool_max_rounds: int = 2,
 ) -> PipelineOutcome:
     """Jalankan satu putaran tanya-jawab lewat graf `app.rag.graph`.
 
@@ -196,6 +198,10 @@ async def run_pipeline(
             diteruskan ke LLM (`app.prodi`). None berarti tanpa penyesuaian.
         callbacks: callback LangChain untuk seluruh graf, mis. perekam durasi
             per node (`app.observability.applog.NodeRecorder`).
+        tool_registry: registry tool-calling, atau None bila TOOLS_ENABLED=false
+            (docs/tool-call.md). Dipakai sebagai gerbang kelayakan sebelum FR-3
+            dan di `generate`.
+        tool_max_rounds: batas putaran loop agentik tool.
 
     `llm_call`, `rewrite_call`, dan `gate_call` disuntikkan agar test dapat
     membuktikan kapan layanan luar dipanggil dan kapan tidak, tanpa memanggil
@@ -211,6 +217,8 @@ async def run_pipeline(
         policy=policy,
         on_token=on_token,
         on_stage=on_stage,
+        tool_registry=tool_registry,
+        tool_max_rounds=tool_max_rounds,
     )
     return await run_graph(
         question,
