@@ -6,13 +6,14 @@ menjawab. Melengkapi `flow.md`: di sana LLM hanya meringkas konteks hasil
 retrieval; di sini LLM boleh **meminta data terstruktur yang segar** lewat API
 yang sudah terdaftar.
 
-> **Status: terimplementasi, di belakang `TOOLS_ENABLED` (default mati).**
-> Modul ada di `app/rag/tools/`, terintegrasi di node `generate`
-> (`app/rag/graph.py`). Diuji `tests/unit/test_tools.py` (registry, validasi,
-> handler, loop, integrasi pipeline) dan diverifikasi live ke gateway + SADS
-> (2026-10-07): pertanyaan "dosen pengampu mata kuliah Programming" dan "daftar
-> dosen" dijawab lengkap dengan kartu sumber "Data akademik SADS". Nyalakan di
-> produksi dengan `TOOLS_ENABLED=true` (butuh `SADS_BASE_URL` + `SADS_API_SECRET`).
+> **Status: terimplementasi & AKTIF di `.env` lokal (`TOOLS_ENABLED=true`).**
+> Default kode tetap mati; `.env` lokal menyalakannya. Modul di `app/rag/tools/`,
+> terintegrasi di node `generate` (`app/rag/graph.py`). Diuji
+> `tests/unit/test_tools.py` (registry, validasi, handler, loop, integrasi) dan
+> diverifikasi live lewat `POST /api/chat` (2026-10-07): "dosen pengampu mata
+> kuliah Programming" dijawab lengkap dengan kartu sumber "Data akademik SADS"
+> dan `meta.tool_calls` tercatat. Produksi: set `TOOLS_ENABLED=true` +
+> `SADS_BASE_URL` + `SADS_API_SECRET` di env server.
 
 Nama berkas di dalam `( )` relatif terhadap `api/`.
 
@@ -315,8 +316,11 @@ Kegagalan tool tidak boleh memunculkan jawaban ngawur.
 
 ## 13. Observability & biaya
 
-- Catat per pertanyaan ke `messages.meta` (sejajar JEV): tool yang dipanggil,
-  argumen, latensi, ukuran hasil, sukses/gagal, jumlah putaran loop.
+- ✅ **`messages.meta.tool_calls`** (sejajar JEV): satu entri per panggilan tool
+  — `name`, `args` (mentah dari model), `ok`, `latency_ms`. None bila tool tidak
+  dipakai. Dialirkan loop → `LLMCall.tool_calls` → `catat` → `build_meta`
+  (`app/observability/chatlog.py`). Contoh nyata (2026-10-07):
+  `[{"name":"get_mk_diampu_dosen","args":{"matkul":"Programming"},"ok":true,"latency_ms":876}]`.
 - Span LangSmith per giliran LLM dan per panggilan tool
   (`app/observability/tracing.py`).
 - FR-8/AD-5: jumlahkan `usage` semua giliran; beri tanda bahwa angka gateway
@@ -375,7 +379,8 @@ Loop, streaming, sitasi, dan gerbang kelayakan **tidak** perlu disentuh.
 
 ## 17. Rencana bertahap
 
-Fase 1–3 sudah diimplementasikan (2026-10-07); fase 4–5 adalah operasional.
+Semua fase sudah dijalankan (2026-10-07). `TOOLS_ENABLED=true` aktif di `.env`
+lokal dan sudah diuji lewat `POST /api/chat` (jawaban + kartu sumber + `meta.tool_calls`).
 
 1. ✅ **Fondasi** — `ToolSpec`, registry, klien HTTP, loop, di belakang
    `TOOLS_ENABLED=false`. Dua tool SADS perdana + test.
@@ -383,8 +388,9 @@ Fase 1–3 sudah diimplementasikan (2026-10-07); fase 4–5 adalah operasional.
    jawaban final yang mengalir; penyaring `[Error]` + penahan penanda dipakai ulang.
 3. ✅ **Integrasi gerbang** — `tool_eligible` sebelum FR-3 (`validate_context` +
    `route_context`), kartu sumber sintetis di `generate`.
-4. ⏳ **Kalibrasi & observability** — `usage` sudah tercatat lewat `LLMCall`;
-   berikutnya: perkaya `messages.meta` dengan nama tool/argumen/latensi, pantau
-   latensi p95, kalibrasi `triggers` dari log nyata.
-5. ⏳ **Nyalakan** — set `TOOLS_ENABLED=true` di produksi setelah latensi terukur
-   (gateway + SADS sudah diverifikasi berfungsi di lokal).
+4. ✅ **Observability** — `messages.meta.tool_calls` (nama/argumen/ok/latensi) +
+   `usage` tercatat (§13). Lanjutan opsional: pantau latensi p95 produksi dan
+   kalibrasi `triggers` dari log nyata.
+5. ✅ **Nyalakan** — `TOOLS_ENABLED=true` aktif di `.env` lokal, terverifikasi
+   lewat `/api/chat`. Untuk produksi: set `TOOLS_ENABLED=true` + `SADS_*` di env
+   server.

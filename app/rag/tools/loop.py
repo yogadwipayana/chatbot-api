@@ -13,8 +13,9 @@ jawaban final yang mengalir. Penyaring `[Error]` gateway dan penahan penanda
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -43,6 +44,9 @@ class ToolLoopResult:
     text: str
     documents: list[Document]
     usage: dict[str, Any] | None
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    """Satu entri per panggilan tool: nama, argumen (mentah dari model), ok,
+    latency_ms. Untuk `messages.meta` (observability, docs/tool-call.md §13)."""
 
 
 def _chunk_text(chunk: Any) -> str:
@@ -134,6 +138,7 @@ async def run_tool_loop(
         HumanMessage(content=wrapped_question),
     ]
     hasil: list[ToolResult] = []
+    jejak: list[dict[str, Any]] = []
     usage: dict | None = None
 
     for _ in range(max_rounds):
@@ -143,12 +148,21 @@ async def run_tool_loop(
         usage = _tambah_usage(usage, getattr(gathered, "usage_metadata", None))
         panggilan = list(getattr(gathered, "tool_calls", None) or [])
         if not panggilan:
-            return ToolLoopResult(teks, hasil_tool_ke_dokumen(hasil), usage)
+            return ToolLoopResult(teks, hasil_tool_ke_dokumen(hasil), usage, jejak)
         if on_stage is not None:
             await on_stage("mengambil data akademik")
         messages.append(gathered)
         for tc in panggilan:
+            mulai = time.perf_counter()
             r = await _jalankan_tool(tc, by_name)
+            jejak.append(
+                {
+                    "name": tc.get("name"),
+                    "args": tc.get("args") or {},
+                    "ok": r.ok,
+                    "latency_ms": round((time.perf_counter() - mulai) * 1000),
+                }
+            )
             hasil.append(r)
             messages.append(
                 ToolMessage(content=r.pesan_untuk_model(), tool_call_id=tc.get("id", ""))
@@ -160,4 +174,4 @@ async def run_tool_loop(
         llm_plain, messages, on_token=on_token, config=config
     )
     usage = _tambah_usage(usage, getattr(gathered, "usage_metadata", None))
-    return ToolLoopResult(teks, hasil_tool_ke_dokumen(hasil), usage)
+    return ToolLoopResult(teks, hasil_tool_ke_dokumen(hasil), usage, jejak)

@@ -407,6 +407,7 @@ async def catat(
             latency_ms=round((time.perf_counter() - mulai) * 1000),
             model=getattr(llm_call, "model", None),
             usage=getattr(llm_call, "usage", None),
+            tool_calls=getattr(llm_call, "tool_calls", None),
             langsmith_run_id=run_id,
             unit=unit,
             profile=profile,

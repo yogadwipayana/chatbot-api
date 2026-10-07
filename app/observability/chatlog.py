@@ -69,6 +69,10 @@ class ChatLogEntry:
     embed_tokens: int | None = None
     embed_biaya_usd: float | None = None
     embed_biaya_sumber: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
+    """Jejak panggilan tool giliran ini (docs/tool-call.md §13): tiap entri
+    berisi nama tool, argumen (mentah dari model), ok, dan latency_ms. None bila
+    tool tidak dipakai (TOOLS_ENABLED=false atau pertanyaan tidak eligible)."""
 
 
 def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
@@ -134,6 +138,9 @@ def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
         "top_rerank_score": (
             outcome.decision.top_rerank_score if outcome.decision else None
         ),
+        # Jejak tool-calling: nama, argumen, ok, latency_ms per panggilan.
+        # None bila tool tidak dipakai, sehingga baris lama tetap sebanding.
+        "tool_calls": entry.tool_calls or None,
     }
 
 

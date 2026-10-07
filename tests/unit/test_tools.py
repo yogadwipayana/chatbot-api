@@ -173,6 +173,31 @@ def test_pesan_tool_membingkai_sebagai_data():
     assert "DATA_TIDAK_TERSEDIA" in gagal
 
 
+def test_jejak_tool_masuk_messages_meta():
+    """Fase 4: jejak tool mengalir ke `messages.meta`; None bila tool tak dipakai."""
+    from app.observability.chatlog import ChatLogEntry, build_meta
+    from app.rag.chain import OutcomeKind, PipelineOutcome
+
+    jejak = [
+        {"name": "get_mk_diampu_dosen", "args": {"matkul": "X"}, "ok": True, "latency_ms": 12}
+    ]
+    outcome = PipelineOutcome(kind=OutcomeKind.ANSWER, text="t", llm_called=True)
+    meta = build_meta(
+        ChatLogEntry(
+            session_id="s",
+            question="q",
+            outcome=outcome,
+            latency_ms=1,
+            tool_calls=jejak,
+        )
+    )
+    assert meta["tool_calls"] == jejak
+    meta_tanpa = build_meta(
+        ChatLogEntry(session_id="s", question="q", outcome=outcome, latency_ms=1)
+    )
+    assert meta_tanpa["tool_calls"] is None
+
+
 # --- Loop agentik --------------------------------------------------------
 
 
@@ -253,6 +278,13 @@ class TestLoop:
         assert "".join(token) == res.text
         assert len(res.documents) == 1
         assert res.usage["total_tokens"] == 7
+        # Jejak untuk observability (Fase 4): nama, argumen, ok, latensi.
+        assert len(res.tool_calls) == 1
+        j = res.tool_calls[0]
+        assert j["name"] == "get_mk_diampu_dosen"
+        assert j["args"] == {"matkul": "Programming"}
+        assert j["ok"] is True
+        assert isinstance(j["latency_ms"], int) and j["latency_ms"] >= 0
 
     async def test_argumen_dihalusinasi_tetap_divalidasi(self):
         async def handler(*, matkul: str) -> ToolResult:

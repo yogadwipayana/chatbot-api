@@ -438,6 +438,8 @@ class LLMCall:
         self.settings = settings
         self.model = settings.chat_model
         self.usage: dict[str, Any] | None = None
+        self.tool_calls: list[dict[str, Any]] | None = None
+        """Jejak panggilan tool giliran ini untuk `messages.meta` (docs/tool-call.md §13)."""
         self.run_id: str | None = None
         self.session_id: str | None = None
         """Diisi router lewat `tandai_sesi` supaya run ini ikut terkelompok ke
@@ -521,6 +523,7 @@ class LLMCall:
             config=self._config(),
         )
         self.usage = result.usage
+        self.tool_calls = result.tool_calls
         return result.text, result.documents
 
 
