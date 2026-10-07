@@ -121,8 +121,9 @@ Gerbang lain tidak berubah:
 | Loop agentik | LLM ↔ tool, eksekusi paralel, batas, streaming | `app/rag/tools/loop.py` |
 | Binding ke LLM | `build_llm(...).bind(tools=…, tool_choice="auto")` | `app/deps.py` (`LLMCall.run_tools`) |
 | Kelayakan & routing | `tool_eligible`, penolakan FR-3 bila tool tak tersedia, pertanyaan untuk loop | `app/rag/graph.py` (`_tool_eligible`, `route_context`, `_pesan_tool`, `generate`) |
-| Aturan prompt | Aturan alat T1–T4 disisipkan sebelum KONTEKS | `app/rag/prompts.py` (`TOOL_SYSTEM_PROMPT`) |
-| Pencatatan | `messages.meta.tool_calls` | `app/observability/chatlog.py` |
+| Aturan prompt | Aturan alat T1–T5 disisipkan sebelum KONTEKS | `app/rag/prompts.py` (`TOOL_SYSTEM_PROMPT`) |
+| Lampiran | Daftar hasil tool tampil langsung di widget, per 10 baris (§10a) | `app/rag/tools/base.py` (`Lampiran`), `app/rag/graph.py` (`generate`), `ChatResponse.attachments`, `client/src/components/chat/chat-message.tsx` (`Lampiran`) |
+| Pencatatan | `messages.meta.tool_calls`, `messages.meta.attachments` | `app/observability/chatlog.py` |
 
 Prinsipnya: **registry deklaratif, handler tipis.** Menambah endpoint berarti
 menambah satu `ToolSpec`, satu handler, dan test-nya, tanpa menyentuh loop
@@ -189,11 +190,19 @@ class ToolResult:
     label: str                     # penanda sitasi; kosong bila gagal
     text: str                      # teks ternormalisasi untuk model
     ok: bool = True
+    attachment: Lampiran | None = None   # daftar untuk widget (§10a)
+
+@dataclass(frozen=True)
+class Lampiran:
+    title: str                     # "Dosen bergelar Dr."
+    source: str                    # penanda sitasi asal datanya
+    items: tuple[str, ...]
 ```
 
 `ToolResult.pesan_untuk_model()` membentuk isi pesan `role:"tool"`. Bila
 berhasil, isinya `(Kutip data berikut dengan menyalin penanda [label].)` diikuti
-datanya. Bila gagal, isinya `DATA_TIDAK_TERSEDIA: …`. Skema `parameters` adalah
+datanya; hasil berlampiran mendapat sisipan `DAFTAR_DITAMPILKAN` (§10a). Bila
+gagal, isinya `DATA_TIDAK_TERSEDIA: …`. Skema `parameters` adalah
 satu-satunya kontrak argumen; `validasi_argumen` menegakkannya sebelum handler
 dipanggil.
 
@@ -209,12 +218,30 @@ Bearer dan bukan query param (terverifikasi 2026-10-06). Base dari
 `SADS_BASE_URL`, token dari `SADS_API_SECRET`.
 
 ### `get_daftar_dosen`
-- `GET /service/tp/chatbot/dosen-mengajar`, tanpa argumen.
+- `GET /service/tp/chatbot/dosen-mengajar`. Argumen opsional `nama` dan `gelar`
+  disaring di handler; endpoint SADS-nya sendiri tanpa parameter.
 - Respons: `[{"nmdosen": "..."}]`.
 - Normalisasi: buang spasi dan koma di ujung, buang duplikat, urutkan.
-- Teksnya diawali **jumlah yang dihitung handler** ("Jumlah dosen …: N orang").
-  LLM tidak andal menghitung daftar panjang. Pada 2026-10-07, dari 220 nama,
-  model menjawab "223 dosen".
+- Saringan (`_cocok`, `_urai_dosen`):
+  - `nama` dicocokkan sebagai bagian **nama inti**, tanpa beda huruf besar-kecil
+    dan spasi ganda. Nama inti adalah teks sebelum koma pertama tanpa gelar
+    depan (`Prof`, `Dr`, `Drs`, `Dra`, `Ir`), jadi "kom" mencocokkan "Komang",
+    bukan gelar "S.Kom".
+  - `gelar` dicocokkan sebagai **token utuh** setelah titik dan spasi dibuang
+    ("Dr." = "dr" = "DR"), dari gelar depan maupun belakang (dipisah koma atau
+    spasi). "Dr." tidak mencocokkan "Drs.". Sinonim: "doktor" = Dr. atau
+    Ph.D., "profesor" = Prof.
+  - Keduanya boleh digabung (dan).
+- Teksnya diawali **jumlah yang dihitung handler** ("Jumlah dosen yang mengajar
+  di INSTIKI bergelar Dr.: 25 orang."), ditambah jumlah seluruh dosen bila
+  disaring. LLM tidak andal menghitung atau menyaring daftar panjang. Pada
+  2026-10-07, dari 220 nama, model menjawab "223 dosen"; dari 25 dosen bergelar
+  Dr., "38" lalu "39"; dan "dosen bernama Wayan" kehilangan 1 dari 15 (T46).
+- Saringan tanpa hasil adalah jawaban sah ("Tidak ada dosen … bergelar Prof.:
+  0 orang"): `ok=True`, tanpa lampiran. SADS yang tidak mengembalikan satu nama
+  pun tetap `ok=False` (§12).
+- Hasil yang tidak kosong membawa **lampiran** (§10a) berisi nama-nama yang
+  cocok, berjudul mis. "Dosen bergelar Dr.".
 
 ### `get_mk_diampu_dosen`
 - `GET /service/tp/chatbot/mk-diampu-dosen?matkul=<kata kunci>`.
@@ -320,6 +347,51 @@ file_path = "", document_id = "", tanpa chunk_id
 
 ---
 
+## 10a. Lampiran: daftar langsung ke widget
+
+Daftar panjang dari tool tidak ditulis ulang model. Uji 2026-10-07: daftar 220
+dosen yang disalin model memang akurat, tetapi memakan sekitar 3,8 ribu token
+keluaran dan 27–70 detik menulis, dan di widget menjadi gelembung setinggi 17
+layar. Begitu disalin, setiap hitungan atau saringan atasnya juga dikerjakan
+model (T46).
+
+Alurnya:
+
+1. Handler mengisi `ToolResult.attachment = Lampiran(title, source, items)`.
+2. `pesan_untuk_model` tetap mengirim datanya utuh, karena model butuh nama-
+   namanya untuk menjawab "apakah Pak Totok dosen INSTIKI?". Sisipan
+   `DAFTAR_DITAMPILKAN` (`CATATAN_LAMPIRAN`) memberi tahu bahwa daftarnya sudah
+   tampil, dan memuat petunjuknya sendiri: jangan menyalin seluruh daftar, salin
+   jumlahnya, jawab ringkas. Aturan T5 hanya mengesahkan penanda itu sebagai
+   pesan sistem (pengecualian T2). Petunjuk yang sama pernah ditaruh di T5 dan
+   bocor ke tool lain: "siapa dosen pengampu Web Programming?" dijawab
+   "berjumlah 23 orang" tanpa nama (§18).
+3. `run_tool_loop` mengumpulkan lampiran dari tool yang berhasil
+   (`ToolLoopResult.attachments` → `LLMCall.attachments`).
+4. `generate` meneruskannya ke `PipelineOutcome.attachments` **hanya** untuk
+   `answer` dan hanya bila `source`-nya dikutip jawaban, aturan yang sama dengan
+   kartu sitasi (`citations_for`). Model yang memanggil tool tetapi tidak
+   memakai hasilnya tidak menempelkan daftar 220 dosen di bawah jawaban lain.
+5. `ChatResponse.attachments` (juga di event SSE `message` dan
+   `TestQueryResponse`) membawa `{title, source, items}`. Widget menampilkannya
+   di bawah jawaban, sebelum kartu Sumber, **10 baris per halaman** dengan
+   tombol ‹ › dan nomor yang berlanjut antarhalaman. Uji coba admin menampilkan
+   kotak yang sama. Seperti sitasi, lampiran tidak ditampilkan bila aliran SSE
+   putus sebelum `done`.
+6. `messages.meta.attachments` menyimpan lampiran utuh (§13).
+
+Batasan:
+
+- Lampiran tidak ikut riwayat percakapan. `history` yang dikirim widget hanya
+  berisi `text`, jadi "yang nomor 11 siapa?" tidak dapat dijawab dari lampiran
+  sebelumnya.
+- Hanya `get_daftar_dosen` yang berlampiran. `get_mk_diampu_dosen` sengaja
+  belum: SADS mencocokkan `matkul` sebagai substring, dan model yang menyaring
+  hasilnya ("Basis Data" tanpa "Basis Data Lanjut"). Lampiran mentah akan
+  berbeda dari jawaban model.
+
+---
+
 ## 11. Keamanan
 
 - **Injeksi lewat hasil tool.** Respons API masuk sebagai pesan `role:"tool"`,
@@ -328,7 +400,8 @@ file_path = "", document_id = "", tanpa chunk_id
 - **Validasi argumen (anti-SSRF).** Handler **tidak pernah** menerima URL dari
   model, hanya argumen bernama dari skema. `validasi_argumen` membuang argumen
   tak dikenal, membersihkan karakter non-cetak, memotong string ke 200 karakter,
-  dan menolak argumen wajib yang kosong. `matkul` yang dihalusinasi paling buruk
+  dan menolak argumen wajib yang kosong. Argumen string bernilai `null` dibuang
+  (berarti "tidak disaring"), bukan diteruskan sebagai teks "None". `matkul` yang dihalusinasi paling buruk
   menghasilkan daftar kosong.
 - **Rahasia.** `secret` SADS hanya ada di env (`SADS_API_SECRET`). Ia tidak
   pernah di-log, dikirim ke LLM, atau masuk kartu sumber. Aplikasi menolak start
@@ -343,6 +416,8 @@ file_path = "", document_id = "", tanpa chunk_id
 | Kegagalan | Tindakan |
 |---|---|
 | Tool HTTP galat / timeout / respons tak terduga | pesan `role:"tool"` = `DATA_TIDAK_TERSEDIA`; model menjawab apa adanya atau menolak |
+| Saringan `get_daftar_dosen` tanpa hasil | `ok=True`, "Tidak ada dosen …: 0 orang", tanpa lampiran; model menjawab "tidak ada" bersumber SADS |
+| `get_mk_diampu_dosen` tanpa hasil | masih `DATA_TIDAK_TERSEDIA`, sama dengan galat (§18, masih terbuka) |
 | Argumen tool bukan JSON sah (`invalid_tool_calls`) | dibalas "argumen tidak dapat dibaca", loop berlanjut; tercatat `error = argumen_rusak` |
 | Lebih dari 4 tool dalam satu giliran | sisanya dibalas "batas tercapai" tanpa dijalankan; `error = batas_per_giliran` |
 | Model terus memanggil tool sampai batas putaran | giliran terakhir dipanggil tanpa `tools`, jadi model pasti menjawab teks |
@@ -364,12 +439,19 @@ menjawab.** Kegagalan tool tidak boleh memunculkan jawaban ngawur.
   `LLMCall.tool_calls` → `catat` → `build_meta`. Rinciannya di `docs/schema.md`.
   Contoh nyata: `[{"name":"get_mk_diampu_dosen","args":{"matkul":"Basis
   Data"},"ok":true,"latency_ms":909}]`.
+- **`messages.meta.attachments`**: lampiran yang tampil di bawah jawaban, utuh
+  (`[{title, source, items}]`); `null` bila tidak ada. Disimpan lengkap karena
+  data SADS berubah per semester: memanggil ulang tool tidak mengulang daftar
+  yang dilihat mahasiswa saat ia menilai 👎.
 - **LangSmith**: setiap giliran LLM di loop menjadi run `generate_answer`
   tersendiri di bawah trace giliran. Panggilan tool **tidak** punya span sendiri;
   jejaknya ada di `meta.tool_calls`.
 - **Token**: `usage` dijumlahkan lintas giliran (§2). Pertanyaan ber-tool
   memakai sekitar 7–8 ribu token input dengan `cx/gpt-6-luna`, karena skema tool,
-  aturan T1–T4, dan hasil tool. `get_daftar_dosen` saja membawa sekitar 220 nama.
+  aturan T1–T5, dan hasil tool. `get_daftar_dosen` tanpa saringan membawa sekitar
+  220 nama (~13 ribu token input untuk dua giliran). Dengan lampiran, keluarannya
+  tidak lagi memuat daftar itu: sebelumnya ~3,8 ribu token keluaran untuk
+  "sebutkan semua dosen".
 - **Latensi**: minimal dua round-trip LLM ditambah SADS (sekitar 0,2–1,3 dtk per
   panggilan dalam uji live).
 
@@ -411,6 +493,13 @@ Polanya mengikuti `RERANK_*`: fitur di belakang sakelar, bawaan mati, nilai di
   tetap dijawab; di luar topik tidak eligible; pertanyaan lanjutan lewat rewrite
   (dan pertanyaannya di dalam tag); jawaban parsial tool tidak dibuang.
 - **Meta**: `tool_calls` masuk `messages.meta`; `null` tanpa tool.
+- **Saringan `get_daftar_dosen`** (`TestSaringDaftarDosen`): gelar dihitung
+  handler, "Dr." tidak mencocokkan "Drs.", penulisan gelar disamakan, sinonim
+  "doktor", `nama` hanya ke nama inti, gabungan nama + gelar, saringan kosong
+  tetap `ok`, SADS kosong tetap gagal, argumen opsional `null`.
+- **Lampiran** (`TestLampiran`): sisipan `DAFTAR_DITAMPILKAN` sesuai aturan T5,
+  loop mengumpulkan lampiran, pipeline meneruskan hanya yang sumbernya dikutip,
+  penolakan tanpa lampiran, `ChatResponse` dan `messages.meta` membawanya.
 
 Yang **tidak** diuji otomatis: ketahanan model terhadap instruksi yang disisipkan
 di hasil tool. Itu perilaku model, dan pertahanannya ada di aturan T2 + aturan 5.
@@ -421,7 +510,10 @@ di hasil tool. Itu perilaku model, dan pertahanannya ada di aturan T2 + aturan 5
 
 1. Tulis handler di `app/rag/tools/sads.py`, atau modul layanan lain: panggil
    endpoint, normalisasi ke teks ringkas, sertakan jumlah bila datanya berupa
-   daftar, lalu kembalikan `ToolResult`.
+   daftar, lalu kembalikan `ToolResult`. Daftar yang mungkin panjang dan tidak
+   perlu disaring model sebaiknya juga dikirim sebagai `Lampiran` (§10a);
+   saringan yang mungkin ditanyakan ("bergelar Dr.") jadikan argumen, bukan
+   tugas model.
 2. Deklarasikan `ToolSpec`: `name`, `description` (sempit dan jelas),
    `parameters` (JSON Schema), `triggers` (Indonesia **dan** Inggris), dan
    `citation_label`.
@@ -498,6 +590,33 @@ Retrieval selalu lolos FR-3 untuk pertanyaan dosen, karena skor vektor e5
 memang tinggi untuk hampir semua pertanyaan (`flow.md` §6). Model tetap memilih
 tool walau diberi chunk PDF yang tidak relevan.
 
+### Saringan dan lampiran (2026-10-07)
+
+Uji browser pada widget dan Uji coba menemukan dua masalah pada daftar 220
+dosen. Pertama, hitungan dan saringan yang dikerjakan model salah walau tampak
+bersumber: "bergelar Dr." dijawab 38 lalu 39 dari 25 nama, dan "nama ada Wayan"
+dijawab 14 dari 15 nama (T46). Kedua, daftar lengkap yang disalin model memakan
+3,8 ribu token keluaran, 27–70 detik menulis, dan gelembung setinggi 17 layar.
+Perbaikannya: argumen `nama` dan `gelar` (§7) dan lampiran (§10a).
+
+| Pertanyaan (live, LLM + SADS asli) | Sebelum | Sesudah |
+|---|---|---|
+| berapa jumlah dosen INSTIKI yang sudah bergelar Dr.? | "38", "39" | 25, lampiran 25 nama (3/3 di uji ulang) |
+| siapa saja dosen yang namanya ada Wayan? | 14 dari 15 nama | 15, lampiran 15 nama |
+| sebutkan daftar nama semua dosen di INSTIKI | 3,8 ribu token keluaran, 101 dtk | 62 token keluaran, ~12–23 dtk, lampiran 220 nama per 10 |
+| apakah ada dosen bergelar profesor di INSTIKI? | (belum diuji) | "Tidak ada … 0 orang dari 220", bersumber, tanpa lampiran |
+| apakah Totok Suryawan dosen di INSTIKI? | (belum diuji) | "Ya, Dr. I Gede Totok Suryawan … mengajar di INSTIKI" |
+| siapa dosen pengampu mata kuliah Web Programming? | 23 nama | 23 nama (tool tanpa lampiran; lihat di bawah) |
+
+Regresi yang tertangkap saat uji live: aturan T5 versi pertama ("jangan
+menyalin daftar, salin jumlahnya, jawab ringkas") berlaku untuk semua hasil
+alat, sehingga pertanyaan Web Programming, yang tidak berlampiran, dijawab
+"berjumlah 23 orang" tanpa nama. Ablasi langsung ke loop (4 percobaan per
+varian): T5 umum 3/4 menyebut nama dan selalu dibuka dengan jumlah; tanpa T5
+4/4; T5 yang hanya mengesahkan penanda 4/4. Versi terakhir itu juga 9/9 ringkas
+dan benar pada pertanyaan berlampiran, jadi petunjuknya dipindah ke
+`CATATAN_LAMPIRAN`, yang hanya menyertai hasil berlampiran.
+
 ### Masih terbuka (sengaja tidak diubah tanpa keputusan)
 
 1. **`eval/run_generation.py` tidak memakai tool.** RAGAS melihat `refusal` untuk
@@ -520,3 +639,9 @@ tool walau diberi chunk PDF yang tidak relevan.
 6. **Asumsi giliran tool tanpa konten.** Model yang mengirim konten *dan*
    `tool_calls` dalam satu giliran akan membuat konten itu ikut mengalir sebelum
    jawaban final.
+7. **`get_mk_diampu_dosen` tanpa hasil dibalas `DATA_TIDAK_TERSEDIA`.** Model
+   kadang menggabung beberapa mata kuliah dalam satu `matkul` ("Basis Data dan
+   Kalkulus" → 0 hasil), lalu menolak dengan kontak FO seolah SADS mati, padahal
+   19 dosen Basis Data ada. `get_daftar_dosen` sudah membedakan "tidak cocok"
+   dari galat; `get_mk_diampu_dosen` belum, dan deskripsinya belum meminta satu
+   mata kuliah per panggilan.

@@ -47,6 +47,7 @@ from app.rag.citations import extract_citations
 from app.rag.rewriter import Turn
 from app.rag.threshold import ThresholdPolicy
 from app.schemas.chat import (
+    AttachmentOut,
     ChatRequest,
     ChatResponse,
     CitationOut,
@@ -322,6 +323,11 @@ def to_response(outcome: PipelineOutcome) -> ChatResponse:
             for c in outcome.contacts
         ],
         escalated=bool(outcome.contacts),
+        # Sudah disaring `generate`: hanya `answer` dan hanya yang sumbernya dikutip.
+        attachments=[
+            AttachmentOut(title=a.title, source=a.source, items=list(a.items))
+            for a in outcome.attachments
+        ],
         top_score=outcome.decision.top_score if outcome.decision else None,
     )
 

@@ -590,7 +590,7 @@ Answer + Sources + kontak unit (bila topik berisiko)
 Berjalan bila `TOOLS_ENABLED=true` dan pertanyaannya tool-eligible (§4). Rinciannya di `docs/tool-call.md`.
 
 ```text
-System Prompt + aturan alat T1–T4 (TOOL_SYSTEM_PROMPT)
+System Prompt + aturan alat T1–T5 (TOOL_SYSTEM_PROMPT)
 + <pertanyaan_mahasiswa> pertanyaan + versi mandiri hasil rewrite </...>
 + Konteks (hasil retrieval; boleh lemah atau kosong)
         │
@@ -609,11 +609,12 @@ per giliran              memancarkan token)
         maks. TOOLS_MAX_ROUNDS; lewat batas → jawaban dipaksa tanpa tool
 ```
 
-- **Tool perdana**: `get_daftar_dosen` dan `get_mk_diampu_dosen(matkul)` ke `https://sads.instiki.ac.id/service/tp/chatbot/*`, dengan header `secret`. Jumlah dihitung handler, bukan model.
+- **Tool perdana**: `get_daftar_dosen(nama?, gelar?)` dan `get_mk_diampu_dosen(matkul)` ke `https://sads.instiki.ac.id/service/tp/chatbot/*`, dengan header `secret`. Jumlah dan saringan (nama, gelar) dihitung handler, bukan model.
+- **Lampiran**: daftar dari `get_daftar_dosen` dikirim ke widget sebagai `ChatResponse.attachments` dan tampil per 10 baris di bawah jawaban. Model hanya merangkum (jumlah, jawaban singkat) dan tidak menyalin daftarnya (aturan T5). Lampiran hanya ikut bila jawaban mengutip sumbernya.
 - **Sitasi**: hasil tool menjadi kartu sintetis "Data akademik SADS", bertipe `tanya_jawab` sehingga tampil tanpa tautan dan tanpa nomor halaman. Penanda `[Data akademik SADS]` dikenali sebagai sitasi, jadi jawaban parsial yang menyebut "tidak ditemukan" untuk sebagian pertanyaan tidak dibuang menjadi penolakan.
 - **Keamanan**: hasil tool masuk sebagai pesan `role:"tool"` dan diperlakukan sebagai data (aturan T2 + aturan 5). Model tidak pernah memberi URL; argumennya divalidasi skema, dibersihkan, dan dibatasi panjangnya.
 - **Status SSE**: `menyusun jawaban` → `mengambil data akademik` (saat tool berjalan) → `menyusun jawaban` → token jawaban.
-- **Log**: `messages.meta.tool_calls` mencatat nama, argumen, `ok`, dan `latency_ms` setiap panggilan (`docs/schema.md`).
+- **Log**: `messages.meta.tool_calls` mencatat nama, argumen, `ok`, dan `latency_ms` setiap panggilan; `messages.meta.attachments` menyimpan lampiran yang tampil (`docs/schema.md`).
 - **Kegagalan tool** tidak menjatuhkan giliran. Model menerima `DATA_TIDAK_TERSEDIA` lalu menjawab apa adanya atau menolak. Giliran final yang kosong menjadi penolakan resmi, bukan jawaban kosong.
 
 ---

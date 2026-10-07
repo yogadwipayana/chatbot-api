@@ -28,6 +28,7 @@ from app.rag.prompts import NOT_FOUND_MARKER, TOOL_SYSTEM_PROMPT, format_context
 from app.rag.providers import PenyaringGalatGateway
 from app.rag.tools.base import (
     MAKS_PANJANG_ARGUMEN,
+    Lampiran,
     ToolArgumentError,
     ToolResult,
     ToolSpec,
@@ -59,6 +60,9 @@ class ToolLoopResult:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     """Satu entri per panggilan tool: nama, argumen (mentah dari model), ok,
     latency_ms. Untuk `messages.meta` (observability, docs/tool-call.md §13)."""
+    attachments: list[Lampiran] = field(default_factory=list)
+    """Lampiran dari tool yang berhasil, urut panggilan (docs/tool-call.md §10a).
+    Belum disaring: `generate` hanya meneruskan yang sumbernya dikutip jawaban."""
 
 
 def _chunk_text(chunk: Any) -> str:
@@ -250,7 +254,8 @@ def _hasil_akhir(
     penolakan resmi beserta kontak unit."""
     if not teks.strip():
         teks = NOT_FOUND_MARKER
-    return ToolLoopResult(teks, hasil_tool_ke_dokumen(hasil), usage, jejak)
+    lampiran = [r.attachment for r in hasil if r.ok and r.attachment is not None]
+    return ToolLoopResult(teks, hasil_tool_ke_dokumen(hasil), usage, jejak, lampiran)
 
 
 def _jejak_lewat(tc: dict, args: dict[str, Any], alasan: str) -> dict[str, Any]:

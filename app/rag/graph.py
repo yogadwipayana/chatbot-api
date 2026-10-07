@@ -70,7 +70,7 @@ from app.rag.chain import (
     render_contacts,
     strip_markers,
 )
-from app.rag.citations import ringkas_sitasi_tanpa_halaman
+from app.rag.citations import extract_citations, ringkas_sitasi_tanpa_halaman
 from app.rag.gate import REPLIES as GATE_REPLIES
 from app.rag.gate import GateLabel, GateVerdict, lolos
 from app.rag.prompts import pesan_mahasiswa
@@ -414,6 +414,7 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
         return {"outcome": _penolakan(state, assessment, llm_called=False)}
     if deps.on_stage is not None:
         await deps.on_stage("menyusun jawaban")
+    lampiran: list[Any] = []
     if pakai_tool:
         # Kelayakan sudah diputuskan `validate_context`; yang di-bind seluruh
         # registry, karena memilih tool adalah tugas model (ToolRegistry.eligible).
@@ -426,6 +427,7 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
             max_rounds=deps.tool_max_rounds,
         )
         documents = [*documents, *tool_docs]
+        lampiran = list(getattr(deps.llm_call, "attachments", None) or [])
     else:
         answer = await _jawab(deps.llm_call, wrapped, documents, deps.on_token)
     # Sumber tak berhalaman (entri tanya jawab, kartu tool) dikutip `[Judul]`.
@@ -462,10 +464,15 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
         for doc in documents
         if doc.metadata.get("jenis") == DocumentType.TANYA_JAWAB
     ]
+    text = ringkas_sitasi_tanpa_halaman(strip_markers(answer), tanya_jawab)
+    # Lampiran ikut aturan kartu sumber (`citations_for`): hanya bila jawabannya
+    # mengutip sumbernya. Model yang memanggil tool lalu tidak memakai hasilnya
+    # tidak boleh menempelkan daftar 220 dosen di bawah jawaban lain.
+    dikutip = {c.judul.casefold() for c in extract_citations(text, tanpa_hal)}
     return {
         "outcome": PipelineOutcome(
             kind=OutcomeKind.ANSWER,
-            text=ringkas_sitasi_tanpa_halaman(strip_markers(answer), tanya_jawab),
+            text=text,
             documents=tuple(documents),
             decision=state["decision"],
             risk=assessment,
@@ -474,6 +481,7 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
             rewritten_query=state.get("rewritten"),
             llm_called=True,
             contacts=assessment.contacts,
+            attachments=tuple(a for a in lampiran if a.source.casefold() in dikutip),
         )
     }
 

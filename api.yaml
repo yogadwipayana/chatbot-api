@@ -230,6 +230,7 @@ paths:
         |---|---|---|
         | `status` | Segera, sebelum retrieval | `{"stage": "mencari dokumen"}` |
         | `status` | Setelah retrieval, sebelum token pertama | `{"stage": "menyusun jawaban"}` |
+        | `status` | Hanya jalur tool, selama data diambil lalu kembali ke tahap sebelumnya | `{"stage": "mengambil data akademik"}`, lalu `{"stage": "menyusun jawaban"}` |
         | `token` | Berkali-kali, selagi LLM menulis | `{"text": "<potongan jawaban>"}` |
         | `message` | Setelah pipeline selesai | Objek `ChatResponse` utuh |
         | `done` | Terakhir | `{}` |
@@ -242,13 +243,13 @@ paths:
         `token` membawa potongan mentah jawaban, bukan jawaban yang bertambah
         panjang: klien merangkainya sendiri. Potongan hanya untuk ditampilkan
         selagi berjalan -- teks final yang sah adalah `text` pada `message`,
-        yang juga satu-satunya sumber sitasi dan `message_id`. Jalur yang tidak
+        yang juga satu-satunya sumber sitasi, lampiran, dan `message_id`. Jalur yang tidak
         memanggil LLM (penolakan FR-3, pertanyaan sensitif FR-7, sapaan) tidak
         mengirim `token` sama sekali dan langsung sampai ke `message`.
 
         Klien harus menangani putusnya koneksi di tengah jalan: bila `done`
         tidak pernah tiba, perlakukan jawaban sebagai tidak lengkap dan jangan
-        tampilkan sitasinya.
+        tampilkan sitasi maupun lampirannya.
       parameters:
         - $ref: '#/components/parameters/SessionIdHeader'
         - $ref: '#/components/parameters/EmbedKeyHeader'
@@ -285,7 +286,7 @@ paths:
                 data: {"text": " 1-7 Agustus 2025"}
 
                 event: message
-                data: {"kind": "answer", "text": "Pengisian KRS dibuka 1-7 Agustus 2025 [Panduan Akademik 2025, hal. 12].", "citations": [{"title": "Panduan Akademik 2025", "page": 12, "document_id": "3f1a...", "file_path": "storage/documents/3f1a....pdf"}], "contacts": [], "escalated": false, "top_score": 0.82}
+                data: {"kind": "answer", "text": "Pengisian KRS dibuka 1-7 Agustus 2025 [Panduan Akademik 2025, hal. 12].", "citations": [{"title": "Panduan Akademik 2025", "page": 12, "document_id": "3f1a...", "file_path": "storage/documents/3f1a....pdf"}], "contacts": [], "escalated": false, "attachments": [], "top_score": 0.82}
 
                 event: done
                 data: {}
@@ -2224,6 +2225,21 @@ components:
         service_hours: { type: string }
         contact: { type: string }
 
+    AttachmentOut:
+      type: object
+      required: [title, source, items]
+      description: |
+        Satu daftar dari hasil tool, mis. "Dosen bergelar Dr." dari SADS.
+        Urutan `items` sudah final; klien hanya membaginya per halaman.
+      properties:
+        title: { type: string }
+        source:
+          type: string
+          description: Penanda sumber, sama dengan `title` kartu sitasinya (mis. `Data akademik SADS`).
+        items:
+          type: array
+          items: { type: string }
+
     UnitOut:
       type: object
       required: [name]
@@ -2263,7 +2279,7 @@ components:
 
     ChatResponse:
       type: object
-      required: [kind, text, citations, contacts, escalated]
+      required: [kind, text, citations, contacts, escalated, attachments]
       properties:
         kind: { $ref: '#/components/schemas/OutcomeKind' }
         message_id:
@@ -2299,6 +2315,18 @@ components:
           type: boolean
           default: false
           description: Tampilkan banner FE-3 bila true.
+        attachments:
+          type: array
+          default: []
+          description: |
+            Daftar data dari tool (mis. daftar dosen SADS) yang ditampilkan apa
+            adanya di bawah jawaban, per 10 baris. Model tidak menyalin daftar
+            ini ke `text`: jawabannya hanya merangkum (jumlah, jawaban singkat)
+            dan mengutip `source`.
+
+            Hanya untuk `answer`, dan hanya bila `source`-nya juga ada di
+            `citations`. Biasanya kosong.
+          items: { $ref: '#/components/schemas/AttachmentOut' }
         top_score:
           type: [number, 'null']
           description: |
@@ -2723,7 +2751,7 @@ components:
 
     TestQueryResponse:
       type: object
-      required: [kind, text, retrieved, decision, thresholds, contacts, escalated, latency_ms]
+      required: [kind, text, retrieved, decision, thresholds, contacts, escalated, attachments, latency_ms]
       properties:
         kind: { $ref: '#/components/schemas/OutcomeKind' }
         text: { type: string }
@@ -2771,6 +2799,10 @@ components:
           description: Kontak yang akan dilihat mahasiswa untuk pertanyaan yang sama (FE-3, FE-4).
           items: { $ref: '#/components/schemas/ContactOut' }
         escalated: { type: boolean }
+        attachments:
+          type: array
+          description: Daftar dari tool yang akan dilihat mahasiswa di bawah jawaban (lihat `ChatResponse.attachments`).
+          items: { $ref: '#/components/schemas/AttachmentOut' }
         latency_ms: { type: integer, minimum: 0 }
         langsmith_run_id:
           type: [string, 'null']

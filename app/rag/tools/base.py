@@ -26,6 +26,22 @@ class ToolArgumentError(ValueError):
 
 
 @dataclass(frozen=True)
+class Lampiran:
+    """Daftar dari hasil tool yang ditampilkan widget apa adanya (docs/tool-call.md §10a).
+
+    Model tidak menyalin daftar ini ke jawabannya. Daftar 220 dosen yang ditulis
+    ulang model memakan sekitar 3,8 ribu token keluaran dan 30–70 detik, dan
+    sekali disalin, setiap hitungan atau saringan atasnya dikerjakan model
+    yang tidak andal menghitung (T46: "38 dosen bergelar Dr." dari 25)."""
+
+    title: str
+    """Judul kotak daftar, mis. "Dosen bergelar Dr."."""
+    source: str
+    """Penanda sitasi asal datanya. Lampiran hanya tampil bila penanda ini dikutip."""
+    items: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ToolResult:
     """Hasil satu panggilan tool: teks untuk model + label kartu sitasi."""
 
@@ -34,16 +50,40 @@ class ToolResult:
     """Penanda sitasi, mis. "Data akademik SADS". Kosong bila gagal."""
     text: str
     ok: bool = True
+    attachment: Lampiran | None = None
+    """Daftar yang ditampilkan langsung ke mahasiswa; None = model menulis
+    jawabannya sendiri dari `text`, seperti sebelum lampiran ada."""
 
     def pesan_untuk_model(self) -> str:
         """Isi pesan `role:"tool"` yang dibalikkan ke model.
 
         Diberi awalan penanda sitasi supaya model tahu persis cara mengutipnya
         (aturan T3). Kegagalan dibalas penanda datar: model menjawab apa adanya
-        atau mengakui data tidak tersedia, bukan mengarang (docs/tool-call.md §12)."""
+        atau mengakui data tidak tersedia, bukan mengarang (docs/tool-call.md §12).
+
+        Bila ada lampiran, model diberi tahu bahwa daftarnya sudah tampil di bawah
+        jawaban (aturan T5). Datanya tetap dikirim utuh: model masih butuh nama-
+        namanya untuk menjawab, mis. "apakah Pak Totok dosen INSTIKI?"."""
         if not self.ok:
             return "DATA_TIDAK_TERSEDIA: data tidak dapat diambil saat ini."
-        return f"(Kutip data berikut dengan menyalin penanda [{self.label}].)\n\n{self.text}"
+        kepala = f"(Kutip data berikut dengan menyalin penanda [{self.label}].)"
+        if self.attachment is not None:
+            kepala += f"\n{CATATAN_LAMPIRAN}"
+        return f"{kepala}\n\n{self.text}"
+
+
+CATATAN_LAMPIRAN = (
+    "(DAFTAR_DITAMPILKAN: daftar di bawah ditampilkan otomatis kepada mahasiswa "
+    "tepat di bawah jawaban Anda. Jangan menyalin seluruh daftarnya; salin "
+    "jumlahnya persis seperti tertulis di data, lalu jawab pertanyaannya secara "
+    "ringkas. Nama tertentu boleh disebut bila pertanyaannya tentang orang itu.)"
+)
+"""Sisipan pesan `role:"tool"` untuk hasil berlampiran; dirujuk aturan T5.
+
+Hanya hasil berlampiran yang membawanya. Aturan T5 yang berlaku umum ("jangan
+menyalin, cukup jumlahnya") pernah membuat "siapa dosen pengampu Web
+Programming?" -- tool tanpa lampiran -- dijawab "berjumlah 23 orang" tanpa satu
+nama pun (uji live 2026-10-07)."""
 
 
 @dataclass(frozen=True)
@@ -92,6 +132,10 @@ def validasi_argumen(spec: ToolSpec, mentah: dict[str, Any] | None) -> dict[str,
         if nama not in props:
             continue
         if props[nama].get("type") == "string":
+            # Model kadang mengisi argumen opsional dengan null alih-alih
+            # menghilangkannya; itu berarti "tidak disaring", bukan "None".
+            if nilai is None:
+                continue
             teks = "".join(ch for ch in str(nilai) if ch.isprintable())
             bersih[nama] = teks[:MAKS_PANJANG_ARGUMEN].strip()
         else:

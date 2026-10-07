@@ -259,6 +259,7 @@ async def admin_test_query(
         ),
         contacts=respons.contacts,
         escalated=respons.escalated,
+        attachments=respons.attachments,
         latency_ms=latency_ms,
         langsmith_run_id=run_id,
     )

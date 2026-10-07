@@ -63,6 +63,9 @@ class PipelineOutcome:
     rewritten_query: str | None = None
     llm_called: bool = False
     contacts: tuple[Any, ...] = field(default_factory=tuple)
+    attachments: tuple[Any, ...] = field(default_factory=tuple)
+    """Lampiran tool (`app.rag.tools.base.Lampiran`) yang tampil di bawah jawaban.
+    Hanya untuk `answer`, dan hanya yang penanda sumbernya dikutip (docs/tool-call.md §10a)."""
 
 
 REFUSAL_TEMPLATE = (

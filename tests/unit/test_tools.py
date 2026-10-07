@@ -719,3 +719,209 @@ async def test_setiap_giliran_llm_mendapat_config_sendiri():
     )
     await _jalankan(llm, handler, buat_config=buat_config)
     assert [c["run_id"] for c in dibuat] == ["run-0", "run-1"]
+
+
+# --- Saringan get_daftar_dosen dan lampiran (T46, docs/tool-call.md §10a) ---
+
+
+_DOSEN = [
+    {"nmdosen": "Dr. Ani Wijaya, S.Kom., M.T."},
+    {"nmdosen": "Drs. Budi Santoso,M.Ag"},
+    {"nmdosen": "Dr.Ir. Citra Dewi, S.Kom.,M.Kom."},
+    {"nmdosen": "Ni  Wayan Dita, Ph.D."},
+    {"nmdosen": "I Wayan Komang, S.Kom"},
+]
+
+
+def _lampiran(*items: str):
+    from app.rag.tools.base import Lampiran
+
+    return Lampiran(title="Dosen bergelar Dr.", source=LABEL, items=tuple(items))
+
+
+class TestSaringDaftarDosen:
+    async def test_gelar_disaring_dan_dihitung_handler(self):
+        """T46: "berapa dosen bergelar Dr." dijawab model 38 lalu 39 dari 25 nama.
+        Hitungannya kini dari handler, dan "Dr." tidak ikut mencocokkan "Drs."."""
+        r = await sads._daftar_dosen(FakeSads(_DOSEN), gelar="Dr.")
+        assert r.ok
+        assert "Jumlah dosen yang mengajar di INSTIKI bergelar Dr.: 2 orang." in r.text
+        assert "(Seluruh dosen yang mengajar: 5 orang.)" in r.text
+        assert r.attachment is not None
+        assert r.attachment.items == (
+            "Dr. Ani Wijaya, S.Kom., M.T.",
+            "Dr.Ir. Citra Dewi, S.Kom.,M.Kom.",
+        )
+        assert r.attachment.title == "Dosen bergelar Dr."
+        assert r.attachment.source == LABEL
+
+    @pytest.mark.parametrize(
+        ("gelar", "jumlah"),
+        [
+            ("dr", 2),
+            ("DR.", 2),
+            ("doktor", 3),
+            ("Ph.D", 1),
+            ("Drs.", 1),
+            ("M.Kom.", 1),
+            ("Prof.", 0),
+        ],
+    )
+    async def test_penulisan_gelar_disamakan(self, gelar, jumlah):
+        r = await sads._daftar_dosen(FakeSads(_DOSEN), gelar=gelar)
+        assert len(r.attachment.items if r.attachment else ()) == jumlah
+
+    async def test_nama_dicocokkan_ke_nama_inti_bukan_gelar(self):
+        """"kom" mencocokkan "Komang", bukan gelar "S.Kom" milik hampir semua orang."""
+        r = await sads._daftar_dosen(FakeSads(_DOSEN), nama="kom")
+        assert r.attachment.items == ("I Wayan Komang, S.Kom",)
+
+    async def test_nama_tanpa_beda_huruf_dan_spasi(self):
+        r = await sads._daftar_dosen(FakeSads(_DOSEN), nama="ni wayan")
+        assert r.attachment.items == ("Ni  Wayan Dita, Ph.D.",)
+        semua_wayan = await sads._daftar_dosen(FakeSads(_DOSEN), nama="WAYAN")
+        assert len(semua_wayan.attachment.items) == 2
+
+    async def test_nama_dan_gelar_digabung(self):
+        r = await sads._daftar_dosen(FakeSads(_DOSEN), nama="wayan", gelar="doktor")
+        assert r.attachment.items == ("Ni  Wayan Dita, Ph.D.",)
+        assert 'bergelar doktor dengan nama memuat "wayan"' in r.text
+
+    async def test_saringan_tanpa_hasil_bukan_kegagalan(self):
+        """Tidak ada yang cocok = jawaban sah SADS, bukan DATA_TIDAK_TERSEDIA (T43):
+        yang terakhir membuat model menolak dan menyuruh bertanya ke FO."""
+        r = await sads._daftar_dosen(FakeSads(_DOSEN), gelar="Prof.")
+        assert r.ok and r.attachment is None
+        assert "Tidak ada dosen yang mengajar di INSTIKI bergelar Prof.: 0 orang" in r.text
+        assert "DATA_TIDAK_TERSEDIA" not in r.pesan_untuk_model()
+
+    async def test_sads_kosong_tetap_kegagalan(self):
+        r = await sads._daftar_dosen(FakeSads([]), gelar="Dr.")
+        assert not r.ok and r.attachment is None
+
+    async def test_tanpa_saringan_seluruh_dosen_berlampiran(self):
+        r = await sads._daftar_dosen(FakeSads(_DOSEN))
+        assert r.attachment.title == "Dosen yang mengajar di INSTIKI"
+        assert len(r.attachment.items) == 5
+        assert "Seluruh dosen" not in r.text  # baris pembanding hanya saat disaring
+
+    def test_skema_saringan_opsional(self):
+        params = _registry().get("get_daftar_dosen").parameters
+        assert set(params["properties"]) == {"nama", "gelar"}
+        assert "required" not in params
+
+    def test_argumen_opsional_null_dianggap_tidak_disaring(self):
+        """Model kadang mengirim `"nama": null`; jangan jadi saringan "None"."""
+        spec = _registry().get("get_daftar_dosen")
+        assert validasi_argumen(spec, {"nama": None, "gelar": " Dr. "}) == {"gelar": "Dr."}
+
+
+class TestLampiran:
+    def test_pesan_untuk_model_memberi_tahu_daftar_sudah_tampil(self):
+        from app.rag.prompts import TOOL_SYSTEM_PROMPT
+        from app.rag.tools.base import CATATAN_LAMPIRAN
+
+        berlampiran = ToolResult("a", LABEL, "- Ani", True, attachment=_lampiran("Ani"))
+        pesan = berlampiran.pesan_untuk_model()
+        assert CATATAN_LAMPIRAN in pesan and "- Ani" in pesan  # data tetap dikirim
+        tanpa = ToolResult("a", LABEL, "- Ani", True).pesan_untuk_model()
+        assert CATATAN_LAMPIRAN not in tanpa
+        # Aturan T5 merujuk penanda yang sama persis.
+        assert "DAFTAR_DITAMPILKAN" in CATATAN_LAMPIRAN
+        assert "DAFTAR_DITAMPILKAN" in TOOL_SYSTEM_PROMPT
+
+    async def test_loop_mengumpulkan_lampiran_tool_yang_berhasil(self):
+        lampiran = _lampiran("Ani", "Citra")
+
+        async def handler(*, matkul: str) -> ToolResult:
+            return ToolResult("get_mk_diampu_dosen", LABEL, "- Ani", True, attachment=lampiran)
+
+        llm = FakeChat(
+            [
+                _tool_turn("get_mk_diampu_dosen", '{"matkul":"X"}'),
+                _answer_turn(f"Ada 2 dosen [{LABEL}]."),
+            ]
+        )
+        res = await _jalankan(llm, handler)
+        assert res.attachments == [lampiran]
+
+    async def test_pipeline_meneruskan_lampiran_yang_sumbernya_dikutip(self):
+        lampiran = _lampiran("Ani", "Citra")
+        docs = hasil_tool_ke_dokumen([ToolResult("a", LABEL, "- Ani\n- Citra", True)])
+        llm = ToolLLMBerlampiran(f"Ada 2 dosen bergelar Dr. [{LABEL}].", docs, [lampiran])
+        outcome = await run_pipeline(
+            "berapa dosen bergelar Dr.?",
+            retriever=FakeRetriever([]),
+            llm_call=llm,
+            tool_registry=ToolRegistry([_spec(lambda **_: None)]),
+        )
+        assert outcome.kind is OutcomeKind.ANSWER
+        assert outcome.attachments == (lampiran,)
+
+    async def test_lampiran_tidak_ditempel_bila_sumbernya_tidak_dikutip(self):
+        """Model memanggil tool lalu menjawab tanpa memakainya: daftar 220 dosen
+        tidak boleh menempel di bawah jawaban yang tidak bersumber darinya."""
+        docs = hasil_tool_ke_dokumen([ToolResult("a", LABEL, "- Ani", True)])
+        llm = ToolLLMBerlampiran("Jawaban tanpa penanda sumber.", docs, [_lampiran("Ani")])
+        outcome = await run_pipeline(
+            "berapa dosen bergelar Dr.?",
+            retriever=FakeRetriever([]),
+            llm_call=llm,
+            tool_registry=ToolRegistry([_spec(lambda **_: None)]),
+        )
+        assert outcome.kind is OutcomeKind.ANSWER
+        assert outcome.attachments == ()
+
+    async def test_penolakan_tidak_membawa_lampiran(self):
+        docs = hasil_tool_ke_dokumen([ToolResult("a", LABEL, "- Ani", True)])
+        llm = ToolLLMBerlampiran(NOT_FOUND_MARKER, docs, [_lampiran("Ani")])
+        outcome = await run_pipeline(
+            "berapa dosen bergelar Dr.?",
+            retriever=FakeRetriever([]),
+            llm_call=llm,
+            tool_registry=ToolRegistry([_spec(lambda **_: None)]),
+        )
+        assert outcome.kind is OutcomeKind.REFUSAL
+        assert outcome.attachments == ()
+
+    def test_respons_dan_meta_membawa_lampiran(self):
+        from app.observability.chatlog import ChatLogEntry, build_meta
+        from app.rag.chain import PipelineOutcome
+        from app.routers.chat import to_response
+
+        outcome = PipelineOutcome(
+            kind=OutcomeKind.ANSWER,
+            text=f"Ada 2 dosen [{LABEL}].",
+            documents=tuple(hasil_tool_ke_dokumen([ToolResult("a", LABEL, "- Ani", True)])),
+            llm_called=True,
+            attachments=(_lampiran("Ani", "Citra"),),
+        )
+        diharapkan = [
+            {"title": "Dosen bergelar Dr.", "source": LABEL, "items": ["Ani", "Citra"]}
+        ]
+        assert [a.model_dump() for a in to_response(outcome).attachments] == diharapkan
+        meta = build_meta(
+            ChatLogEntry(session_id="s", question="q", outcome=outcome, latency_ms=1)
+        )
+        assert meta["attachments"] == diharapkan
+
+        tanpa = PipelineOutcome(kind=OutcomeKind.ANSWER, text="t", llm_called=True)
+        assert to_response(tanpa).attachments == []
+        meta_tanpa = build_meta(
+            ChatLogEntry(session_id="s", question="q", outcome=tanpa, latency_ms=1)
+        )
+        assert meta_tanpa["attachments"] is None
+
+
+class ToolLLMBerlampiran(ToolLLM):
+    """`ToolLLM` yang, seperti `LLMCall.run_tools`, mencatat lampiran tool."""
+
+    def __init__(self, answer: str, docs: list[Any], attachments: list[Any]) -> None:
+        super().__init__(answer, docs)
+        self._lampiran = attachments
+        self.attachments: list[Any] = []
+
+    async def run_tools(self, *args: Any, **kwargs: Any):
+        hasil = await super().run_tools(*args, **kwargs)
+        self.attachments = list(self._lampiran)
+        return hasil

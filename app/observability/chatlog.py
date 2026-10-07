@@ -141,6 +141,14 @@ def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
         # Jejak tool-calling: nama, argumen, ok, latency_ms per panggilan.
         # None bila tool tidak dipakai, sehingga baris lama tetap sebanding.
         "tool_calls": entry.tool_calls or None,
+        # Lampiran yang tampil di bawah jawaban, utuh. Data SADS berubah per
+        # semester, jadi memanggil ulang tool tidak mengulang apa yang dilihat
+        # mahasiswa saat ia menilai 👎. None bila tidak ada lampiran.
+        "attachments": [
+            {"title": a.title, "source": a.source, "items": list(a.items)}
+            for a in outcome.attachments
+        ]
+        or None,
     }
 
 

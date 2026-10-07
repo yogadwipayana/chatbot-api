@@ -17,7 +17,7 @@ from app.db.models import DocumentType
 from app.embed_keys import rapikan_daftar_asal
 from app.rag.chain import OutcomeKind
 from app.rag.threshold import Decision, Reason
-from app.schemas.chat import ContactOut
+from app.schemas.chat import AttachmentOut, ContactOut
 
 
 def _rapikan_unit(v: str | None) -> str | None:
@@ -316,6 +316,8 @@ class TestQueryResponse(BaseModel):
     thresholds: ThresholdValues
     contacts: list[ContactOut]
     escalated: bool
+    attachments: list[AttachmentOut]
+    """Daftar dari tool yang tampil di bawah jawaban mahasiswa (docs/tool-call.md §10a)."""
     latency_ms: int
     langsmith_run_id: str | None = None
     """Akar trace uji coba ini. None saat tracing mati (FR-8)."""

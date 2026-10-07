@@ -119,14 +119,27 @@ class ContactOut(BaseModel):
     contact: str
 
 
+class AttachmentOut(BaseModel):
+    """Daftar data dari tool (mis. daftar dosen SADS), ditampilkan apa adanya
+    di bawah jawaban -- widget menampilkannya per 10 baris.
+
+    Model tidak menyalin daftar ini ke `text`; jawabannya hanya merangkum
+    (jumlah, jawaban singkat) dan mengutip `source` (docs/tool-call.md §10a)."""
+
+    title: str
+    source: str
+    """Penanda sumber yang sama dengan judul kartu sitasinya, mis. "Data akademik SADS"."""
+    items: list[str]
+
+
 class ChatResponse(BaseModel):
     """Balasan endpoint chat.
 
-    `citations`, `contacts`, dan `escalated` sengaja TANPA nilai default.
-    Server selalu mengisi ketiganya, dan tanpa default Pydantic menandainya
-    `required` di OpenAPI -- sehingga klien boleh menulis `data.citations.map(...)`
-    tanpa penjagaan. Memberi default akan membuat kontrak menjanjikan bahwa
-    ketiganya boleh absen, padahal tidak pernah absen.
+    `citations`, `contacts`, `escalated`, dan `attachments` sengaja TANPA nilai
+    default. Server selalu mengisi keempatnya, dan tanpa default Pydantic
+    menandainya `required` di OpenAPI -- sehingga klien boleh menulis
+    `data.citations.map(...)` tanpa penjagaan. Memberi default akan membuat
+    kontrak menjanjikan bahwa keempatnya boleh absen, padahal tidak pernah absen.
     """
 
     kind: OutcomeKind
@@ -134,6 +147,9 @@ class ChatResponse(BaseModel):
     citations: list[CitationOut]
     contacts: list[ContactOut]
     escalated: bool
+    attachments: list[AttachmentOut]
+    """Hanya untuk `answer`, dan hanya bila `source`-nya juga menjadi kartu
+    sitasi. Biasanya kosong."""
     message_id: str | None = None
     """Id baris jawaban di tabel `messages`, dipakai `POST /api/feedback`.
     None bila pencatatan ke database gagal -- jawaban tetap terkirim, dan
