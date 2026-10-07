@@ -12,6 +12,7 @@ jawaban final yang mengalir. Penyaring `[Error]` gateway dan penahan penanda
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
@@ -23,7 +24,7 @@ from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from app.rag.chain import _PenahanPenanda
-from app.rag.prompts import TOOL_SYSTEM_PROMPT, format_context
+from app.rag.prompts import NOT_FOUND_MARKER, TOOL_SYSTEM_PROMPT, format_context
 from app.rag.providers import PenyaringGalatGateway
 from app.rag.tools.base import (
     MAKS_PANJANG_ARGUMEN,
@@ -38,6 +39,16 @@ logger = logging.getLogger(__name__)
 
 OnToken = Callable[[str], Awaitable[None]]
 OnStage = Callable[[str], Awaitable[None]]
+
+MAKS_TOOL_PER_GILIRAN = 4
+"""Panggilan tool yang dijalankan dari satu giliran model (docs/tool-call.md §11).
+
+Model boleh meminta beberapa tool sekaligus. Tanpa batas, satu pertanyaan bisa
+memicu puluhan permintaan ke SADS. Panggilan di atas batas tetap dibalas
+(`PESAN_BATAS`), tetapi tidak dijalankan."""
+
+PESAN_BATAS = "DATA_TIDAK_TERSEDIA: batas panggilan alat per giliran tercapai."
+PESAN_ARGUMEN_RUSAK = "DATA_TIDAK_TERSEDIA: argumen panggilan alat tidak dapat dibaca."
 
 
 @dataclass(frozen=True)
@@ -131,6 +142,13 @@ async def _jalankan_tool(tc: dict, by_name: dict[str, ToolSpec]) -> ToolResult:
     return ToolResult(name=spec.name, label=spec.citation_label, text="", ok=False)
 
 
+async def _jalankan_terukur(tc: dict, by_name: dict[str, ToolSpec]) -> tuple[ToolResult, int]:
+    """`_jalankan_tool` beserta latensinya (ms) untuk `meta.tool_calls`."""
+    mulai = time.perf_counter()
+    r = await _jalankan_tool(tc, by_name)
+    return r, round((time.perf_counter() - mulai) * 1000)
+
+
 async def run_tool_loop(
     *,
     llm_tools: Any,
@@ -141,10 +159,15 @@ async def run_tool_loop(
     on_token: OnToken | None = None,
     on_stage: OnStage | None = None,
     max_rounds: int = 2,
-    config: Any = None,
+    buat_config: Callable[[], Any] | None = None,
 ) -> ToolLoopResult:
     """Jalankan loop. `llm_tools` sudah di-bind dengan skema tool; `llm_plain`
-    tanpa tool, dipakai memaksa jawaban bila batas putaran tercapai."""
+    tanpa tool, dipakai memaksa jawaban bila batas putaran tercapai.
+
+    `buat_config` dipanggil sekali per giliran LLM. Setiap giliran butuh `run_id`
+    sendiri: LangSmith menolak run kedua dengan ID yang sama, sehingga satu
+    config yang dipakai ulang membuat giliran sesudah tool -- yang berisi
+    jawabannya -- hilang dari trace."""
     by_name = {s.name: s for s in specs}
     messages: list[Any] = [
         SystemMessage(content=TOOL_SYSTEM_PROMPT.format(context=format_context(documents))),
@@ -156,35 +179,86 @@ async def run_tool_loop(
 
     for _ in range(max_rounds):
         gathered, teks = await _satu_giliran(
-            llm_tools, messages, on_token=on_token, config=config
+            llm_tools, messages, on_token=on_token, config=_config(buat_config)
         )
         usage = _tambah_usage(usage, getattr(gathered, "usage_metadata", None))
         panggilan = list(getattr(gathered, "tool_calls", None) or [])
-        if not panggilan:
-            return ToolLoopResult(teks, hasil_tool_ke_dokumen(hasil), usage, jejak)
+        # Argumen yang bukan JSON sah tidak masuk `tool_calls`, melainkan
+        # `invalid_tool_calls`. Tanpa ini giliran itu dikira jawaban final
+        # yang kosong.
+        rusak = list(getattr(gathered, "invalid_tool_calls", None) or [])
+        if not panggilan and not rusak:
+            return _hasil_akhir(teks, hasil, usage, jejak)
         if on_stage is not None:
             await on_stage("mengambil data akademik")
         messages.append(gathered)
-        for tc in panggilan:
-            mulai = time.perf_counter()
-            r = await _jalankan_tool(tc, by_name)
+
+        dijalankan = panggilan[:MAKS_TOOL_PER_GILIRAN]
+        # Bersamaan, seperti FTS ∥ pgvector: setiap handler memakai klien HTTP
+        # sendiri, dan `gather` mengembalikan hasil menurut urutan panggilan.
+        keluaran = await asyncio.gather(
+            *(_jalankan_terukur(tc, by_name) for tc in dijalankan)
+        )
+        for tc, (r, latency_ms) in zip(dijalankan, keluaran, strict=True):
             jejak.append(
                 {
                     "name": tc.get("name"),
                     "args": _args_untuk_log(tc.get("args")),
                     "ok": r.ok,
-                    "latency_ms": round((time.perf_counter() - mulai) * 1000),
+                    "latency_ms": latency_ms,
                 }
             )
             hasil.append(r)
             messages.append(
-                ToolMessage(content=r.pesan_untuk_model(), tool_call_id=tc.get("id", ""))
+                ToolMessage(content=r.pesan_untuk_model(), tool_call_id=tc.get("id") or "")
             )
+        # Setiap `tool_call_id` wajib dibalas satu pesan `role:"tool"`; tanpa itu
+        # API menolak giliran berikutnya. Yang tidak dijalankan dibalas penanda.
+        for tc in panggilan[MAKS_TOOL_PER_GILIRAN:]:
+            args = _args_untuk_log(tc.get("args"))
+            jejak.append(_jejak_lewat(tc, args, "batas_per_giliran"))
+            messages.append(ToolMessage(content=PESAN_BATAS, tool_call_id=tc.get("id") or ""))
+        for tc in rusak:
+            mentah = {"_mentah": str(tc.get("args") or "")[:MAKS_PANJANG_ARGUMEN]}
+            jejak.append(_jejak_lewat(tc, mentah, "argumen_rusak"))
+            messages.append(
+                ToolMessage(content=PESAN_ARGUMEN_RUSAK, tool_call_id=tc.get("id") or "")
+            )
+        if on_stage is not None:
+            await on_stage("menyusun jawaban")
 
     # Batas putaran tercapai dan model masih meminta tool: paksa jawaban akhir
     # tanpa tool, supaya loop selalu berujung pada teks.
     gathered, teks = await _satu_giliran(
-        llm_plain, messages, on_token=on_token, config=config
+        llm_plain, messages, on_token=on_token, config=_config(buat_config)
     )
     usage = _tambah_usage(usage, getattr(gathered, "usage_metadata", None))
+    return _hasil_akhir(teks, hasil, usage, jejak)
+
+
+def _config(buat_config: Callable[[], Any] | None) -> Any:
+    return buat_config() if buat_config is not None else None
+
+
+def _hasil_akhir(
+    teks: str, hasil: list[ToolResult], usage: dict | None, jejak: list[dict[str, Any]]
+) -> ToolLoopResult:
+    """Bungkus jawaban final.
+
+    Giliran final tanpa teks sama sekali tidak boleh tampil sebagai `answer`
+    kosong. Ia diganti `NOT_FOUND_MARKER`, sehingga `generate` membalas
+    penolakan resmi beserta kontak unit."""
+    if not teks.strip():
+        teks = NOT_FOUND_MARKER
     return ToolLoopResult(teks, hasil_tool_ke_dokumen(hasil), usage, jejak)
+
+
+def _jejak_lewat(tc: dict, args: dict[str, Any], alasan: str) -> dict[str, Any]:
+    """Entri `meta.tool_calls` untuk panggilan yang sengaja tidak dijalankan."""
+    return {
+        "name": tc.get("name"),
+        "args": args,
+        "ok": False,
+        "latency_ms": 0,
+        "error": alasan,
+    }

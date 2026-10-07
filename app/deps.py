@@ -520,7 +520,9 @@ class LLMCall:
             on_token=on_token,
             on_stage=on_stage,
             max_rounds=max_rounds,
-            config=self._config(),
+            # Pabriknya, bukan satu hasil: tiap giliran LLM dalam loop butuh
+            # run_id sendiri. `self.run_id` berakhir pada giliran jawaban.
+            buat_config=self._config,
         )
         self.usage = result.usage
         self.tool_calls = result.tool_calls

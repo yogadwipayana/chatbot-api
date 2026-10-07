@@ -509,6 +509,7 @@ Hanya diisi pada baris `role = 'assistant'`.
 | `gate_error` | string \| null | Galat panggilan JEV (pesan tetap diteruskan, fail-open) |
 | `gate_cost_usd` | float \| null | Biaya panggilan JEV |
 | `top_rerank_score` | float \| null | Skor reranker tertinggi; `null` bila reranker mati atau tidak ada retrieval |
+| `tool_calls` | array \| null | Jejak tool-calling (`docs/tool-call.md` §13): satu objek per panggilan, `{name, args, ok, latency_ms}`. Panggilan yang sengaja tidak dijalankan juga membawa `error`: `batas_per_giliran` (lebih dari 4 dalam satu giliran) atau `argumen_rusak` (argumen bukan JSON sah). `args` adalah argumen **mentah** dari model, dengan setiap string dipotong 200 karakter, supaya argumen yang dihalusinasi tetap terlihat. `null` bila tidak ada tool yang dipanggil, termasuk saat jalur tool berjalan tetapi model menjawab tanpa memanggil tool |
 
 Struktur ini bukan sekadar catatan — statistik AD-5 memfilter langsung atasnya
 (`m.meta->>'kind'`, `m.meta->'topics'`). Menambah nilai `kind` baru tanpa

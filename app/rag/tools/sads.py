@@ -24,7 +24,13 @@ def _bersih(nama: str | None) -> str:
 async def _daftar_dosen(client: SadsClient) -> ToolResult:
     data = await client.get_json("/service/tp/chatbot/dosen-mengajar")
     nama = sorted({_bersih(d.get("nmdosen")) for d in data if _bersih(d.get("nmdosen"))})
-    teks = "Daftar dosen yang mengajar di INSTIKI:\n" + "\n".join(f"- {n}" for n in nama)
+    # Jumlahnya dihitung di sini, bukan oleh model: LLM tidak andal menghitung
+    # daftar panjang. Terbukti 2026-10-07: dari 220 nama, model menjawab
+    # "Terdapat 223 dosen", lengkap dengan kartu sumber yang membuatnya tampak sah.
+    teks = (
+        f"Jumlah dosen yang mengajar di INSTIKI: {len(nama)} orang.\n"
+        "Daftar dosen:\n" + "\n".join(f"- {n}" for n in nama)
+    )
     return ToolResult(name="get_daftar_dosen", label=LABEL_SADS, text=teks, ok=bool(nama))
 
 
@@ -39,8 +45,9 @@ async def _mk_diampu_dosen(client: SadsClient, *, matkul: str) -> ToolResult:
         mk = [m for m in mk if m]
         if nm and mk:
             baris.append(f"- {nm}: {', '.join(mk)}")
-    teks = f'Dosen pengampu untuk mata kuliah yang cocok dengan "{matkul}":\n' + "\n".join(
-        baris
+    teks = (
+        f'Dosen pengampu untuk mata kuliah yang cocok dengan "{matkul}" '
+        f"(jumlah: {len(baris)} orang):\n" + "\n".join(baris)
     )
     return ToolResult(name="get_mk_diampu_dosen", label=LABEL_SADS, text=teks, ok=bool(baris))
 
@@ -91,6 +98,11 @@ def tool_specs(settings: Settings) -> list[ToolSpec]:
                 "mengajar",
                 "ngajar",
                 "dosen",
+                # Pertanyaan Inggris pendek tidak di-rewrite (`looks_english` butuh
+                # >= 2 kata tugas): "who teaches Web Programming?" ditolak FR-3
+                # sebelum pemicu ini ada (uji live 2026-10-07).
+                "lecturer",
+                "teach",
             ),
             citation_label=LABEL_SADS,
         ),

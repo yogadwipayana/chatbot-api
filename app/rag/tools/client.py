@@ -18,10 +18,19 @@ class SadsClient:
     klien JEV (`app.rag.gate`); timeout tegas supaya giliran mahasiswa tidak
     tertahan oleh layanan yang lambat."""
 
-    def __init__(self, *, base_url: str, secret: str, timeout: float) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        secret: str,
+        timeout: float,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self._base = base_url.rstrip("/")
         self._secret = secret
         self._timeout = timeout
+        self._transport = transport
+        """Disuntikkan di test (`httpx.MockTransport`); None = jaringan sungguhan."""
 
     async def get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
         headers = {
@@ -29,7 +38,9 @@ class SadsClient:
             "User-Agent": USER_AGENT,
             "Accept": "application/json",
         }
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(
+            timeout=self._timeout, transport=self._transport
+        ) as client:
             resp = await client.get(f"{self._base}{path}", params=params, headers=headers)
             resp.raise_for_status()
             return resp.json()

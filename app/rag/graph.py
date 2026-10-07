@@ -317,9 +317,40 @@ async def validate_context(state: PipelineState, runtime: Rt) -> dict:
     # Gerbang kelayakan tool (docs/tool-call.md §8): pertanyaan yang cocok pemicu
     # tool boleh maju ke `generate` walau konteks retrieval lemah, tanpa itu
     # "siapa dosen Web Programming" ditolak FR-3 sebelum tool sempat dipanggil.
-    if deps.tool_registry is not None and deps.tool_registry.eligible(state["clean"]):
+    if deps.tool_registry is not None and _tool_eligible(deps.tool_registry, state):
         hasil["tool_eligible"] = True
     return hasil
+
+
+def _tool_eligible(registry: Any, state: PipelineState) -> bool:
+    """Pemicu dicocokkan pada pertanyaan asli DAN hasil rewrite (FR-4).
+
+    Pertanyaan lanjutan ("kalau Basis Data?") tidak memuat kata pemicu, tetapi
+    versi mandiri hasil rewrite-nya memuat ("Siapa dosen pengampu mata kuliah
+    Basis Data?"). Rewrite hanya berjalan bila ada riwayat atau pertanyaannya
+    terdeteksi berbahasa Inggris (`needs_rewrite`). Pertanyaan Inggris yang
+    pendek ("who teaches X?") tidak terdeteksi, jadi ditangani pemicu Inggris
+    di `ToolSpec.triggers`, bukan di sini."""
+    return any(t and registry.eligible(t) for t in (state["clean"], state.get("rewritten")))
+
+
+def _pesan_tool(state: PipelineState) -> str:
+    """Pertanyaan untuk loop tool, ditambah versi mandirinya bila ada.
+
+    Loop tool tidak menerima riwayat percakapan, dan berbeda dari jalur RAG ia
+    tidak punya konteks hasil pencarian yang membawa maksud pertanyaan lanjutan.
+    Tanpa versi mandiri hasil rewrite, model membaca "kalau Basis Data?" tanpa
+    tahu bahwa yang ditanyakan adalah dosen pengampunya. Keduanya tetap di dalam
+    tag `<pertanyaan_mahasiswa>` (FR-5): hasil rewrite juga berasal dari teks
+    mahasiswa, jadi diperlakukan sebagai data, bukan instruksi."""
+    teks = state["clean"]
+    rewritten = (state.get("rewritten") or "").strip()
+    if rewritten and rewritten.casefold() != teks.strip().casefold():
+        teks = (
+            f"{teks}\n\nMaksud lengkap pertanyaan di atas, ditulis ulang dari "
+            f"riwayat percakapan: {rewritten}"
+        )
+    return pesan_mahasiswa(wrap_user_input(teks), state.get("unit"), state.get("profile"))
 
 
 async def refuse(state: PipelineState) -> dict:
@@ -381,23 +412,22 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
     # `refusal_source = llm` padahal yang menolak adalah ambang.
     if not pakai_tool and state["decision"].decision is Decision.REFUSE:
         return {"outcome": _penolakan(state, assessment, llm_called=False)}
+    if deps.on_stage is not None:
+        await deps.on_stage("menyusun jawaban")
     if pakai_tool:
+        # Kelayakan sudah diputuskan `validate_context`; yang di-bind seluruh
+        # registry, karena memilih tool adalah tugas model (ToolRegistry.eligible).
         answer, tool_docs = await deps.llm_call.run_tools(
-            wrapped,
+            _pesan_tool(state),
             documents,
-            specs=deps.tool_registry.eligible(state["clean"]),
+            specs=deps.tool_registry.specs,
             on_token=deps.on_token,
             on_stage=deps.on_stage,
             max_rounds=deps.tool_max_rounds,
         )
         documents = [*documents, *tool_docs]
     else:
-        if deps.on_stage is not None:
-            await deps.on_stage("menyusun jawaban")
         answer = await _jawab(deps.llm_call, wrapped, documents, deps.on_token)
-    # Pertanyaan di luar urusan kampus yang lolos gerbang (atau JEV mati):
-    # dibalas dan dicatat seperti blokir JEV `out_of_scope` -- bukan celah
-    # dokumen, jadi tidak masuk AD-4.
     # Sumber tak berhalaman (entri tanya jawab, kartu tool) dikutip `[Judul]`.
     # Tanpa daftar ini jawaban parsial bersumber tool yang menyebut "tidak
     # ditemukan" untuk sebagian pertanyaan dianggap penolakan dan dibuang.
@@ -406,6 +436,9 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
         for doc in documents
         if doc.metadata.get("jenis") == DocumentType.TANYA_JAWAB
     }
+    # Pertanyaan di luar urusan kampus yang lolos gerbang (atau JEV mati):
+    # dibalas dan dicatat seperti blokir JEV `out_of_scope` -- bukan celah
+    # dokumen, jadi tidak masuk AD-4.
     if is_off_topic(answer, tanpa_hal):
         return {
             "outcome": PipelineOutcome(

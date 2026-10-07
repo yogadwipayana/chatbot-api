@@ -1,6 +1,6 @@
 # Flow Arsitektur PANDU
 
-Dokumen ini menjelaskan alur penuh PANDU seperti yang berjalan di `api/`: proses indexing dokumen, alur pertanyaan mahasiswa, dan evaluasi kualitas RAG.
+Dokumen ini menjelaskan alur penuh PANDU seperti yang berjalan di `api/`: proses indexing dokumen, alur pertanyaan mahasiswa, dan evaluasi kualitas RAG. Jalur tool-calling ke layanan akademik SADS diringkas di sini dan dirinci di `docs/tool-call.md`.
 
 Nama berkas di dalam `( )` menunjuk ke kode yang menjalankan langkah tersebut, relatif terhadap `api/`.
 
@@ -14,7 +14,8 @@ Dokumen → Parse → Chunking → Embedding (API / e5 lokal) ─┐
 User → FastAPI → LangGraph → FR-7 → Smalltalk → Saringan aturan → JEV → Rewrite
                                                           │
                               Retrieval hibrida → RRF → Rerank → Context Check → LLM → Answer + Sources
-                                                          │
+                                                          │                       ⇅
+                                                          │        Tool SADS (bila tool-eligible)
                                                           └───────────────────→ Evaluasi (Recall@k + RAGAS)
 ```
 
@@ -37,6 +38,7 @@ Komponen utama:
 | Threshold (FR-3) | Memutuskan apakah konteks cukup kuat untuk LLM | `app/rag/threshold.py` |
 | Risk (FR-6) | Topik berisiko → kontak unit resmi | `app/rag/risk.py` |
 | LLM | Menyusun jawaban akhir, selalu bersitasi | `app/rag/prompts.py`, `app/deps.py` |
+| Tool-calling | LLM mengambil data layanan akademik SADS saat menjawab (daftar dosen, dosen pengampu mata kuliah); di belakang `TOOLS_ENABLED` | `app/rag/tools/`, `docs/tool-call.md` |
 | RAGAS | Mengevaluasi kualitas generasi, di luar jalur production | `eval/run_generation.py`, `eval/ragas/` |
 | PostgreSQL | **Wajib**: dokumen, chunk, index, log chat, admin, konfigurasi | `app/db/` |
 | LangSmith | Tracing setiap giliran | `app/observability/tracing.py` |
@@ -50,6 +52,7 @@ Komponen utama:
 | Merge + Deduplication | Reciprocal Rank Fusion | RRF menggabungkan dan membuang duplikat per `chunk_id` sekaligus, sambil membawa skor mentah tiap sumber untuk FR-3 |
 | PostgreSQL opsional | PostgreSQL wajib | Semua data sistem ada di sana |
 | — | FR-7, rewriter, risk, filter unit | Jalur yang sudah ada sebelum flow ini ditulis; wajib tetap ada |
+| — | Tool-calling ke SADS | Data dinamis atau parametrik (dosen, mata kuliah; kelak jadwal, nilai, pembayaran) tidak dapat dipra-indeks sebagai dokumen. Diambil langsung saat menjawab (`docs/tool-call.md`) |
 
 ---
 
@@ -231,6 +234,7 @@ Berjalan setiap kali mahasiswa mengirim pertanyaan (`POST /api/chat` atau `/api/
             ┌──────────────────┐
             │ Context Check    │
             │ (FR-3)           │
+            │ + kelayakan tool │
             └───────┬──────────┘
                     │
         ┌───────────┴───────────┐
@@ -252,12 +256,16 @@ Berjalan setiap kali mahasiswa mengirim pertanyaan (`POST /api/chat` atau `/api/
          │                         ▼
          │             ┌─────────────────────────┐
          │             │ LLM (streaming)         │
+         │             │ tool-eligible: loop     │──→ Tool SADS (paralel,
+         │             │ LLM ⇄ tool, maks.       │    maks. 4 per giliran)
+         │             │ TOOLS_MAX_ROUNDS        │    hasil → pesan role:tool
          │             └───────────┬─────────────┘
          │                         ▼
          │             ┌─────────────────────────┐
          │             │ Answer + Sources        │
          │             │ hanya dokumen yang      │
-         │             │ benar-benar dikutip     │
+         │             │ benar-benar dikutip,    │
+         │             │ + kartu sumber tool     │
          │             │ kind = answer           │
          │             └───────────┬─────────────┘
          └────────────┬────────────┘
@@ -272,12 +280,14 @@ Berjalan setiap kali mahasiswa mengirim pertanyaan (`POST /api/chat` atau `/api/
                    Mahasiswa
 ```
 
+`YES` pada Context Check berarti konteks lolos FR-3 **atau** pertanyaannya tool-eligible: memuat kata pemicu tool, baik di pertanyaan asli maupun di versi mandirinya hasil rewrite. `NO` berarti konteks lemah **dan** bukan tool-eligible. Dengan `TOOLS_ENABLED=false`, jalur tool tidak ada dan diagram ini berlaku seperti sebelum tool ada. Rinciannya di [§9](#9-llm-generation) dan `docs/tool-call.md`.
+
 ### Lima jenis balasan
 
 | `kind` | Arti | Retrieval | LLM | Sitasi | Masuk AD-4 |
 |---|---|---|---|---|---|
-| `answer` | Jawaban bersumber dokumen resmi | ✓ | ✓ | ✓ | – |
-| `refusal` | Konteks terlalu lemah (FR-3) | ✓ | – | – | ✓ |
+| `answer` | Jawaban bersumber dokumen resmi, atau data SADS lewat tool (kartu "Data akademik SADS") | ✓ | ✓ | ✓ | – |
+| `refusal` | Konteks terlalu lemah (FR-3), atau LLM tidak menemukan jawabannya di konteks maupun hasil tool | ✓ | –/✓ | – | ✓ |
 | `support` | Pertanyaan sensitif (FR-7) | – | – | – | – |
 | `smalltalk` | Sapaan (aturan atau JEV) | – | – | – | – |
 | `rejected` | Nonsense / malicious / di luar topik: dihentikan saringan aturan, JEV, atau LLM penjawab (`[DI_LUAR_TOPIK]`) | –/✓ | –/✓ | – | – |
@@ -316,23 +326,30 @@ jev_gate                       cari (subgraph)
   │                                │        filter unit, potongan lanjutan)
   └──────────────┬─────────────────┘
                  ▼
-validate_context             (titik temu, lalu FR-3)
+validate_context             (titik temu, lalu FR-3 + gerbang kelayakan tool)
   │   ├── JEV memblokir ─────── nonsense / malicious / out_of_scope → END (rejected)
   │   │                         smalltalk                           → END (smalltalk)
   │   │                         (hasil pencarian dibuang)
   │ academic / ragu / JEV mati / galat
   │        │
-cukup   tidak cukup
+cukup*  tidak cukup*
   │        │
   ▼        ▼
 generate  refuse
 (FR-6 +   (kontak unit,
- FR-5)     tanpa LLM)
+ FR-5 +    tanpa LLM)
+ loop tool
+ bila
+ eligible)
   │        │
   └───┬────┘
       ▼
      END
 ```
+
+\* `cukup` = konteks lolos FR-3 **atau** pertanyaan tool-eligible; `tidak cukup` = konteks lemah **dan** bukan tool-eligible (`route_context`).
+
+**Jalur tool di `generate`** (`TOOLS_ENABLED=true`). `validate_context` menandai `tool_eligible` bila kata pemicu salah satu tool (`dosen`, `mata kuliah`, `mengampu`, …) muncul di pertanyaan bersih **atau** di hasil rewrite. Hasil rewrite ikut dicek supaya pertanyaan lanjutan ("kalau Basis Data?") dan pertanyaan berbahasa Inggris tetap memicu tool. Pertanyaan yang eligible boleh masuk `generate` walau konteks retrieval lemah. Di sana `LLMCall.run_tools` menjalankan loop agentik: seluruh tool di registry di-bind, model memilih sendiri, dan hasilnya kembali sebagai pesan `role:"tool"`. Kalau tool tidak dapat dijalankan, padahal konteksnya lemah, `generate` langsung mengembalikan penolakan FR-3 tanpa memanggil LLM. Unit pilihan mahasiswa tidak memengaruhi kelayakan: data SADS bersifat lintas-unit.
 
 Gerbang JEV dan pencarian berjalan paralel karena keduanya hanya butuh pertanyaan yang sudah bersih. Menunggu JEV dulu menambah sekitar 3 detik ke **setiap** giliran, hanya untuk menghemat pencarian pada sekitar 5% pesan yang diblokir. Begitu JEV memblokir, `rewrite` dan `retrieve` yang masih berjalan dihentikan (`PipelineDeps.gate_blocked`), sehingga pesan yang diblokir tidak menunggu, dan tidak ikut gagal bersama, cabang pencarian. Yang sempat berjalan sebelum vonis tiba (embedding, rewrite) tetap terbayar. LLM penjawab tidak pernah dipanggil untuknya.
 
@@ -541,6 +558,8 @@ Fallback:
 
 Pertanyaan yang ditolak masuk tabel `unanswered_questions` (AD-4) supaya admin tahu dokumen apa yang kurang.
 
+**Satu pengecualian: pertanyaan tool-eligible.** Vonis REFUSE tidak langsung berujung `refuse` bila pertanyaannya cocok pemicu tool, karena datanya akan diambil tool, bukan dicari di dokumen. Tanpa pengecualian ini "siapa dosen Web Programming?" ditolak sebelum tool sempat dipanggil. Invariannya tetap: bila tool ternyata tidak dapat dijalankan, LLM tidak dipanggil dan penolakannya tercatat `refusal_source = threshold`. Akibatnya jawaban dari tool bisa membawa `ThresholdDecision` REFUSE, sehingga `messages.top_score`-nya rendah walau jawabannya benar. Ingat ini saat membaca statistik (`docs/tool-call.md` §18).
+
 Semua ambang ditentukan empiris: `python -m eval.calibrate_threshold`.
 
 ---
@@ -565,6 +584,37 @@ Answer + Sources + kontak unit (bila topik berisiko)
 - **Sitasi**: kartu sumber hanya untuk dokumen yang benar-benar dikutip jawaban. Sitasi ke dokumen di luar konteks tidak pernah menjadi kartu.
 - **Risk (FR-6)**: pertanyaan tentang deadline, syarat kelulusan, pembayaran, sanksi, atau DO selalu disertai kontak unit resmi. Deteksinya berbasis aturan supaya dapat diaudit.
 - LLM tidak digunakan sebagai sumber utama informasi kampus.
+
+## Jalur tool-calling
+
+Berjalan bila `TOOLS_ENABLED=true` dan pertanyaannya tool-eligible (§4). Rinciannya di `docs/tool-call.md`.
+
+```text
+System Prompt + aturan alat T1–T4 (TOOL_SYSTEM_PROMPT)
++ <pertanyaan_mahasiswa> pertanyaan + versi mandiri hasil rewrite </...>
++ Konteks (hasil retrieval; boleh lemah atau kosong)
+        │
+        ▼
+LLM + seluruh tool SADS (tool_choice = auto)
+        │
+   ┌────┴──────────────────┐
+tool_calls               jawaban
+   │                       │
+   ▼                       ▼
+handler SADS            stream → SSE
+paralel, maks. 4        (giliran tool tidak
+per giliran              memancarkan token)
+   │
+   └──→ hasil sebagai pesan role:"tool" → LLM lagi
+        maks. TOOLS_MAX_ROUNDS; lewat batas → jawaban dipaksa tanpa tool
+```
+
+- **Tool perdana**: `get_daftar_dosen` dan `get_mk_diampu_dosen(matkul)` ke `https://sads.instiki.ac.id/service/tp/chatbot/*`, dengan header `secret`. Jumlah dihitung handler, bukan model.
+- **Sitasi**: hasil tool menjadi kartu sintetis "Data akademik SADS", bertipe `tanya_jawab` sehingga tampil tanpa tautan dan tanpa nomor halaman. Penanda `[Data akademik SADS]` dikenali sebagai sitasi, jadi jawaban parsial yang menyebut "tidak ditemukan" untuk sebagian pertanyaan tidak dibuang menjadi penolakan.
+- **Keamanan**: hasil tool masuk sebagai pesan `role:"tool"` dan diperlakukan sebagai data (aturan T2 + aturan 5). Model tidak pernah memberi URL; argumennya divalidasi skema, dibersihkan, dan dibatasi panjangnya.
+- **Status SSE**: `menyusun jawaban` → `mengambil data akademik` (saat tool berjalan) → `menyusun jawaban` → token jawaban.
+- **Log**: `messages.meta.tool_calls` mencatat nama, argumen, `ok`, dan `latency_ms` setiap panggilan (`docs/schema.md`).
+- **Kegagalan tool** tidak menjatuhkan giliran. Model menerima `DATA_TIDAK_TERSEDIA` lalu menjawab apa adanya atau menolak. Giliran final yang kosong menjadi penolakan resmi, bukan jawaban kosong.
 
 ---
 
@@ -632,6 +682,8 @@ RAGAS dijalankan dalam dua tahap. Alasannya, ragas 0.4 masih meng-import modul V
 
 Hanya balasan `kind = answer` yang dinilai RAGAS. Tingkat dijawab dilaporkan terpisah. Kalau tidak, sistem yang menolak semua pertanyaan sulit akan tampak "sangat setia".
 
+`eval/run_generation.py` **belum memakai tool-calling**: ia memanggil `run_pipeline` tanpa `tool_registry`. Pertanyaan yang di produksi dijawab dari data SADS di sini tampil sebagai `refusal`. Keputusan ini masih terbuka (`docs/tool-call.md` §18). Kalau set evaluasi memuat pertanyaan dosen atau mata kuliah, tingkat dijawabnya lebih rendah daripada di produksi.
+
 Hal yang bisa diperbaiki dari hasil evaluasi:
 
 ```text
@@ -692,11 +744,11 @@ RRF (merge + dedup)
  ↓
 Rerank
  ↓
-Context Validation (FR-3) ──→ refusal + kontak
+Context Validation (FR-3 + kelayakan tool) ──→ refusal + kontak
  ↓
-Risk (FR-6) + LLM
+Risk (FR-6) + LLM  ⇄  Tool SADS (bila tool-eligible)
  ↓
-Answer + Sources
+Answer + Sources (+ kartu "Data akademik SADS")
 ```
 
 ## C. Evaluation Pipeline
@@ -734,7 +786,8 @@ SERVER PANDU
 │   ├── Reranker (opsional)
 │   │   ├── API ────────────────→ /rerank
 │   │   └── lokal: cross-encoder
-│   └── LLM client ─────────────→ BASE_URL (OpenAI-compatible)
+│   ├── LLM client ─────────────→ BASE_URL (OpenAI-compatible, termasuk tools)
+│   └── Tool client (opsional) ─→ SADS /service/tp/chatbot/* (header secret)
 │
 ├── PostgreSQL (wajib)
 │   ├── pgvector: chunks.embedding (HNSW)
@@ -749,6 +802,8 @@ SERVER PANDU
 ```
 
 Model lokal dipasang dengan `uv sync --extra local` dan membawa torch. Pasang hanya bila `EMBED_PROVIDER=local` atau `RERANK_PROVIDER=local`.
+
+Tool-calling butuh `TOOLS_ENABLED=true`, `SADS_BASE_URL`, dan `SADS_API_SECRET` di env server. Aplikasi menolak start bila sakelarnya hidup tetapi kredensial SADS kosong. Bawaan kodenya mati, jadi server tanpa variabel ini berjalan persis seperti sebelum tool ada.
 
 ---
 
@@ -769,6 +824,7 @@ Reranker             = mengurutkan ulang dokumen berdasarkan relevansi
 Threshold            = menolak sebelum LLM bila konteks lemah (FR-3)
 Risk                 = menyertakan kontak unit pada topik berisiko (FR-6)
 LLM                  = menyusun jawaban bersitasi
+Tool-calling         = mengambil data layanan akademik (SADS) saat menjawab
 RAGAS                = menilai kualitas generasi (offline)
 ```
 
@@ -810,15 +866,18 @@ User → FastAPI → Validation → Sensitif (FR-7) → Smalltalk → JEV
                                                      Rerank
                                                        │
                                                        ▼
-                                            Context Validation (FR-3)
+                                       Context Validation (FR-3 + kelayakan tool)
                                                  │           │
-                                                YES          NO
+                                                YES*         NO*
                                                  │           │
                                                  ▼           ▼
                                         Risk (FR-6) + LLM   Fallback + kontak
-                                                 │           → unanswered_questions
+                                          ⇅ Tool SADS        → unanswered_questions
+                                                 │
                                                  ▼
                                           Answer + Sources
+
+        * YES = konteks cukup ATAU tool-eligible; NO = konteks lemah DAN bukan tool-eligible
 
 
                               EVALUATION

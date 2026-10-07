@@ -7,13 +7,18 @@ seperti invarian "LLM tidak dipanggil" pada test pipeline lain.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
+import httpx
 import pytest
-from langchain_core.messages import AIMessageChunk
+from langchain_core.messages import AIMessageChunk, ToolMessage
 
 from app.config import Settings
 from app.rag.chain import OutcomeKind, run_pipeline
+from app.rag.prompts import NOT_FOUND_MARKER
+from app.rag.providers import GalatGateway
+from app.rag.rewriter import Turn
 from app.rag.tools import sads
 from app.rag.tools.base import (
     ToolArgumentError,
@@ -22,9 +27,10 @@ from app.rag.tools.base import (
     hasil_tool_ke_dokumen,
     validasi_argumen,
 )
-from app.rag.tools.loop import run_tool_loop
+from app.rag.tools.client import SadsClient
+from app.rag.tools.loop import MAKS_TOOL_PER_GILIRAN, PESAN_BATAS, run_tool_loop
 from app.rag.tools.registry import ToolRegistry, build_registry
-from tests.fixtures.fakes import FakeRetriever, RecordingLLM
+from tests.fixtures.fakes import FakeRetriever, RecordingLLM, RecordingRewriter
 
 LABEL = "Data akademik SADS"
 
@@ -72,6 +78,14 @@ class TestRegistry:
 
     def test_tidak_eligible_di_luar_topik(self):
         assert _registry().eligible("resep rendang yang enak") == []
+
+    def test_pertanyaan_inggris_pendek_eligible_tanpa_rewrite(self):
+        """Regresi live: "who teaches X?" tidak di-rewrite (`looks_english` butuh
+        >= 2 kata tugas), jadi pemicunya harus mengenal kata Inggris sendiri."""
+        reg = _registry()
+        assert reg.eligible("who teaches Web Programming?")
+        assert reg.eligible("Who is the lecturer for Database?")
+        assert reg.eligible("how do I register for courses (KRS)?") == []
 
     def test_eligible_membuka_semua_tool_bukan_hanya_yang_cocok(self):
         """Regresi: pemicu asimetris pernah menyembunyikan tool yang benar.
@@ -145,6 +159,8 @@ class TestHandlerSads:
         assert r.ok and r.label == LABEL
         assert r.text.count("Budi, S.Kom") == 1  # dedup + trailing space dibuang
         assert "- Ani" in r.text  # koma di ujung dibuang
+        # Jumlah dihitung kode, bukan model (dulu model menjawab 223 dari 220 nama).
+        assert "Jumlah dosen yang mengajar di INSTIKI: 2 orang." in r.text
 
     async def test_mk_diampu_meratakan_dan_meneruskan_matkul(self):
         client = FakeSads(
@@ -382,11 +398,15 @@ class ToolLLM(RecordingLLM):
         self.usage: dict | None = None
         self.model = "m"
         self.tool_calls_made = 0
+        self.last_wrapped: str | None = None
+        self.last_specs: list[Any] = []
 
     async def run_tools(
         self, wrapped, documents, *, specs, on_token=None, on_stage=None, max_rounds=2
     ):
         self.tool_calls_made += 1
+        self.last_wrapped = wrapped
+        self.last_specs = list(specs)
         self.usage = {"total_tokens": 5}
         return self._answer, list(self._docs)
 
@@ -475,3 +495,227 @@ def test_jawaban_parsial_tool_tidak_dibuang_jadi_penolakan():
     jawab = f"Basis Data diampu oleh Budi [{LABEL}]. Untuk Kalkulus tidak ditemukan."
     assert not is_not_found(jawab, {LABEL: 1})
     assert is_not_found("[TIDAK_DITEMUKAN]", {LABEL: 1})
+
+
+# --- Tinjauan kedua: klaim dokumentasi yang dulu tidak dipenuhi kode ----------
+
+
+async def _jalankan(llm: FakeChat, handler: Any, **lain: Any):
+    return await run_tool_loop(
+        llm_tools=llm,
+        llm_plain=llm,
+        wrapped_question="q",
+        documents=[],
+        specs=[_spec(handler)],
+        **lain,
+    )
+
+
+def _banyak_panggilan(*matkul: str) -> list[AIMessageChunk]:
+    return [
+        AIMessageChunk(
+            content="",
+            tool_call_chunks=[
+                {
+                    "name": "get_mk_diampu_dosen",
+                    "args": f'{{"matkul":"{m}"}}',
+                    "id": f"c{i}",
+                    "index": i,
+                }
+                for i, m in enumerate(matkul)
+            ],
+        )
+    ]
+
+
+class TestSadsClient:
+    async def test_mengirim_header_secret_bukan_bearer(self):
+        diterima: dict[str, Any] = {}
+
+        def layani(request: httpx.Request) -> httpx.Response:
+            diterima["secret"] = request.headers.get("secret")
+            diterima["authorization"] = request.headers.get("authorization")
+            diterima["path"] = request.url.path
+            diterima["matkul"] = request.url.params.get("matkul")
+            return httpx.Response(200, json=[{"nmdosen": "Budi"}])
+
+        client = SadsClient(
+            base_url="https://sads.contoh/",
+            secret="rahasia",
+            timeout=5,
+            transport=httpx.MockTransport(layani),
+        )
+        data = await client.get_json(
+            "/service/tp/chatbot/mk-diampu-dosen", params={"matkul": "Basis Data"}
+        )
+        assert data == [{"nmdosen": "Budi"}]
+        assert diterima["secret"] == "rahasia"
+        assert diterima["authorization"] is None
+        assert diterima["path"] == "/service/tp/chatbot/mk-diampu-dosen"
+        assert diterima["matkul"] == "Basis Data"
+
+    async def test_status_galat_menjadi_http_error(self):
+        client = SadsClient(
+            base_url="https://sads.contoh",
+            secret="salah",
+            timeout=5,
+            transport=httpx.MockTransport(lambda _r: httpx.Response(401)),
+        )
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.get_json("/service/tp/chatbot/dosen-mengajar")
+
+
+class TestLoopTinjauanKedua:
+    async def test_beberapa_tool_satu_giliran_berjalan_bersamaan(self):
+        """Bila dijalankan berurutan, A menunggu B yang belum mulai, lalu timeout."""
+        b_mulai = asyncio.Event()
+
+        async def handler(*, matkul: str) -> ToolResult:
+            if matkul == "A":
+                await asyncio.wait_for(b_mulai.wait(), timeout=2)
+            else:
+                b_mulai.set()
+            return ToolResult("get_mk_diampu_dosen", LABEL, f"- dosen {matkul}", True)
+
+        llm = FakeChat([_banyak_panggilan("A", "B"), _answer_turn(f"A dan B [{LABEL}].")])
+        res = await _jalankan(llm, handler)
+        assert [j["args"]["matkul"] for j in res.tool_calls] == ["A", "B"]
+        assert all(j["ok"] for j in res.tool_calls)
+        ids = [m.tool_call_id for m in llm.seen_messages if isinstance(m, ToolMessage)]
+        assert ids == ["c0", "c1"]
+
+    async def test_panggilan_di_atas_batas_dibalas_tanpa_dijalankan(self):
+        dipanggil: list[str] = []
+
+        async def handler(*, matkul: str) -> ToolResult:
+            dipanggil.append(matkul)
+            return ToolResult("get_mk_diampu_dosen", LABEL, f"- {matkul}", True)
+
+        semua = [f"M{i}" for i in range(MAKS_TOOL_PER_GILIRAN + 2)]
+        llm = FakeChat([_banyak_panggilan(*semua), _answer_turn(f"ok [{LABEL}].")])
+        res = await _jalankan(llm, handler)
+        assert sorted(dipanggil) == sorted(semua[:MAKS_TOOL_PER_GILIRAN])
+        balasan = [m for m in llm.seen_messages if isinstance(m, ToolMessage)]
+        # Setiap tool_call_id tetap dibalas; kalau tidak, API menolak giliran berikutnya.
+        assert len(balasan) == len(semua)
+        assert sum(m.content == PESAN_BATAS for m in balasan) == 2
+        assert [j.get("error") for j in res.tool_calls].count("batas_per_giliran") == 2
+
+    async def test_argumen_bukan_json_tidak_dikira_jawaban_kosong(self):
+        async def handler(*, matkul: str) -> ToolResult:  # pragma: no cover
+            raise AssertionError("argumen rusak tidak boleh sampai ke handler")
+
+        llm = FakeChat(
+            [
+                _tool_turn("get_mk_diampu_dosen", "{matkul: A}"),
+                _answer_turn(f"Jawab [{LABEL}]."),
+            ]
+        )
+        res = await _jalankan(llm, handler)
+        assert llm.i == 2  # lanjut ke giliran berikutnya, bukan berhenti dengan teks kosong
+        assert res.tool_calls[0]["error"] == "argumen_rusak"
+        assert res.text == f"Jawab [{LABEL}]."
+
+    async def test_giliran_final_kosong_menjadi_penanda_tidak_ditemukan(self):
+        res = await _jalankan(FakeChat([_answer_turn("")]), None)
+        assert res.text == NOT_FOUND_MARKER
+
+    async def test_galat_gateway_di_jawaban_final_dilempar(self):
+        async def handler(*, matkul: str) -> ToolResult:
+            return ToolResult("get_mk_diampu_dosen", LABEL, "- Budi", True)
+
+        llm = FakeChat(
+            [
+                _tool_turn("get_mk_diampu_dosen", '{"matkul":"X"}'),
+                _answer_turn("Untuk ", "[Error] Our servers are currently overloaded."),
+            ]
+        )
+        with pytest.raises(GalatGateway):
+            await _jalankan(llm, handler)
+
+    async def test_stage_berganti_selama_tool_berjalan(self):
+        async def handler(*, matkul: str) -> ToolResult:
+            return ToolResult("get_mk_diampu_dosen", LABEL, "- Budi", True)
+
+        stage: list[str] = []
+
+        async def on_stage(s: str) -> None:
+            stage.append(s)
+
+        llm = FakeChat(
+            [
+                _tool_turn("get_mk_diampu_dosen", '{"matkul":"X"}'),
+                _answer_turn(f"ok [{LABEL}]."),
+            ]
+        )
+        await _jalankan(llm, handler, on_stage=on_stage)
+        assert stage == ["mengambil data akademik", "menyusun jawaban"]
+
+
+class TestPertanyaanLanjutan:
+    async def test_lanjutan_eligible_lewat_hasil_rewrite(self):
+        """'kalau Basis Data?' tidak memuat pemicu; versi mandirinya memuat."""
+        docs = hasil_tool_ke_dokumen([ToolResult("a", LABEL, "- Budi: Basis Data", True)])
+        llm = ToolLLM(f"Basis Data diampu Budi [{LABEL}].", docs)
+        rewriter = RecordingRewriter("Siapa dosen pengampu mata kuliah Basis Data?")
+        outcome = await run_pipeline(
+            "kalau Basis Data?",
+            retriever=FakeRetriever([]),
+            llm_call=llm,
+            rewrite_call=rewriter,
+            history=[
+                Turn("user", "siapa dosen pengampu mata kuliah Programming?"),
+                Turn("assistant", f"Budi [{LABEL}]."),
+            ],
+            tool_registry=ToolRegistry([_spec(lambda **_: None)]),
+        )
+        assert outcome.kind is OutcomeKind.ANSWER
+        assert llm.tool_calls_made == 1
+        wrapped = llm.last_wrapped
+        # Loop tool menerima versi mandirinya, dan keduanya di dalam tag (FR-5).
+        buka = wrapped.index("<pertanyaan_mahasiswa>")
+        tutup = wrapped.index("</pertanyaan_mahasiswa>")
+        assert buka < wrapped.index("kalau Basis Data?") < tutup
+        assert buka < wrapped.index("Siapa dosen pengampu mata kuliah Basis Data?") < tutup
+
+    async def test_tanpa_rewrite_lanjutan_tidak_eligible(self):
+        llm = ToolLLM("x", [])
+        outcome = await run_pipeline(
+            "kalau Basis Data?",
+            retriever=FakeRetriever([]),
+            llm_call=llm,
+            tool_registry=ToolRegistry([_spec(lambda **_: None)]),
+        )
+        assert outcome.kind is OutcomeKind.REFUSAL
+        assert llm.tool_calls_made == 0
+
+    async def test_seluruh_registry_di_bind(self):
+        reg = _registry()
+        llm = ToolLLM(f"x [{LABEL}].", [])
+        await run_pipeline(
+            "ada berapa dosen?", retriever=FakeRetriever([]), llm_call=llm, tool_registry=reg
+        )
+        assert {s.name for s in llm.last_specs} == {s.name for s in reg.specs}
+
+
+async def test_setiap_giliran_llm_mendapat_config_sendiri():
+    """Regresi: satu config (satu run_id) dipakai ulang untuk semua giliran loop,
+    sehingga LangSmith menolak giliran kedua -- giliran yang berisi jawabannya."""
+
+    async def handler(*, matkul: str) -> ToolResult:
+        return ToolResult("get_mk_diampu_dosen", LABEL, "- Budi", True)
+
+    dibuat: list[dict] = []
+
+    def buat_config() -> dict:
+        dibuat.append({"run_id": f"run-{len(dibuat)}"})
+        return dibuat[-1]
+
+    llm = FakeChat(
+        [
+            _tool_turn("get_mk_diampu_dosen", '{"matkul":"X"}'),
+            _answer_turn(f"ok [{LABEL}]."),
+        ]
+    )
+    await _jalankan(llm, handler, buat_config=buat_config)
+    assert [c["run_id"] for c in dibuat] == ["run-0", "run-1"]
