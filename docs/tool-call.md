@@ -516,6 +516,12 @@ menjawab.** Kegagalan tool tidak boleh memunculkan jawaban ngawur.
 - **LangSmith**: setiap giliran LLM di loop menjadi run `generate_answer`
   tersendiri di bawah trace giliran. Panggilan tool **tidak** punya span sendiri;
   jejaknya ada di `meta.tool_calls`.
+- **Halaman Log, tab Graf** (`logs.md` tahap 4, 2026-10-08): setiap giliran LLM
+  dan setiap panggilan tool tercatat di bawah node `generate`, berurutan, tanpa
+  LangSmith. Tool dicatat lewat custom event (`rekaman.catat_panggilan` di
+  `_jalankan_terukur`): argumen dari model dan teks yang dikembalikan ke model,
+  termasuk sisipan `DAFTAR_DITAMPILKAN`. Rincian giliran juga menyebut nama
+  tool yang dipanggil (`node_runs.detail.tools`).
 - **Token**: `usage` dijumlahkan lintas giliran (§2). Pertanyaan ber-tool
   memakai sekitar 7–8 ribu token input dengan `cx/gpt-6-luna`, karena skema tool,
   aturan T1–T7, dan hasil tool. `get_daftar_dosen` tanpa saringan membawa sekitar

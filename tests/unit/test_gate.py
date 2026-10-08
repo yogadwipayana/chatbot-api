@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 import httpx
 import pytest
@@ -195,6 +196,13 @@ class TestJevGate:
         v, _ = await self.panggil(handler)
         assert not v.blocked
         assert v.error
+
+    async def test_log_galat_menyebut_jenisnya(self, caplog):
+        """T57: `str(httpx.ReadTimeout(""))` kosong, dan baris log dulu berakhir di
+        titik dua tanpa sebab."""
+        with caplog.at_level(logging.WARNING, logger="app.rag.gate"):
+            await self.panggil(lambda r: (_ for _ in ()).throw(httpx.ReadTimeout("")))
+        assert "Gerbang JEV gagal, pesan diteruskan: ReadTimeout" in caplog.text
 
 
 class TestBuildGate:

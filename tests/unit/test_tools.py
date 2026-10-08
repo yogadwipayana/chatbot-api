@@ -904,6 +904,46 @@ class TestPertanyaanLanjutan:
         assert {s.name for s in llm.last_specs} == {s.name for s in reg.specs}
 
 
+async def test_panggilan_tool_dipancarkan_untuk_tab_graf():
+    """Handler tool bukan runnable LangChain; tanpa custom event panggilannya
+    tidak terlihat di rekaman tab Graf (`rekaman.catat_panggilan`)."""
+    from langchain_core.callbacks import AsyncCallbackHandler
+    from langchain_core.runnables import RunnableLambda
+
+    from app.observability.rekaman import ACARA_PANGGILAN
+
+    class Penampung(AsyncCallbackHandler):
+        def __init__(self) -> None:
+            self.acara: list[tuple[str, Any]] = []
+
+        async def on_custom_event(self, name, data, *, run_id, **kwargs) -> None:
+            self.acara.append((name, data))
+
+    async def handler(*, matkul: str) -> ToolResult:
+        return ToolResult("get_mk_diampu_dosen", LABEL, "- Budi: Basis Data", True)
+
+    llm = FakeChat(
+        [
+            _tool_turn("get_mk_diampu_dosen", '{"matkul":"Basis Data"}'),
+            _answer_turn(f"Budi [{LABEL}]."),
+        ]
+    )
+    tampung = Penampung()
+
+    async def jalan(_: Any) -> Any:
+        return await _jalankan(llm, handler)
+
+    await RunnableLambda(jalan).ainvoke(None, config={"callbacks": [tampung]})
+    [(nama, data)] = tampung.acara
+    assert nama == ACARA_PANGGILAN
+    assert data["kind"] == "tool"
+    assert data["name"] == "get_mk_diampu_dosen"
+    assert data["input"] == {"matkul": "Basis Data"}
+    assert data["output"]["ok"] is True
+    assert "Budi: Basis Data" in data["output"]["content"]
+    assert data["error"] is None
+
+
 async def test_setiap_giliran_llm_mendapat_config_sendiri():
     """Regresi: satu config (satu run_id) dipakai ulang untuk semua giliran loop,
     sehingga LangSmith menolak giliran kedua -- giliran yang berisi jawabannya."""

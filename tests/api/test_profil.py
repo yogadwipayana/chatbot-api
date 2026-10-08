@@ -11,6 +11,7 @@ from datetime import date
 
 import pytest
 
+from app.config import get_settings
 from app.prodi import DAFTAR_PRODI
 from tests.fixtures.fakes import FakeRetriever
 
@@ -88,9 +89,21 @@ class TestProfilDiChat:
         assert (entri.profile.prodi.code, entri.profile.angkatan) == ("1010", 2024)
 
     @pytest.mark.parametrize("path", CHAT)
-    def test_nim_tidak_masuk_log_aplikasi(self, client_profil, payload, log_sink, path):
-        """Log SQLite dibaca untuk diagnosis dan berumur pendek; NIM cukup di
-        `messages.meta`."""
+    def test_nim_di_log_hanya_di_kolom_giliran(self, client_profil, payload, log_sink, path):
+        """Keputusan 2026-10-08 (logs.md tahap 4): NIM ikut log SQLite untuk tab
+        Graf -- di `turns.nim` dan rekaman, bukan di detail node yang tampil di
+        tab Performa."""
+        client_profil.post(path, json=payload)
+        [turn] = log_sink.of("turn")
+        assert turn["nim"] == NIM
+        assert NIM not in repr(log_sink.of("node"))
+
+    @pytest.mark.parametrize("path", CHAT)
+    def test_nim_tidak_masuk_log_bila_log_node_io_mati(
+        self, client_profil, payload, log_sink, path
+    ):
+        settings = get_settings().model_copy(update={"log_node_io": False})
+        client_profil.app.dependency_overrides[get_settings] = lambda: settings
         client_profil.post(path, json=payload)
         assert log_sink.rows
         assert NIM not in repr(log_sink.rows)

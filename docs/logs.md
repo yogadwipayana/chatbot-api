@@ -1,6 +1,6 @@
 # Rancangan: Log Aplikasi di SQLite + Halaman Log Admin
 
-Status: **selesai** (API + halaman admin) · dicatat 2026-09-25
+Status: **selesai** (API + halaman admin) · dicatat 2026-09-25 · tahap 4 (tab Graf) 2026-10-08
 
 ## Latar belakang
 
@@ -58,9 +58,11 @@ Sudah dikerjakan sebelumnya: panggilan HTTP JEV kini tercatat sebagai child run
 
 ## Isi SQLite
 
-Prinsip: **SQLite tidak menyimpan teks pertanyaan maupun jawaban.** Teks sudah
-ada di Postgres, lengkap dengan penyamaran pertanyaan sensitif (FR-7). SQLite
-hanya berisi metrik dan log, ditautkan lewat `message_id`.
+Prinsip awal: SQLite tidak menyimpan teks pertanyaan maupun jawaban; teks hanya
+di Postgres. **Diubah di tahap 4 (keputusan user 2026-10-08):** teks pertanyaan,
+jawaban, NIM, dan input/output setiap node ikut disimpan, supaya tab Graf dapat
+menggantikan LangSmith. Pertanyaan sensitif (FR-7) tetap disamarkan dengan penanda
+yang sama seperti di Postgres. `LOG_NODE_IO=false` mengembalikan prinsip awal.
 
 ### `turns`: satu baris per giliran chat
 
@@ -68,7 +70,7 @@ hanya berisi metrik dan log, ditautkan lewat `message_id`.
 |---|---|
 | `turn_id` | UUID, dibuat di awal request |
 | `timestamp` | awal giliran |
-| `endpoint` | `chat` / `chat_stream` |
+| `endpoint` | `chat` / `chat_stream` / `uji_coba` (kotak uji coba admin, tahap 4) |
 | `session_id`, `message_id` | untuk membuka percakapannya di Postgres |
 | `unit` | unit pilihan mahasiswa, atau null |
 | `outcome` | `answer`, `refusal`, `support`, `smalltalk`, `rejected` |
@@ -76,7 +78,12 @@ hanya berisi metrik dan log, ditautkan lewat `message_id`.
 | `total_ms` | durasi total giliran |
 | `ttft_ms` | waktu sampai token pertama (streaming saja) |
 | `status` | `ok` / `error` / `dibatalkan` (mahasiswa menutup panel saat streaming) |
-| `langsmith_run_id` | tautan ke trace bila tracing aktif |
+| `langsmith_run_id` | tautan ke trace bila tracing aktif; sejak tahap 4 juga untuk giliran `error`/`dibatalkan` |
+| `nim`, `question`, `answer` | tahap 4, hanya bila LOG_NODE_IO menyala; `question` FR-7 disamarkan |
+
+### `traces`: rekaman input/output satu giliran (tahap 4)
+
+`turn_id`, `timestamp`, `data` (blob zlib). Isinya dijelaskan di bagian tahap 4.
 
 ### `node_runs`: satu baris per node per giliran
 
@@ -95,7 +102,7 @@ Isi `detail` per node:
 | `retrieve` | `document_count` (unit filter ada di baris `turns`) |
 | `validate_context` | `decision`, `reason` (`ok`/`no_results`/`below_threshold`), `top_score`, `top_rerank_score` |
 | `refuse` | `contact_count`: jumlah kontak yang disarankan |
-| `generate` | `model`, `input_tokens`/`output_tokens`, `cost_usd` |
+| `generate` | `model`, `input_tokens`/`output_tokens`, `cost_usd`, `tools` (nama tool yang dipanggil, tanpa argumen) |
 
 ### `app_logs`: semua log Python aplikasi
 
@@ -210,7 +217,8 @@ Keputusan.)
 
 Setelan baru: `LOG_DB_PATH`, `LOG_RETENTION_DAYS`, `LOG_LEVEL` (lihat `api/.env.example`).
 Log ke konsol kini berformat `waktu LEVEL logger: pesan`, dan INFO tidak lagi hilang.
-Kotak uji coba admin (`/api/admin/test-query`) sengaja tidak ikut tercatat.
+Kotak uji coba admin (`/api/admin/test-query`) awalnya tidak ikut tercatat; sejak
+tahap 4 tercatat sebagai jalur `uji_coba` (lihat di bawah).
 
 ## Urutan pengerjaan
 
@@ -245,3 +253,89 @@ Beda dari wireframe:
 - Tren per jam dipecah menjadi dua grafik (waktu respons p95, dan galat) alih-alih satu
   grafik dua sumbu.
 - Jam ditampilkan di zona waktu peramban; API menyimpan UTC.
+
+## Tahap 4: tab Graf dan rekaman input/output (2026-10-08)
+
+Tujuan: membaca apa yang terjadi di setiap langkah, termasuk prompt dan jawaban
+LLM, tanpa LangSmith, sehingga `LANGSMITH_TRACING` boleh dimatikan. Keputusan
+user: teks pertanyaan, jawaban, potongan dokumen, dan NIM boleh disimpan; yang
+direkam node beserta child run-nya; uji coba admin ikut dicatat.
+
+### Yang direkam
+
+`NodeRecorder(rekam_io=True)` (`applog.py`) menyimpan, per giliran:
+
+| Bagian | Isi | Sumber |
+|---|---|---|
+| `input` | masukan graf: pertanyaan, riwayat, unit, profil | callback akar graf |
+| `output` | `outcome` akhir (null bila gagal/dibatalkan) | callback akar graf |
+| `nodes[]` | per node: `input` (state yang diterima), `output` (perubahan state), `route` (keluaran router sesudahnya, mis. `["jev_gate", "cari"]` atau `selesai`) | `on_chain_start/end` node dan router |
+| `calls[]` | pohon panggilan di dalam node: `kind` (`llm`/`retriever`/`tool`/`jev`/`chain`), nama, model, token, biaya, durasi, status, input, output, `parent_id` | callback LangChain (LLM, retriever) dan custom event `pandu_panggilan` (JEV, tool) |
+
+Rincian:
+
+- **Template prompt dilewati**, dan rantai `prompt | llm` yang dipanggil dengan
+  `run_name` digabung menjadi satu panggilan LLM bernama `generate_answer` /
+  `rewrite_query` berisi pesan sungguhan (`_ratakan`).
+- **JEV dan handler tool bukan runnable**, jadi dicatat lewat
+  `rekaman.catat_panggilan` (custom event). JEV: badan permintaan dan respons
+  mentah, tanpa header. Tool: argumen dari model dan teks yang dikembalikan ke
+  model. Saat tracing menyala, `@traceable` di JEV membuat induk event menjadi
+  run LangSmith; perekam lalu mencari node lewat `metadata.langgraph_node`.
+- **Giliran gagal atau dibatalkan tetap direkam** sampai langkah terakhir yang
+  sempat berjalan; panggilan yang belum selesai berstatus `berjalan`.
+- **Penyamaran FR-7** (`Giliran._teks_sensitif`): pertanyaan giliran yang
+  dialihkan ke konseling, dan pertanyaan sensitif dari giliran sebelumnya yang
+  ikut di riwayat widget, diganti `SENSITIVE_PLACEHOLDER` di seluruh rekaman --
+  state, prompt rewrite, permintaan JEV.
+
+Penyimpanan (`rekaman.py`): serialisasi ke JSON (string dipotong 32.000 karakter,
+daftar 300 butir), subpohon di atas 300 karakter disimpan sekali dan dirujuk
+`{"$ref": hash}` (state LangGraph kumulatif, jadi daftar dokumen yang sama muncul
+di beberapa node), lalu zlib. Semua langkah itu berjalan di thread penulis log.
+Giliran ber-tool sekitar 60 KB JSON mentah.
+
+### Uji coba admin
+
+`/api/admin/test-query` dibungkus `catat_giliran(endpoint="uji_coba")` dan
+mengembalikan `turn_id`; halaman Uji coba menautkannya ke
+`/log?tab=graf&giliran=<turn_id>` (role admin ke atas). Tab Performa tidak
+menghitung giliran `uji_coba`; tab Giliran chat punya filter Jalur.
+
+### API
+
+| Endpoint | Isi |
+|---|---|
+| `GET /api/admin/logs/turns/{turn_id}/trace` | rekaman di atas; 404 bila tidak direkam |
+| `GET /api/admin/logs/graph` | node dan sisi dari `build_graph().get_graph(xray=True)`; subgraph `cari` menjadi `group` |
+| `GET /api/admin/logs/turns?endpoint=` | filter jalur; `TurnOut` kini membawa `question`, `has_trace`; `TurnDetail` membawa `nim`, `answer` |
+
+Skema SQLite naik ke versi 2 lewat migrasi di tempat (`_MIGRASI`: tiga kolom
+`turns` + tabel `traces`), jadi log yang ada tidak hilang. Migrasi tahan dijalankan
+bersamaan oleh thread penulis dan pembaca.
+
+### Tab Graf (admin)
+
+| Berkas | Isi |
+|---|---|
+| `admin/src/components/logs/graph-tab.tsx` | pemilih giliran (50 terbaru + ringkasan), info giliran, keadaan diagram per giliran atau agregat |
+| `admin/src/components/logs/pipeline-diagram.tsx` | SVG berlapis dari topologi API: langkah berjalan/gagal/tidak berjalan, sisi yang dilalui, penanda `selesai` |
+| `admin/src/components/logs/trace-panel.tsx` | panel langkah: Input, Output, Panggilan (pesan LLM per peran, dokumen + skor RRF, pohon JSON) |
+| `admin/src/components/logs/turn-sheet.tsx` | pertanyaan, jawaban, NIM, tombol "Lihat di graf" |
+| `admin/src/app/(dashboard)/log/page.tsx` | `?tab=graf&giliran=` |
+
+Mode ringkasan: jumlah dan median per langkah pada rentang ini, dan jumlah
+giliran yang berhenti di setiap penanda `selesai` (blokir JEV dihitung di
+`validate_context`, karena titik temu itu yang mengarahkannya ke `selesai`).
+
+### Ikut diperbaiki (temuan uji browser s38)
+
+- T54: rincian giliran tidak menunjukkan tool -> `detail.tools` di `generate` + tab Graf.
+- T55: `rule_gate` tidak ada di `NODE_ORDER` -> "Saringan aturan" kini sesudah Sapaan.
+- T56: giliran `error`/`dibatalkan` tertulis "Tracing mati" -> `langsmith_run_id` diisi sejak awal giliran.
+- T57: WARNING "Gerbang JEV gagal, pesan diteruskan: " tanpa sebab (`str(ReadTimeout)` kosong) -> jenis galat ikut ditulis.
+
+### Yang tetap hanya ada di LangSmith
+
+Anotasi/umpan balik per run, dataset dan evaluasi, playground, dan pencarian
+lintas trace. Retensi rekaman ikut `LOG_RETENTION_DAYS` (7 hari).

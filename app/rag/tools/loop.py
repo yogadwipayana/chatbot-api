@@ -23,6 +23,7 @@ import httpx
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
+from app.observability.rekaman import catat_panggilan
 from app.rag.chain import _PenahanPenanda
 from app.rag.prompts import NOT_FOUND_MARKER, TOOL_SYSTEM_PROMPT, format_context
 from app.rag.providers import PenyaringGalatGateway
@@ -149,10 +150,27 @@ async def _jalankan_tool(tc: dict, by_name: dict[str, ToolSpec]) -> ToolResult:
 
 
 async def _jalankan_terukur(tc: dict, by_name: dict[str, ToolSpec]) -> tuple[ToolResult, int]:
-    """`_jalankan_tool` beserta latensinya (ms) untuk `meta.tool_calls`."""
+    """`_jalankan_tool` beserta latensinya (ms) untuk `meta.tool_calls`.
+
+    Juga tercatat sebagai panggilan di bawah node `generate` di tab Graf
+    (`rekaman.py`): argumen dari model, dan teks yang dikembalikan ke model --
+    persis yang dibaca model, termasuk sisipan `DAFTAR_DITAMPILKAN`."""
     mulai = time.perf_counter()
     r = await _jalankan_tool(tc, by_name)
-    return r, round((time.perf_counter() - mulai) * 1000)
+    latency_ms = round((time.perf_counter() - mulai) * 1000)
+    await catat_panggilan(
+        jenis="tool",
+        nama=str(tc.get("name") or "tool"),
+        masukan=tc.get("args") or {},
+        keluaran={
+            "ok": r.ok,
+            "content": r.pesan_untuk_model(),
+            "attachments": [{"title": a.title, "items": len(a.items)} for a in r.attachments],
+        },
+        mulai=mulai,
+        galat=None if r.ok else "DATA_TIDAK_TERSEDIA",
+    )
+    return r, latency_ms
 
 
 async def run_tool_loop(

@@ -1289,7 +1289,10 @@ paths:
       x-status: implemented
       x-min-role: admin
       security: [{ bearerAuth: [] }]
-      description: Terbaru lebih dulu. Tanpa teks pertanyaan/jawaban; buka lewat `message_id`.
+      description: |
+        Terbaru lebih dulu, termasuk giliran uji coba admin (`endpoint=uji_coba`). `question`
+        berisi teks pertanyaan bila LOG_NODE_IO menyala saat giliran itu berjalan
+        (pertanyaan sensitif FR-7 disamarkan); jawaban dan NIM ada di detail giliran.
       parameters:
         - $ref: '#/components/parameters/LogRange'
         - { name: outcome, in: query, schema: { type: string } }
@@ -1298,6 +1301,10 @@ paths:
           schema: { type: string, enum: [ok, error, dibatalkan] }
         - { name: unit, in: query, schema: { type: string } }
         - { name: last_node, in: query, schema: { type: string } }
+        - name: endpoint
+          in: query
+          description: Jalur giliran. `uji_coba` = kotak uji coba admin.
+          schema: { type: string, enum: [chat, chat_stream, uji_coba] }
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Offset'
       responses:
@@ -1334,6 +1341,51 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/admin/logs/turns/{turn_id}/trace:
+    get:
+      tags: [admin-logs]
+      summary: Rekaman input/output satu giliran (tab Graf)
+      operationId: get_turn_trace
+      x-status: implemented
+      x-min-role: admin
+      security: [{ bearerAuth: [] }]
+      description: |
+        State yang diterima dan dikembalikan setiap node, rute sesudahnya, dan pohon
+        panggilan di dalam node (LLM, retriever, tool, JEV) -- pengganti trace LangSmith.
+        404 bila giliran tidak ada, sudah lewat masa simpan, atau berjalan saat
+        LOG_NODE_IO mati. Waktu dan status node ada di `GET /api/admin/logs/turns/{turn_id}`.
+      parameters:
+        - { name: turn_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Rekaman giliran
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TurnTrace' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/admin/logs/graph:
+    get:
+      tags: [admin-logs]
+      summary: Node dan sisi pipeline chat
+      operationId: get_pipeline_graph
+      x-status: implemented
+      x-min-role: admin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Bentuk graf LangGraph (`get_graph(xray=True)`) untuk diagram tab Graf. Node di dalam
+        subgraph diberi `group` (mis. `cari` untuk rewrite dan retrieve).
+      responses:
+        '200':
+          description: Graf pipeline
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PipelineGraph' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/admin/logs/app:
     get:
@@ -2819,6 +2871,11 @@ components:
             Akar trace LangSmith untuk uji coba ini -- mencakup penulisan ulang query,
             retrieval, dan penyusunan jawaban sekaligus. Null bila tracing mati
             (LANGSMITH_TRACING=false atau LANGSMITH_API_KEY kosong).
+        turn_id:
+          type: [string, 'null']
+          description: >-
+            Giliran uji coba ini di halaman Log (jalur `uji_coba`), untuk membuka langkah
+            dan panggilan LLM/tool-nya di tab Graf. Null bila log SQLite mati.
 
     DailyVolume:
       type: object
@@ -3071,13 +3128,13 @@ components:
 
     TurnOut:
       type: object
-      required: [turn_id, timestamp, endpoint, session_id, message_id, unit, outcome, last_node, total_ms, ttft_ms, status, langsmith_run_id]
+      required: [turn_id, timestamp, endpoint, session_id, message_id, unit, outcome, last_node, total_ms, ttft_ms, status, langsmith_run_id, question, has_trace]
       properties:
         turn_id: { type: string }
         timestamp: { type: string }
-        endpoint: { type: string, enum: [chat, chat_stream] }
+        endpoint: { type: string, enum: [chat, chat_stream, uji_coba] }
         session_id: { type: [string, 'null'] }
-        message_id: { type: [string, 'null'], description: 'Tautan ke `messages` di Postgres; teks percakapan hanya ada di sana.' }
+        message_id: { type: [string, 'null'], description: 'Tautan ke `messages` di Postgres.' }
         unit: { type: [string, 'null'] }
         outcome: { type: [string, 'null'] }
         last_node: { type: [string, 'null'] }
@@ -3085,6 +3142,8 @@ components:
         ttft_ms: { type: [integer, 'null'], description: 'Waktu sampai token pertama; hanya untuk chat_stream yang memanggil LLM.' }
         status: { type: string, enum: [ok, error, dibatalkan] }
         langsmith_run_id: { type: [string, 'null'] }
+        question: { type: [string, 'null'], description: 'Teks pertanyaan; penanda samaran untuk FR-7. Null bila LOG_NODE_IO mati.' }
+        has_trace: { type: boolean, description: 'Ada rekaman input/output untuk tab Graf.' }
 
     TurnPage:
       type: object
@@ -3123,14 +3182,14 @@ components:
 
     TurnDetail:
       type: object
-      required: [turn_id, timestamp, endpoint, session_id, message_id, unit, outcome, last_node, total_ms, ttft_ms, status, langsmith_run_id, nodes, logs]
-      description: TurnOut ditambah node dan log giliran itu.
+      required: [turn_id, timestamp, endpoint, session_id, message_id, unit, outcome, last_node, total_ms, ttft_ms, status, langsmith_run_id, question, has_trace, nim, answer, nodes, logs]
+      description: TurnOut ditambah NIM, jawaban, node, dan log giliran itu.
       properties:
         turn_id: { type: string }
         timestamp: { type: string }
-        endpoint: { type: string, enum: [chat, chat_stream] }
+        endpoint: { type: string, enum: [chat, chat_stream, uji_coba] }
         session_id: { type: [string, 'null'] }
-        message_id: { type: [string, 'null'], description: 'Tautan ke `messages` di Postgres; teks percakapan hanya ada di sana.' }
+        message_id: { type: [string, 'null'], description: 'Tautan ke `messages` di Postgres.' }
         unit: { type: [string, 'null'] }
         outcome: { type: [string, 'null'] }
         last_node: { type: [string, 'null'] }
@@ -3138,6 +3197,10 @@ components:
         ttft_ms: { type: [integer, 'null'], description: 'Waktu sampai token pertama; hanya untuk chat_stream yang memanggil LLM.' }
         status: { type: string, enum: [ok, error, dibatalkan] }
         langsmith_run_id: { type: [string, 'null'] }
+        question: { type: [string, 'null'], description: 'Teks pertanyaan; penanda samaran untuk FR-7. Null bila LOG_NODE_IO mati.' }
+        has_trace: { type: boolean, description: 'Ada rekaman input/output untuk tab Graf.' }
+        nim: { type: [string, 'null'] }
+        answer: { type: [string, 'null'], description: 'Jawaban yang dikirim; null bila gagal, dibatalkan, atau LOG_NODE_IO mati.' }
         nodes:
           type: array
           items: { $ref: '#/components/schemas/NodeRunOut' }
@@ -3145,6 +3208,79 @@ components:
           type: array
           description: Log yang muncul selama giliran ini berjalan.
           items: { $ref: '#/components/schemas/AppLogOut' }
+
+    NodeTrace:
+      type: object
+      required: [position, node]
+      properties:
+        position: { type: integer, description: 'Sama dengan `NodeRunOut.position`.' }
+        node: { type: string }
+        input: { description: State yang diterima node. }
+        output: { description: Perubahan state yang dikembalikan node; null bila node gagal. }
+        route:
+          description: >-
+            Keluaran router sesudah node: nama node berikutnya, daftar nama (paralel), atau
+            `selesai`. Null bila node tidak diikuti sisi bersyarat.
+
+    CallTrace:
+      type: object
+      required: [id, parent_id, position, name, kind, started_at, duration_ms, status, error, model, usage, cost_usd]
+      properties:
+        id: { type: string }
+        parent_id: { type: [string, 'null'], description: Panggilan induk; null bila langsung di bawah node. }
+        position: { type: integer, description: Posisi node pemiliknya. }
+        name: { type: string }
+        kind: { type: string, enum: [llm, retriever, tool, jev, chain] }
+        started_at: { type: string }
+        duration_ms: { type: [number, 'null'] }
+        status: { type: string, enum: [ok, error, berjalan] }
+        error: { type: [string, 'null'] }
+        model: { type: [string, 'null'] }
+        usage: { type: [object, 'null'], additionalProperties: true }
+        cost_usd: { type: [number, 'null'] }
+        input: {}
+        output: {}
+
+    TurnTrace:
+      type: object
+      required: [turn_id, nodes, calls]
+      properties:
+        turn_id: { type: string }
+        input: { description: 'Masukan graf: pertanyaan, riwayat, unit, profil.' }
+        output: { description: '`outcome` akhir; null bila giliran gagal atau dibatalkan.' }
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/NodeTrace' }
+        calls:
+          type: array
+          items: { $ref: '#/components/schemas/CallTrace' }
+
+    GraphNode:
+      type: object
+      required: [id, group]
+      properties:
+        id: { type: string, description: 'Nama node (`node_runs.node`), atau `__start__`/`__end__`.' }
+        group: { type: [string, 'null'], description: 'Subgraph pembungkusnya, mis. `cari`.' }
+
+    GraphEdge:
+      type: object
+      required: [source, target, conditional, label]
+      properties:
+        source: { type: string }
+        target: { type: string }
+        conditional: { type: boolean }
+        label: { type: [string, 'null'], description: 'Nama cabang router, mis. `selesai`.' }
+
+    PipelineGraph:
+      type: object
+      required: [nodes, edges]
+      properties:
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/GraphNode' }
+        edges:
+          type: array
+          items: { $ref: '#/components/schemas/GraphEdge' }
 
     AppLogPage:
       type: object

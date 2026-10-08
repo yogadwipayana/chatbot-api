@@ -11,7 +11,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app.config import get_settings
 from app.observability.logstore import waktu_iso
+from app.observability.rekaman import buka, kemas
 from tests.api.conftest import ADMIN_BIASA_EMAIL, ADMIN_EMAIL, STAF_EMAIL
 
 BARU = waktu_iso(datetime.now(UTC) - timedelta(minutes=5))
@@ -179,9 +181,27 @@ class TestPencatatanGiliranChat:
         assert {n["turn_id"] for n in nodes} == {turn["turn_id"]}
         assert [n["node"] for n in nodes][-1] == "generate"
 
-    def test_teks_pertanyaan_tidak_masuk_sqlite(self, client, payload, log_sink):
+    def test_teks_nim_dan_rekaman_ikut_tercatat(self, client, payload, log_sink):
+        """Keputusan 2026-10-08 (logs.md tahap 4): teks disimpan untuk tab Graf."""
         client.post("/api/chat", json=payload)
+        [turn] = log_sink.of("turn")
+        assert turn["question"] == payload["question"]
+        assert turn["nim"] == payload["nim"]
+        assert turn["answer"]
+        [trace] = log_sink.of("trace")
+        isi = buka(
+            kemas(trace["isi"], sensitif=trace["sensitif"], pengganti=trace["pengganti"])
+        )
+        assert isi["input"]["question"] == payload["question"]
+        assert [n["node"] for n in isi["nodes"]][-1] == "generate"
+
+    def test_log_node_io_mati_tanpa_teks_mahasiswa(self, client, payload, log_sink):
+        settings = get_settings().model_copy(update={"log_node_io": False})
+        client.app.dependency_overrides[get_settings] = lambda: settings
+        client.post("/api/chat", json=payload)
+        assert log_sink.of("trace") == []
         assert payload["question"] not in repr(log_sink.rows)
+        assert payload["nim"] not in repr(log_sink.rows)
 
     def test_streaming_mencatat_ttft(self, client, payload, log_sink):
         with client.stream("POST", "/api/chat/stream", json=payload) as r:
@@ -199,3 +219,109 @@ class TestPencatatanGiliranChat:
         [turn] = log_sink.of("turn")
         assert turn["outcome"] == "refusal"
         assert turn["last_node"] == "refuse"
+
+
+class TestRekamanDanGraf:
+    def test_rekaman_giliran(self, client, log_store, admin):
+        isi = {
+            "input": {"question": "kapan KRS?"},
+            "output": None,
+            "nodes": [
+                {
+                    "position": 1,
+                    "node": "sanitize",
+                    "input": {"question": "kapan KRS?"},
+                    "output": {"clean": "kapan KRS?"},
+                    "route": None,
+                },
+            ],
+            "calls": [
+                {
+                    "id": "c1",
+                    "parent_id": None,
+                    "position": 1,
+                    "name": "generate_answer",
+                    "kind": "llm",
+                    "started_at": BARU,
+                    "duration_ms": 10.0,
+                    "status": "ok",
+                    "error": None,
+                    "model": "m",
+                    "usage": {"input_tokens": 1},
+                    "cost_usd": None,
+                    "input": [{"role": "human", "content": "x"}],
+                    "output": {"content": "y"},
+                },
+            ],
+        }
+        log_store.tulis([("trace", {"turn_id": "t9", "timestamp": BARU, "isi": isi})])
+        r = client.get("/api/admin/logs/turns/t9/trace", headers=admin)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["turn_id"] == "t9"
+        assert body["nodes"][0]["output"] == {"clean": "kapan KRS?"}
+        assert body["calls"][0]["kind"] == "llm"
+
+    def test_tanpa_rekaman_404(self, client, terisi, admin):
+        r = client.get("/api/admin/logs/turns/t1/trace", headers=admin)
+        assert r.status_code == 404
+
+    def test_graf_dari_langgraph(self, client, admin):
+        r = client.get("/api/admin/logs/graph", headers=admin)
+        assert r.status_code == 200
+        body = r.json()
+        nodes = {n["id"]: n["group"] for n in body["nodes"]}
+        assert {"__start__", "__end__", "rule_gate", "jev_gate", "generate"} <= set(nodes)
+        assert nodes["rewrite"] == nodes["retrieve"] == "cari"
+        assert nodes["generate"] is None
+        sisi = {(e["source"], e["target"]): e for e in body["edges"]}
+        assert sisi[("rule_gate", "jev_gate")]["conditional"]
+        assert sisi[("rule_gate", "rewrite")]["conditional"]
+        assert sisi[("rewrite", "retrieve")]["conditional"] is False
+        assert sisi[("validate_context", "__end__")]["label"] == "selesai"
+
+    def test_graf_untuk_staf_ditolak(self, client, headers_for):
+        r = client.get("/api/admin/logs/graph", headers=headers_for(STAF_EMAIL))
+        assert r.status_code == 403
+
+
+class TestUjiCobaTercatat:
+    def test_uji_coba_dicatat_sebagai_jalur_sendiri(self, client, log_sink, superadmin):
+        r = client.post(
+            "/api/admin/test-query", json={"question": "kapan KRS dibuka?"}, headers=superadmin
+        )
+        assert r.status_code == 200
+        [turn] = log_sink.of("turn")
+        assert turn["endpoint"] == "uji_coba"
+        assert turn["question"] == "kapan KRS dibuka?"
+        assert turn["message_id"] is None
+        assert r.json()["turn_id"] == turn["turn_id"]
+        assert log_sink.of("trace")[0]["turn_id"] == turn["turn_id"]
+
+    def test_filter_jalur(self, client, log_store, admin):
+        log_store.tulis(
+            [
+                (
+                    "turn",
+                    {
+                        "turn_id": "u1",
+                        "timestamp": BARU,
+                        "endpoint": "uji_coba",
+                        "status": "ok",
+                    },
+                ),
+                (
+                    "turn",
+                    {
+                        "turn_id": "m1",
+                        "timestamp": BARU,
+                        "endpoint": "chat_stream",
+                        "status": "ok",
+                    },
+                ),
+            ]
+        )
+        r = client.get("/api/admin/logs/turns?endpoint=uji_coba", headers=admin)
+        assert [i["turn_id"] for i in r.json()["items"]] == ["u1"]
+        ringkas = client.get("/api/admin/logs/summary", headers=admin).json()
+        assert ringkas["turn_count"] == 1

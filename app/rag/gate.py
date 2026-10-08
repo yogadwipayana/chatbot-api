@@ -29,6 +29,7 @@ gerbang ini (lihat `app.rag.rule_gate`).
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -305,10 +306,14 @@ class JevGate:
         """`unit`: topik yang dipilih mahasiswa di widget, None bila semua unit."""
         import httpx
 
+        from app.observability.rekaman import catat_panggilan
         from app.rag.providers import USER_AGENT
 
         body = build_request(self.model, question, history, unit)
         headers = {"Authorization": f"Bearer {self._api_key}", "User-Agent": USER_AGENT}
+        mulai = time.perf_counter()
+        jawaban: Any = None
+        galat: Exception | None = None
         try:
             if self._client is not None:
                 resp = await self._client.post(self.url, json=body, headers=headers)
@@ -316,10 +321,27 @@ class JevGate:
                 async with httpx.AsyncClient(timeout=self._timeout) as client:
                     resp = await client.post(self.url, json=body, headers=headers)
             resp.raise_for_status()
-            return parse_response(resp.json(), self.policy)
+            jawaban = resp.json()
+            verdict = parse_response(jawaban, self.policy)
         except Exception as exc:
-            logger.warning("Gerbang JEV gagal, pesan diteruskan: %s", exc)
-            return lolos(f"{type(exc).__name__}: {exc}"[:200])
+            galat = exc
+            # Jenisnya ikut ditulis: `str(httpx.ReadTimeout())` kosong, dan tanpa
+            # jenis baris log ini berakhir di titik dua tanpa sebab (T57).
+            logger.warning(
+                "Gerbang JEV gagal, pesan diteruskan: %s: %s", type(exc).__name__, exc
+            )
+            verdict = lolos(f"{type(exc).__name__}: {exc}"[:200])
+        # Rekaman tab Graf (`rekaman.py`): permintaan dan respons mentah JEV,
+        # tanpa header -- kuncinya tidak pernah ikut tercatat.
+        await catat_panggilan(
+            jenis="jev",
+            nama="jev_classify",
+            masukan=body,
+            keluaran=jawaban,
+            mulai=mulai,
+            galat=galat,
+        )
+        return verdict
 
 
 def build_gate(settings: Any) -> JevGate | None:

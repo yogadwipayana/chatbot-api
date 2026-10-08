@@ -298,3 +298,126 @@ class TestDaftarLog:
         assert terisi.daftar_log(sejak, audit=False, cari="dihapus")[0] == 0
         assert "app.audit" not in terisi.daftar_logger(sejak, audit=False)
         assert "app.audit" in terisi.daftar_logger(sejak, audit=True)
+
+
+# --- Tahap 4: teks giliran, rekaman tab Graf, uji coba admin -----------------
+
+
+def trace(turn_id: str, isi: dict, *, menit_lalu: int = 5) -> tuple[str, dict]:
+    return "trace", {
+        "turn_id": turn_id,
+        "timestamp": waktu_iso(SEKARANG - timedelta(minutes=menit_lalu)),
+        "isi": isi,
+        "sensitif": [],
+        "pengganti": "",
+    }
+
+
+class TestMigrasiV2:
+    def test_berkas_v1_dimigrasi_tanpa_kehilangan_log(self, tmp_path):
+        """Versi 1 -> 2 hanya menambah kolom dan tabel: log 7 hari tetap terbaca."""
+        path = tmp_path / "app.db"
+        with closing(sqlite3.connect(path)) as conn:
+            conn.executescript(
+                "CREATE TABLE turns (turn_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL,"
+                " endpoint TEXT NOT NULL, session_id TEXT, message_id TEXT, unit TEXT,"
+                " outcome TEXT, last_node TEXT, total_ms INTEGER, ttft_ms INTEGER,"
+                " status TEXT NOT NULL, langsmith_run_id TEXT);"
+                f"INSERT INTO turns (turn_id, timestamp, endpoint, status) VALUES"
+                f" ('lama', '{waktu_iso(SEKARANG - timedelta(minutes=9))}', 'chat', 'ok');"
+                "PRAGMA user_version = 1;"
+            )
+        store = LogStore(path)
+        store.tulis([turn("baru", question="kapan KRS?", nim="2401010101")])
+        _, items = store.daftar_giliran(SEKARANG - timedelta(hours=1))
+        assert {i["turn_id"]: i["question"] for i in items} == {
+            "baru": "kapan KRS?",
+            "lama": None,
+        }
+        with closing(sqlite3.connect(path)) as conn:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == VERSI_SKEMA == 2
+
+    def test_migrasi_bersamaan_tidak_gagal(self, tmp_path):
+        """Penulis dan pembaca yang sama-sama melihat versi 1: yang kedua tidak
+        boleh gagal karena kolomnya sudah ditambahkan yang pertama."""
+        path = tmp_path / "app.db"
+        LogStore(path).tulis([turn("t1")])
+        with closing(sqlite3.connect(path)) as conn:
+            conn.execute("PRAGMA user_version = 1")
+            conn.commit()
+        LogStore(path).tulis([turn("t2", nim="x")])
+        assert LogStore(path).daftar_giliran(SEKARANG - timedelta(hours=1))[0] == 2
+
+
+class TestRekaman:
+    def test_tulis_dan_baca(self, store):
+        isi = {"input": {"question": "kapan KRS?"}, "nodes": [], "calls": []}
+        store.tulis([turn("t1"), trace("t1", isi)])
+        assert store.rekaman_giliran("t1") == isi
+        assert store.rekaman_giliran("tidak-ada") is None
+
+    def test_penanda_ada_rekaman(self, store):
+        store.tulis([turn("t1"), turn("t2"), trace("t1", {"nodes": []})])
+        _, items = store.daftar_giliran(SEKARANG - timedelta(hours=1))
+        assert {i["turn_id"]: bool(i["has_trace"]) for i in items} == {"t1": True, "t2": False}
+        assert store.detail_giliran("t1", audit=False)["has_trace"]
+
+    def test_rekaman_yang_gagal_dikemas_dilewati(self, store, monkeypatch):
+        """Satu rekaman rusak tidak boleh membuang baris lain di batch yang sama."""
+        from app.observability import logstore
+
+        def rusak(*_a, **_k):
+            raise ValueError("tidak bisa dikemas")
+
+        monkeypatch.setattr(logstore, "kemas", rusak)
+        store.tulis([turn("t1"), trace("t1", {"nodes": []})])
+        assert store.daftar_giliran(SEKARANG - timedelta(hours=1))[0] == 1
+        assert store.rekaman_giliran("t1") is None
+
+    def test_rekaman_lama_ikut_terhapus(self, store):
+        store.tulis([trace("lama", {"a": 1}, menit_lalu=60 * 24 * 8), trace("baru", {"a": 2})])
+        store.hapus_lama(SEKARANG - timedelta(days=7))
+        assert store.rekaman_giliran("lama") is None
+        assert store.rekaman_giliran("baru") == {"a": 2}
+
+
+class TestUjiCoba:
+    def test_tidak_dihitung_di_performa(self, store):
+        store.tulis(
+            [
+                turn("mhs", endpoint="chat_stream", total_ms=1000),
+                node("mhs", "generate", 900.0),
+                turn("admin", endpoint="uji_coba", total_ms=50_000),
+                node("admin", "generate", 49_000.0),
+            ]
+        )
+        r = store.ringkasan(SEKARANG - timedelta(hours=1), SEKARANG, audit=True)
+        assert r["turn_count"] == 1
+        assert r["p95_total_ms"] == 1000
+        [generate] = r["per_node"]
+        assert generate["count"] == 1 and generate["p95_ms"] == 900
+
+    def test_filter_jalur(self, store):
+        store.tulis([turn("mhs", endpoint="chat_stream"), turn("admin", endpoint="uji_coba")])
+        total, items = store.daftar_giliran(SEKARANG - timedelta(hours=1), endpoint="uji_coba")
+        assert total == 1 and items[0]["turn_id"] == "admin"
+
+
+def test_saringan_aturan_diurutkan_sesudah_sapaan(store):
+    """T55: `rule_gate` dulu tidak ada di NODE_ORDER dan tampil paling bawah."""
+    store.tulis(
+        [
+            turn("t1"),
+            node("t1", "generate", 5.0, position=4),
+            node("t1", "rule_gate", 1.0, position=3),
+            node("t1", "smalltalk", 1.0, position=2),
+            node("t1", "jev_gate", 1.0, position=5),
+        ]
+    )
+    r = store.ringkasan(SEKARANG - timedelta(hours=1), SEKARANG, audit=True)
+    assert [n["node"] for n in r["per_node"]] == [
+        "smalltalk",
+        "rule_gate",
+        "jev_gate",
+        "generate",
+    ]

@@ -267,6 +267,11 @@ class Settings(BaseSettings):
     hilang setiap redeploy."""
     log_retention_days: int = Field(default=7, ge=1)
     """Baris log yang lebih tua dari ini dihapus saat start dan setiap jam."""
+    log_node_io: bool = True
+    """Simpan juga teks pertanyaan, jawaban, NIM, dan input/output setiap node
+    serta panggilan LLM/tool di dalamnya (tab Graf halaman Log, `logs.md` tahap
+    4). Pertanyaan sensitif (FR-7) tetap disamarkan. False: hanya metrik dan log,
+    seperti sebelum tahap 4."""
 
     # --- Keamanan (FR-9) ---------------------------------------------
     admin_jwt_secret: SecretStr = SecretStr(PLACEHOLDER_JWT_SECRET)

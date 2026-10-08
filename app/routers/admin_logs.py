@@ -1,4 +1,4 @@
-"""Halaman Log dashboard: performa per node, giliran chat, dan log aplikasi.
+"""Halaman Log dashboard: performa per node, giliran chat, graf, dan log aplikasi.
 
 Membaca SQLite log (`app/observability/logstore.py`), bukan Postgres. Minimal
 role admin. Log `app.audit` hanya untuk superadmin, disaring di query -- role
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -19,12 +20,15 @@ from app.deps import get_log_store, require_admin, require_role
 from app.schemas.common import Error
 from app.schemas.logs import (
     AppLogPage,
+    JalurGiliran,
     LevelLog,
     LogSummary,
+    PipelineGraph,
     RentangLog,
     StatusGiliran,
     TurnDetail,
     TurnPage,
+    TurnTrace,
 )
 
 router = APIRouter(
@@ -68,6 +72,7 @@ def list_turns(
     status_: Annotated[StatusGiliran | None, Query(alias="status")] = None,
     unit: str | None = None,
     last_node: str | None = None,
+    endpoint: JalurGiliran | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> Any:
@@ -77,6 +82,7 @@ def list_turns(
         status=status_,
         unit=unit,
         last_node=last_node,
+        endpoint=endpoint,
         limit=limit,
         offset=offset,
     )
@@ -92,6 +98,61 @@ def get_turn(turn_id: str, admin: AdminDep, store: LogStoreDep) -> Any:
             "Giliran tidak ditemukan. Log yang lebih tua dari masa simpan sudah dihapus.",
         )
     return detail
+
+
+@router.get(
+    "/turns/{turn_id}/trace", response_model=TurnTrace, responses={404: {"model": Error}}
+)
+def get_turn_trace(turn_id: str, admin: AdminDep, store: LogStoreDep) -> Any:
+    """Input/output setiap node dan panggilan di dalamnya (tab Graf).
+
+    404 bila gilirannya tidak ada, sudah lewat masa simpan, atau berjalan saat
+    LOG_NODE_IO mati. Waktu dan status node ada di `GET /turns/{turn_id}`.
+    """
+    rekaman = store.rekaman_giliran(turn_id)
+    if rekaman is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "Rekaman input/output tidak ada untuk giliran ini.",
+        )
+    return {"turn_id": turn_id, **rekaman}
+
+
+@lru_cache(maxsize=1)
+def _topologi() -> dict[str, Any]:
+    """Bentuk graf dari LangGraph sendiri, supaya diagram di dashboard tidak
+    tertinggal saat node atau sisi berubah. `xray` membuka subgraph `cari`
+    menjadi `cari:rewrite` dan `cari:retrieve`; namanya dipisah menjadi `id`
+    (sama dengan `node_runs.node`) dan `group`."""
+    from app.rag.graph import build_graph
+
+    graf = build_graph().get_graph(xray=True)
+
+    def pisah(ident: str) -> tuple[str, str | None]:
+        group, _, nama = ident.rpartition(":")
+        return nama, group or None
+
+    return {
+        "nodes": [
+            {"id": nama, "group": group}
+            for nama, group in (pisah(ident) for ident in graf.nodes)
+        ],
+        "edges": [
+            {
+                "source": pisah(e.source)[0],
+                "target": pisah(e.target)[0],
+                "conditional": e.conditional,
+                "label": e.data if isinstance(e.data, str) else None,
+            }
+            for e in graf.edges
+        ],
+    }
+
+
+@router.get("/graph", response_model=PipelineGraph)
+def get_pipeline_graph(admin: AdminDep) -> Any:
+    """Node dan sisi pipeline chat, untuk diagram tab Graf."""
+    return _topologi()
 
 
 @router.get("/app", response_model=AppLogPage)

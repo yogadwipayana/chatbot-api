@@ -24,10 +24,13 @@ from app.deps import (
     build_retriever,
     build_rewrite_call,
     build_tool_registry,
+    get_log_sink,
     require_admin,
     require_role,
     unit_terdaftar,
 )
+from app.observability.applog import catat_giliran
+from app.observability.logstore import UJI_COBA
 from app.observability.tracing import akhiri_jejak, id_giliran, jejak_giliran
 from app.rag.chain import refusal_source, rejection_source, run_pipeline
 from app.rag.threshold import ThresholdPolicy
@@ -149,6 +152,7 @@ async def admin_test_query(
     rewrite_call: Any = Depends(build_rewrite_call),
     gate_call: Any = Depends(build_gate_call),
     tool_registry: Any = Depends(build_tool_registry),
+    log_sink: Any = Depends(get_log_sink),
 ) -> TestQueryResponse:
     """AD-6. Alur yang sama persis dengan `/api/chat`, ditambah rincian retrieval.
 
@@ -166,7 +170,10 @@ async def admin_test_query(
 
     Tidak tunduk pada kill switch (admin perlu mendiagnosis justru saat
     layanan dimatikan) dan tidak dicatat ke log percakapan, supaya uji coba
-    admin tidak mencemari statistik AD-5 maupun daftar AD-4.
+    admin tidak mencemari statistik AD-5 maupun daftar AD-4. Ia tetap dicatat ke
+    log SQLite sebagai jalur `uji_coba`, supaya langkah dan panggilan LLM/tool-nya
+    dapat dibuka di tab Graf halaman Log (`turn_id`); tab Performa tidak
+    menghitungnya.
 
     Galat layanan AI (LLM, gateway, embedding pertanyaan) dibalas 502 berisi
     kalimat siap tampil; rinciannya masuk log server.
@@ -184,7 +191,20 @@ async def admin_test_query(
 
     mulai = time.perf_counter()
     run_id = id_giliran()
-    with terjemahkan_galat_ai("uji coba jawaban", pesan=LAYANAN_AI_BERMASALAH):
+    # Pencatat giliran di DALAM penerjemah galat: ia harus melihat galat aslinya
+    # (dicatat beserta traceback), bukan 502 hasil terjemahan.
+    with (
+        terjemahkan_galat_ai("uji coba jawaban", pesan=LAYANAN_AI_BERMASALAH),
+        catat_giliran(
+            log_sink,
+            endpoint=UJI_COBA,
+            session_id=None,
+            unit=unit,
+            pertanyaan=payload.question,
+            langsmith_run_id=run_id,
+            rekam_io=settings.log_node_io,
+        ) as giliran,
+    ):
         async with jejak_giliran(
             run_id=run_id, pertanyaan=payload.question, nama="uji_coba_admin"
         ) as akar:
@@ -196,10 +216,18 @@ async def admin_test_query(
                 gate_call=gate_call,
                 policy=policy,
                 unit=unit,
+                callbacks=[giliran.recorder],
                 tool_registry=tool_registry,
                 tool_max_rounds=settings.tools_max_rounds,
             )
             akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
+        giliran.selesai(
+            hasil=outcome.kind,
+            message_id=None,
+            langsmith_run_id=run_id,
+            llm_call=llm_call,
+            jawaban=outcome.text,
+        )
     latency_ms = round((time.perf_counter() - mulai) * 1000)
 
     respons = to_response(outcome)
@@ -262,4 +290,5 @@ async def admin_test_query(
         attachments=respons.attachments,
         latency_ms=latency_ms,
         langsmith_run_id=run_id,
+        turn_id=giliran.turn_id if log_sink is not None else None,
     )

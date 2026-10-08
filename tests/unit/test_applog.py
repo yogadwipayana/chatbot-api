@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -17,9 +18,12 @@ from app.observability.applog import (
     configure_logging,
     turn_id_var,
 )
+from app.observability.chatlog import SENSITIVE_PLACEHOLDER
 from app.observability.logstore import LogStore
+from app.observability.rekaman import ACARA_PANGGILAN, buka, catat_panggilan, kemas
 from app.rag.chain import run_pipeline
 from app.rag.gate import GateLabel, GateVerdict
+from app.rag.rewriter import Turn
 from tests.fixtures.fakes import FakeLogSink, RecordingLLM
 
 SEJAK = datetime.now(UTC) - timedelta(hours=1)
@@ -280,3 +284,289 @@ class TestLogging:
         ]
         assert len(milik_kita) == 2  # satu konsol + satu SQLite
         assert sum(isinstance(h, SQLiteLogHandler) for h in milik_kita) == 1
+
+
+# --- Rekaman input/output untuk tab Graf (LOG_NODE_IO) ----------------------
+
+
+class LLMLangChain:
+    """Pengganti `LLMCall` yang memakai runnable LangChain sungguhan (model palsu),
+    supaya callback panggilan LLM benar-benar terpancar seperti di produksi."""
+
+    def __init__(self, balasan: str = "Jawaban [Panduan Akademik 2025, hal. 12].") -> None:
+        from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+        self.chat = FakeListChatModel(responses=[balasan])
+
+    async def __call__(self, wrapped_question: str, documents) -> str:
+        from langchain_core.prompts import ChatPromptTemplate
+
+        prompt = ChatPromptTemplate.from_messages(
+            [("system", "KONTEKS: {context}"), ("human", "{question}")]
+        )
+        hasil = await (prompt | self.chat).ainvoke(
+            {"context": "isi", "question": wrapped_question},
+            config={"run_name": "generate_answer"},
+        )
+        return str(hasil.content)
+
+
+async def jalankan_rekam(question: str, retriever, llm, **lain) -> tuple:
+    recorder = NodeRecorder(rekam_io=True)
+    outcome = await run_pipeline(
+        question, retriever=retriever, llm_call=llm, callbacks=[recorder], **lain
+    )
+    return outcome, recorder
+
+
+class TestRekamanIO:
+    async def test_mati_secara_bawaan(self, strong_retriever, llm):
+        _, rec = await jalankan("kapan pengisian KRS dibuka?", strong_retriever, llm)
+        isi = rec.rekaman()
+        assert isi["nodes"] == [] and isi["calls"] == [] and isi["input"] is None
+
+    async def test_input_output_dan_rute_tiap_node(self, strong_retriever, llm):
+        _, rec = await jalankan_rekam("kapan pengisian KRS dibuka?", strong_retriever, llm)
+        isi = rec.rekaman()
+        assert [n["node"] for n in isi["nodes"]] == [n["node"] for n in rec.nodes]
+        assert [n["position"] for n in isi["nodes"]] == [n["position"] for n in rec.nodes]
+        per_node = {n["node"]: n for n in isi["nodes"]}
+        assert isi["input"]["question"] == "kapan pengisian KRS dibuka?"
+        assert per_node["sanitize"]["output"] == {"clean": "kapan pengisian KRS dibuka?"}
+        assert per_node["generate"]["input"]["clean"] == "kapan pengisian KRS dibuka?"
+        # Rute: keluaran router sesudah node; paralel = daftar nama node.
+        assert per_node["rule_gate"]["route"] == ["jev_gate", "cari"]
+        assert per_node["validate_context"]["route"] == "generate"
+        assert per_node["generate"]["route"] is None
+        assert isi["output"].text.startswith("Jawaban")
+        assert rec.teks_bersih == "kapan pengisian KRS dibuka?"
+
+    async def test_llm_langchain_menjadi_satu_panggilan(self, strong_retriever):
+        """Rantai `prompt | model` bernama generate_answer: satu panggilan LLM
+        berisi pesan sungguhan, tanpa run template prompt maupun ChatModel lepas."""
+        _, rec = await jalankan_rekam(
+            "kapan pengisian KRS dibuka?", strong_retriever, LLMLangChain()
+        )
+        calls = rec.rekaman()["calls"]
+        [panggilan] = [c for c in calls if c["kind"] == "llm"]
+        posisi_generate = next(n["position"] for n in rec.nodes if n["node"] == "generate")
+        assert panggilan["name"] == "generate_answer"
+        assert panggilan["position"] == posisi_generate
+        assert panggilan["parent_id"] is None
+        assert panggilan["status"] == "ok"
+        assert [m.type for m in panggilan["input"]] == ["system", "human"]
+        assert panggilan["output"].content.startswith("Jawaban")
+        assert not any(c["name"] in {"ChatPromptTemplate", "FakeListChatModel"} for c in calls)
+
+    async def test_router_tidak_menjadi_panggilan(self, strong_retriever):
+        _, rec = await jalankan_rekam(
+            "kapan pengisian KRS dibuka?", strong_retriever, LLMLangChain()
+        )
+        nama = {c["name"] for c in rec.rekaman()["calls"]}
+        assert not any(n.startswith("selesai_atau") for n in nama)
+        assert "route_context" not in nama
+
+    async def test_panggilan_jev_lewat_custom_event(self, strong_retriever, llm):
+        import time
+
+        async def gerbang(q, riwayat, unit=None):
+            mulai = time.perf_counter()
+            await catat_panggilan(
+                jenis="jev",
+                nama="jev_classify",
+                masukan={"state": {"pesan_terbaru": q}},
+                keluaran={"label": "academic"},
+                mulai=mulai,
+            )
+            return GateVerdict(GateLabel.ACADEMIC, 0.9, blocked=False)
+
+        _, rec = await jalankan_rekam(
+            "kapan pengisian KRS dibuka?", strong_retriever, llm, gate_call=gerbang
+        )
+        [jev] = [c for c in rec.rekaman()["calls"] if c["kind"] == "jev"]
+        posisi_jev = next(n["position"] for n in rec.nodes if n["node"] == "jev_gate")
+        assert jev["position"] == posisi_jev
+        assert jev["input"] == {"state": {"pesan_terbaru": "kapan pengisian KRS dibuka?"}}
+        assert jev["status"] == "ok"
+
+    async def test_event_dengan_induk_asing_dicari_lewat_nama_node(self):
+        """Tracing menyala: `@traceable` di JEV membuat induk event menjadi run
+        LangSmith yang tidak dikenal perekam; node-nya dibaca dari metadata."""
+        rec = NodeRecorder(rekam_io=True)
+        node_run = uuid.uuid4()
+        await rec.on_chain_start({}, {}, run_id=uuid.uuid4(), metadata={}, name="pandu_chat")
+        await rec.on_chain_start(
+            {},
+            {"clean": "q"},
+            run_id=node_run,
+            metadata={"langgraph_node": "jev_gate"},
+            name="jev_gate",
+        )
+        await rec.on_custom_event(
+            ACARA_PANGGILAN,
+            {
+                "kind": "jev",
+                "name": "jev_classify",
+                "input": {},
+                "output": None,
+                "duration_ms": 5.0,
+            },
+            run_id=uuid.uuid4(),
+            metadata={"langgraph_node": "jev_gate"},
+        )
+        [jev] = rec.rekaman()["calls"]
+        assert jev["kind"] == "jev" and jev["position"] == 1 and jev["parent_id"] is None
+
+    async def test_node_gagal_tetap_terekam(self, llm):
+        class RetrieverRusak:
+            async def ainvoke(self, q, *, unit=None):
+                raise RuntimeError("database mati")
+
+        recorder = NodeRecorder(rekam_io=True)
+        with pytest.raises(RuntimeError):
+            await run_pipeline(
+                "kapan KRS?", retriever=RetrieverRusak(), llm_call=llm, callbacks=[recorder]
+            )
+        per_node = {n["node"]: n for n in recorder.rekaman()["nodes"]}
+        assert per_node["retrieve"]["input"]["search_query"] == "kapan KRS?"
+        assert per_node["retrieve"]["output"] is None
+        assert recorder.rekaman()["output"] is None
+
+
+def _giliran_dengan_pipeline(sink, pertanyaan: str, **lain):
+    """Jalankan pipeline di dalam `catat_giliran` seperti router chat."""
+
+    async def jalan(retriever, llm, history=None):
+        with catat_giliran(
+            sink,
+            endpoint="chat",
+            session_id="s",
+            unit=None,
+            pertanyaan=pertanyaan,
+            nim="2401010101",
+            rekam_io=lain.get("rekam_io", True),
+        ) as g:
+            outcome = await run_pipeline(
+                pertanyaan,
+                retriever=retriever,
+                llm_call=llm,
+                history=history or [],
+                callbacks=[g.recorder],
+            )
+            g.selesai(
+                hasil=outcome.kind,
+                message_id=None,
+                langsmith_run_id=None,
+                llm_call=llm,
+                jawaban=outcome.text,
+            )
+        return g
+
+    return jalan
+
+
+class TestGiliranMerekam:
+    async def test_teks_nim_dan_rekaman_tercatat(self, strong_retriever, llm):
+        sink = FakeLogSink()
+        await _giliran_dengan_pipeline(sink, "kapan pengisian KRS dibuka?")(
+            strong_retriever, llm
+        )
+        [turn] = sink.of("turn")
+        assert turn["question"] == "kapan pengisian KRS dibuka?"
+        assert turn["nim"] == "2401010101"
+        assert turn["answer"].startswith("Jawaban")
+        [trace] = sink.of("trace")
+        assert trace["turn_id"] == turn["turn_id"]
+        isi = buka(
+            kemas(trace["isi"], sensitif=trace["sensitif"], pengganti=trace["pengganti"])
+        )
+        assert isi["input"]["question"] == "kapan pengisian KRS dibuka?"
+        assert isi["nodes"][-1]["node"] == "generate"
+
+    async def test_pertanyaan_sensitif_disamarkan(self, strong_retriever, llm):
+        sink = FakeLogSink()
+        pertanyaan = "saya stres dan ingin bunuh diri"
+        await _giliran_dengan_pipeline(sink, pertanyaan)(strong_retriever, llm)
+        [turn] = sink.of("turn")
+        assert turn["outcome"] == "support"
+        assert turn["question"] == SENSITIVE_PLACEHOLDER
+        [trace] = sink.of("trace")
+        blob = kemas(trace["isi"], sensitif=trace["sensitif"], pengganti=trace["pengganti"])
+        teks = repr(buka(blob))
+        assert "bunuh diri" not in teks
+        assert SENSITIVE_PLACEHOLDER in teks
+
+    async def test_pertanyaan_sensitif_di_riwayat_disamarkan(self, strong_retriever, llm):
+        """Widget mengirim teks asli giliran sensitif sebelumnya sebagai riwayat."""
+        sink = FakeLogSink()
+        riwayat = [
+            Turn("user", "saya stres dan ingin bunuh diri"),
+            Turn("assistant", "Kamu tidak sendiri."),
+        ]
+        await _giliran_dengan_pipeline(sink, "kapan pengisian KRS dibuka?")(
+            strong_retriever, llm, history=riwayat
+        )
+        [turn] = sink.of("turn")
+        assert turn["question"] == "kapan pengisian KRS dibuka?"
+        [trace] = sink.of("trace")
+        blob = kemas(trace["isi"], sensitif=trace["sensitif"], pengganti=trace["pengganti"])
+        teks = repr(buka(blob))
+        assert "bunuh diri" not in teks
+        assert "Kamu tidak sendiri." in teks
+
+    async def test_log_node_io_mati_tanpa_teks(self, strong_retriever, llm):
+        sink = FakeLogSink()
+        await _giliran_dengan_pipeline(sink, "kapan pengisian KRS dibuka?", rekam_io=False)(
+            strong_retriever, llm
+        )
+        assert sink.of("trace") == []
+        [turn] = sink.of("turn")
+        assert turn["question"] is None and turn["nim"] is None and turn["answer"] is None
+        assert "kapan pengisian KRS dibuka?" not in repr(sink.rows)
+
+    async def test_id_trace_tercatat_walau_dibatalkan(self):
+        """T56: trace LangSmith giliran yang dibatalkan tetap ada."""
+        sink = FakeLogSink()
+
+        async def tugas():
+            with catat_giliran(
+                sink, endpoint="chat_stream", session_id="s", unit=None, langsmith_run_id="r1"
+            ):
+                await asyncio.sleep(10)
+
+        t = asyncio.create_task(tugas())
+        await asyncio.sleep(0)
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+        [turn] = sink.of("turn")
+        assert turn["status"] == "dibatalkan"
+        assert turn["langsmith_run_id"] == "r1"
+
+    def test_detail_generate_menyebut_nama_tool(self):
+        """T54: rincian giliran menunjukkan tool walau LOG_NODE_IO mati."""
+        sink = FakeLogSink()
+        llm = RecordingLLM()
+        llm.model = "cx/gpt-6-luna"
+        llm.usage = None
+        llm.tool_calls = [
+            {"name": "get_mk_diampu_dosen", "args": {"matkul": "BD"}, "ok": True},
+            {"name": "get_mk_dosen", "args": {"nama": "x"}, "ok": True},
+        ]
+        with catat_giliran(sink, endpoint="chat", session_id="s", unit=None) as g:
+            g.recorder.nodes.append(
+                {
+                    "node": "generate",
+                    "position": 1,
+                    "started_at": "x",
+                    "duration_ms": 5.0,
+                    "status": "ok",
+                    "error_type": None,
+                    "error_message": None,
+                    "detail": {},
+                }
+            )
+            g.selesai(hasil="answer", message_id=None, langsmith_run_id=None, llm_call=llm)
+        [n] = sink.of("node")
+        assert n["detail"]["tools"] == "get_mk_diampu_dosen, get_mk_dosen"
+        assert "BD" not in repr(n["detail"])

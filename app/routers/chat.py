@@ -104,7 +104,14 @@ async def chat(
     run_id = id_giliran()
     tandai_sesi(payload.session_id, llm_call, rewrite_call)
     with catat_giliran(
-        log_sink, endpoint="chat", session_id=payload.session_id, unit=unit
+        log_sink,
+        endpoint="chat",
+        session_id=payload.session_id,
+        unit=unit,
+        pertanyaan=payload.question,
+        nim=payload.nim,
+        langsmith_run_id=run_id,
+        rekam_io=settings.log_node_io,
     ) as giliran:
         async with jejak_giliran(
             run_id=run_id, session_id=payload.session_id, pertanyaan=payload.question
@@ -143,6 +150,7 @@ async def chat(
             message_id=response.message_id,
             langsmith_run_id=run_id,
             llm_call=llm_call,
+            jawaban=outcome.text,
         )
     return response
 
@@ -188,6 +196,10 @@ async def chat_stream(
                     endpoint="chat_stream",
                     session_id=payload.session_id,
                     unit=unit,
+                    pertanyaan=payload.question,
+                    nim=payload.nim,
+                    langsmith_run_id=run_id,
+                    rekam_io=settings.log_node_io,
                 ) as giliran:
 
                     def token(teks: str):
@@ -235,6 +247,7 @@ async def chat_stream(
                         message_id=response.message_id,
                         langsmith_run_id=run_id,
                         llm_call=llm_call,
+                        jawaban=outcome.text,
                     )
                 return response
             finally:

@@ -1,16 +1,18 @@
 """Penyimpanan log aplikasi di SQLite (`logs.md`).
 
-Tiga tabel: `turns` (satu baris per giliran chat), `node_runs` (satu baris per
-node LangGraph per giliran), dan `app_logs` (log Python logger `app.*`).
+Empat tabel: `turns` (satu baris per giliran chat), `node_runs` (satu baris per
+node LangGraph per giliran), `app_logs` (log Python logger `app.*`), dan
+`traces` (rekaman input/output satu giliran untuk tab Graf, `rekaman.py`).
 
 Sengaja SQLite, bukan Postgres. Log yang paling dibutuhkan -- "gagal mencatat
 percakapan ke database" -- justru hilang bila disimpan di Postgres yang sedang
 bermasalah; dan belasan baris node per pertanyaan tidak layak dibayar dengan
 write jaringan ke database utama.
 
-Tidak ada teks pertanyaan maupun jawaban di sini. Teks tinggal di Postgres,
-lengkap dengan penyamaran pertanyaan sensitif (FR-7); tabel ini hanya berisi
-metrik dan log, ditautkan lewat `message_id`.
+Sejak tahap 4 (keputusan user 2026-10-08) teks pertanyaan, jawaban, NIM, dan
+rekaman input/output node ikut disimpan, supaya tracing LangSmith boleh
+dimatikan. Pertanyaan sensitif (FR-7) disamarkan dengan penanda yang sama seperti
+di Postgres. `LOG_NODE_IO=false` mengembalikan perilaku lama: hanya metrik dan log.
 
 Semua waktu disimpan sebagai teks UTC berformat tetap (`waktu_iso`), sehingga
 perbandingan dan pengurutan string sama dengan perbandingan waktu, dan 13
@@ -20,6 +22,7 @@ karakter pertamanya adalah jamnya.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from collections import Counter, defaultdict
@@ -28,10 +31,17 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from app.observability.rekaman import buka, kemas
+
+_internal = logging.getLogger("logstore")
+"""Sama dengan `applog._internal`: di luar hierarki `app`, supaya galat menulis
+SQLite tidak masuk antrean SQLite yang sama."""
+
 NODE_ORDER = (
     "sanitize",
     "sensitive",
     "smalltalk",
+    "rule_gate",
     "jev_gate",
     "rewrite",
     "retrieve",
@@ -61,7 +71,10 @@ CREATE TABLE IF NOT EXISTS turns (
     total_ms         INTEGER,
     ttft_ms          INTEGER,
     status           TEXT NOT NULL,
-    langsmith_run_id TEXT
+    langsmith_run_id TEXT,
+    nim              TEXT,
+    question         TEXT,
+    answer           TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_turns_timestamp ON turns (timestamp);
 
@@ -93,19 +106,41 @@ CREATE TABLE IF NOT EXISTS app_logs (
 );
 CREATE INDEX IF NOT EXISTS ix_app_logs_timestamp ON app_logs (timestamp);
 CREATE INDEX IF NOT EXISTS ix_app_logs_turn ON app_logs (turn_id);
+
+CREATE TABLE IF NOT EXISTS traces (
+    turn_id   TEXT PRIMARY KEY,
+    timestamp TEXT NOT NULL,
+    data      BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_traces_timestamp ON traces (timestamp);
 """
 
-VERSI_SKEMA = 1
+VERSI_SKEMA = 2
 """Disimpan di `PRAGMA user_version`. Naikkan setiap kali `SKEMA` berubah.
 
 `CREATE TABLE IF NOT EXISTS` tidak pernah mengubah tabel yang sudah ada, jadi
-berkas lama akan tetap memakai kolom lama dan setiap INSERT gagal. Berkas
-dengan versi lebih tua dibuang tabelnya lalu dibuat ulang: isinya log yang
-memang berumur pendek (`LOG_RETENTION_DAYS`), bukan data yang perlu dimigrasi.
-Versi 0 (bawaan SQLite) adalah skema berkolom bahasa Indonesia sebelum versi
-ini ada."""
+berkas lama akan tetap memakai kolom lama dan setiap INSERT gagal. Versi 0
+(bawaan SQLite, skema berkolom bahasa Indonesia sebelum versi ini ada) dibuang
+tabelnya lalu dibuat ulang: isinya log yang memang berumur pendek
+(`LOG_RETENTION_DAYS`). Perubahan sesudahnya cukup menambah kolom atau tabel,
+jadi dimigrasi di tempat (`_MIGRASI`) dan log yang ada tetap terbaca."""
 
-_TABEL = ("turns", "node_runs", "app_logs")
+_TABEL = ("turns", "node_runs", "app_logs", "traces")
+
+_MIGRASI: dict[int, tuple[str, ...]] = {
+    2: (
+        "ALTER TABLE turns ADD COLUMN nim TEXT",
+        "ALTER TABLE turns ADD COLUMN question TEXT",
+        "ALTER TABLE turns ADD COLUMN answer TEXT",
+    ),
+}
+"""Versi tujuan -> perintah yang membawa berkas dari versi sebelumnya ke sana.
+Tabel baru tidak perlu dicantumkan: `SKEMA` membuatnya dengan IF NOT EXISTS."""
+
+UJI_COBA = "uji_coba"
+"""`turns.endpoint` untuk kotak uji coba admin (AD-6). Tercatat supaya bisa
+ditelusuri di tab Graf, tetapi tidak dihitung di Performa: itu bukan lalu lintas
+mahasiswa."""
 
 _KOLOM = {
     "turn": (
@@ -123,6 +158,9 @@ _KOLOM = {
             "ttft_ms",
             "status",
             "langsmith_run_id",
+            "nim",
+            "question",
+            "answer",
         ),
     ),
     "node": (
@@ -152,6 +190,7 @@ _KOLOM = {
             "turn_id",
         ),
     ),
+    "trace": ("traces", ("turn_id", "timestamp", "data")),
 }
 
 
@@ -177,16 +216,29 @@ def _bulat(x: float | None) -> float | None:
 
 
 def _siapkan_skema(conn: sqlite3.Connection) -> None:
-    """Buat tabel; buang dulu tabel berskema lama (lihat `VERSI_SKEMA`)."""
+    """Buat tabel; migrasikan atau buang tabel berskema lama (lihat `VERSI_SKEMA`)."""
     versi = conn.execute("PRAGMA user_version").fetchone()[0]
-    if versi < VERSI_SKEMA:
+    if versi < 1:
         for tabel in _TABEL:
             conn.execute(f"DROP TABLE IF EXISTS {tabel}")
+    else:
+        for tujuan in range(versi + 1, VERSI_SKEMA + 1):
+            for perintah in _MIGRASI.get(tujuan, ()):
+                try:
+                    conn.execute(perintah)
+                except sqlite3.OperationalError as exc:
+                    # Thread penulis dan pembaca dashboard membuka berkas yang
+                    # sama; yang kalah cepat mendapati kolomnya sudah ada.
+                    if "duplicate column" not in str(exc):
+                        raise
     conn.executescript(SKEMA)
     if versi < VERSI_SKEMA:
         # PRAGMA tidak menerima parameter terikat; nilainya konstanta modul.
         conn.execute(f"PRAGMA user_version = {VERSI_SKEMA}")
     conn.commit()
+
+
+_ADA_REKAMAN = "EXISTS (SELECT 1 FROM traces tr WHERE tr.turn_id = turns.turn_id) AS has_trace"
 
 
 def _escape_like(teks: str) -> str:
@@ -224,13 +276,29 @@ class LogStore:
     def tulis(self, baris: Iterable[tuple[str, dict[str, Any]]]) -> None:
         """Tulis satu batch `(jenis, data)` dalam satu transaksi.
 
-        `jenis`: `turn`, `node`, atau `app`. `detail` pada node boleh berupa dict.
+        `jenis`: `turn`, `node`, `app`, atau `trace`. `detail` pada node boleh
+        berupa dict. `trace` membawa `data` (blob jadi) atau `isi` (rekaman
+        mentah dari `NodeRecorder.rekaman`) yang dikemas di sini, di thread
+        penulis; rekaman yang gagal dikemas dilewati tanpa menggagalkan batch.
         """
         per_jenis: dict[str, list[tuple]] = defaultdict(list)
         for jenis, data in baris:
             _, kolom = _KOLOM[jenis]
             if jenis == "node" and not isinstance(data.get("detail"), str | None):
                 data = {**data, "detail": json.dumps(data["detail"], ensure_ascii=False)}
+            if jenis == "trace" and data.get("data") is None:
+                try:
+                    blob = kemas(
+                        data.get("isi"),
+                        sensitif=data.get("sensitif"),
+                        pengganti=data.get("pengganti") or "",
+                    )
+                except Exception:
+                    _internal.exception(
+                        "Gagal mengemas rekaman giliran %s", data.get("turn_id")
+                    )
+                    continue
+                data = {**data, "data": blob}
             per_jenis[jenis].append(tuple(data.get(k) for k in kolom))
         if not per_jenis:
             return
@@ -240,9 +308,9 @@ class LogStore:
                 for jenis, nilai in per_jenis.items():
                     tabel, kolom = _KOLOM[jenis]
                     tanda = ", ".join("?" for _ in kolom)
-                    # INSERT OR REPLACE untuk turns: giliran yang sama tidak
-                    # boleh menjadi dua baris bila tercatat ulang.
-                    perintah = "INSERT OR REPLACE" if jenis == "turn" else "INSERT"
+                    # INSERT OR REPLACE untuk turns dan traces: giliran yang
+                    # sama tidak boleh menjadi dua baris bila tercatat ulang.
+                    perintah = "INSERT OR REPLACE" if jenis in ("turn", "trace") else "INSERT"
                     conn.executemany(
                         f"{perintah} INTO {tabel} ({', '.join(kolom)}) VALUES ({tanda})",
                         nilai,
@@ -259,6 +327,7 @@ class LogStore:
                 n = conn.execute("DELETE FROM turns WHERE timestamp < ?", (b,)).rowcount
                 n += conn.execute("DELETE FROM node_runs WHERE started_at < ?", (b,)).rowcount
                 n += conn.execute("DELETE FROM app_logs WHERE timestamp < ?", (b,)).rowcount
+                n += conn.execute("DELETE FROM traces WHERE timestamp < ?", (b,)).rowcount
             return n
         finally:
             conn.close()
@@ -266,18 +335,22 @@ class LogStore:
     # --- Baca ----------------------------------------------------------
 
     def ringkasan(self, sejak: datetime, sampai: datetime, *, audit: bool) -> dict[str, Any]:
-        """Angka tab Performa: KPI, durasi per node, titik keluar, tren per jam."""
+        """Angka tab Performa: KPI, durasi per node, titik keluar, tren per jam.
+
+        Giliran uji coba admin (`UJI_COBA`) tidak dihitung, begitu pula node-nya."""
         s = waktu_iso(sejak)
         filter_audit = "" if audit else f" AND {_TANPA_AUDIT}"
         conn = self._connect()
         try:
             turns = conn.execute(
                 "SELECT timestamp, total_ms, status, last_node FROM turns"
-                " WHERE timestamp >= ?",
-                (s,),
+                " WHERE timestamp >= ? AND endpoint != ?",
+                (s, UJI_COBA),
             ).fetchall()
             nodes = conn.execute(
-                "SELECT node, duration_ms, status FROM node_runs WHERE started_at >= ?", (s,)
+                "SELECT node, duration_ms, status FROM node_runs WHERE started_at >= ?"
+                " AND turn_id NOT IN (SELECT turn_id FROM turns WHERE endpoint = ?)",
+                (s, UJI_COBA),
             ).fetchall()
             log_error = conn.execute(
                 "SELECT substr(timestamp, 1, 13) AS jam, count(*) AS n FROM app_logs"
@@ -373,6 +446,7 @@ class LogStore:
         status: str | None = None,
         unit: str | None = None,
         last_node: str | None = None,
+        endpoint: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[int, list[dict[str, Any]]]:
@@ -383,6 +457,7 @@ class LogStore:
             ("status", status),
             ("unit", unit),
             ("last_node", last_node),
+            ("endpoint", endpoint),
         ):
             if nilai is not None:
                 syarat.append(f"{kolom} = ?")
@@ -394,7 +469,8 @@ class LogStore:
                 0
             ]
             rows = conn.execute(
-                f"SELECT * FROM turns WHERE {where} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                f"SELECT *, {_ADA_REKAMAN} FROM turns WHERE {where}"
+                " ORDER BY timestamp DESC LIMIT ? OFFSET ?",
                 [*arg, limit, offset],
             ).fetchall()
         finally:
@@ -405,7 +481,9 @@ class LogStore:
         filter_audit = "" if audit else f" AND {_TANPA_AUDIT}"
         conn = self._connect()
         try:
-            turn = conn.execute("SELECT * FROM turns WHERE turn_id = ?", (turn_id,)).fetchone()
+            turn = conn.execute(
+                f"SELECT *, {_ADA_REKAMAN} FROM turns WHERE turn_id = ?", (turn_id,)
+            ).fetchone()
             if turn is None:
                 return None
             nodes = conn.execute(
@@ -427,6 +505,17 @@ class LogStore:
             ],
             "logs": [dict(r) for r in logs],
         }
+
+    def rekaman_giliran(self, turn_id: str) -> Any | None:
+        """Rekaman input/output satu giliran (tab Graf), atau None bila tidak ada."""
+        conn = self._connect()
+        try:
+            baris = conn.execute(
+                "SELECT data FROM traces WHERE turn_id = ?", (turn_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        return None if baris is None else buka(baris["data"])
 
     def daftar_log(
         self,

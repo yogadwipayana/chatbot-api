@@ -321,6 +321,8 @@ class TestQueryResponse(BaseModel):
     latency_ms: int
     langsmith_run_id: str | None = None
     """Akar trace uji coba ini. None saat tracing mati (FR-8)."""
+    turn_id: str | None = None
+    """Giliran uji coba ini di halaman Log (tab Graf). None bila log SQLite mati."""
 
 
 # --- AD-5 -------------------------------------------------------------------
