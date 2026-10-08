@@ -6,7 +6,8 @@ diuji dan dipakai ulang antar layanan. Lihat `docs/tool-call.md` (§6, §10, §1
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable
+import re
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,6 +40,12 @@ class Lampiran:
     source: str
     """Penanda sitasi asal datanya. Lampiran hanya tampil bila penanda ini dikutip."""
     items: tuple[str, ...]
+    disebut: str = ""
+    """Nama yang harus ditulis jawaban supaya lampiran ini tampil, mis. "Basis Data".
+
+    Kosong = cukup sumbernya dikutip. Dipakai bila satu panggilan tool
+    menghasilkan beberapa lampiran yang tidak semuanya ditanyakan
+    (`pilih_lampiran`), mis. "Basis Data" dan "Basis Data Lanjut"."""
 
 
 @dataclass(frozen=True)
@@ -50,8 +57,8 @@ class ToolResult:
     """Penanda sitasi, mis. "Data akademik SADS". Kosong bila gagal."""
     text: str
     ok: bool = True
-    attachment: Lampiran | None = None
-    """Daftar yang ditampilkan langsung ke mahasiswa; None = model menulis
+    attachments: tuple[Lampiran, ...] = ()
+    """Daftar yang ditampilkan langsung ke mahasiswa; kosong = model menulis
     jawabannya sendiri dari `text`, seperti sebelum lampiran ada."""
 
     def pesan_untuk_model(self) -> str:
@@ -67,8 +74,10 @@ class ToolResult:
         if not self.ok:
             return "DATA_TIDAK_TERSEDIA: data tidak dapat diambil saat ini."
         kepala = f"(Kutip data berikut dengan menyalin penanda [{self.label}].)"
-        if self.attachment is not None:
+        if self.attachments:
             kepala += f"\n{CATATAN_LAMPIRAN}"
+        if sum(1 for a in self.attachments if a.disebut) > 1:
+            kepala += f"\n{CATATAN_SEBUT}"
         return f"{kepala}\n\n{self.text}"
 
 
@@ -91,6 +100,51 @@ Kalimat terakhirnya dulu "Nama tertentu boleh disebut bila pertanyaannya tentang
 orang itu". Untuk `get_mk_dosen` setiap pertanyaan memang tentang satu orang,
 sehingga "mata kuliah apa saja yang diajar Ahmad Asroni?" disalin model
 lengkap 25 butir di atas lampiran yang sama (uji live 2026-10-07)."""
+
+CATATAN_SEBUT = (
+    "(DAFTAR_DITAMPILKAN: daftar setiap mata kuliah hanya ditampilkan bila nama "
+    "mata kuliah itu Anda tulis di jawaban seperti tertulis di data. Tulis nama "
+    "mata kuliah yang ditanyakan, dan jangan menulis nama mata kuliah lain yang "
+    "tidak ditanyakan.)"
+)
+"""Sisipan tambahan untuk hasil dengan beberapa lampiran ber-`disebut` (T49).
+
+`get_mk_diampu_dosen("Basis Data")` mengembalikan "Basis Data" dan "Basis Data
+Lanjut", masing-masing berlampiran. Model memilih mata kuliah yang ditanyakan
+dengan menuliskan namanya, dan `pilih_lampiran` hanya meneruskan lampiran yang
+namanya tertulis."""
+
+
+def kunci_sebutan(teks: str) -> str:
+    """Samakan penulisan untuk mencocokkan nama: huruf kecil, spasi tunggal, huruf
+    ganda dirapatkan ("Artificial Intelligence" = "artificial inteligence")."""
+    return re.sub(r"(\w)\1", r"\1", " ".join(teks.split()).casefold())
+
+
+def pilih_lampiran(lampiran: Sequence[Lampiran], jawaban: str) -> list[Lampiran]:
+    """Lampiran dari SATU hasil tool yang ditampilkan di bawah `jawaban` (T49).
+
+    Lampiran tanpa `disebut` selalu lolos. Bila ada dua atau lebih lampiran
+    ber-`disebut`, hanya yang namanya tertulis di jawaban yang lolos. Nama yang
+    lebih panjang dicocokkan lebih dulu lalu dihapus dari teks, sehingga "Basis
+    Data Lanjut" di jawaban tidak ikut dihitung sebagai "Basis Data". Bila tidak
+    satu nama pun tertulis, misalnya model hanya menulis "Kecerdasan Buatan"
+    untuk "Artificial Intelligence", semuanya lolos: daftar yang berlebih lebih
+    baik daripada jawaban "diampu 35 dosen" tanpa daftar yang dijanjikan
+    `CATATAN_LAMPIRAN`."""
+    calon = [i for i, a in enumerate(lampiran) if a.disebut]
+    if len(calon) < 2:
+        return list(lampiran)
+    teks = kunci_sebutan(jawaban)
+    tertulis: set[int] = set()
+    for i in sorted(calon, key=lambda i: len(lampiran[i].disebut), reverse=True):
+        pola = rf"(?<!\w){re.escape(kunci_sebutan(lampiran[i].disebut))}(?!\w)"
+        teks, jumlah = re.subn(pola, " ", teks)
+        if jumlah:
+            tertulis.add(i)
+    if not tertulis:
+        return list(lampiran)
+    return [a for i, a in enumerate(lampiran) if not a.disebut or i in tertulis]
 
 
 @dataclass(frozen=True)

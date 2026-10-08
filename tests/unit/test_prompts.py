@@ -202,6 +202,27 @@ class TestIstilahInternal:
     def test_jawaban_sebagian_menyarankan_ganti_topik(self):
         assert "mengganti topik ke unit" in SYSTEM_PROMPT
 
+    def test_catatan_topik_hanya_untuk_bagian_yang_tidak_tercantum(self):
+        """T41: versi pertama ("Bila ada baris topik, tulis bahwa pencarian hanya
+        mencakup dokumen topik itu") dibaca sebagai perintah tanpa syarat, karena
+        baris topik selalu ada di widget. Catatannya menempel di 11 dari 14
+        jawaban, juga yang lengkap, dan model mengarang bagian yang "tidak
+        tercantum" sebagai alasannya."""
+        assert "Hanya bila Anda menulis bagian yang tidak tercantum" in SYSTEM_PROMPT
+        assert "Bila seluruh pertanyaan terjawab, jangan menulis catatan" in SYSTEM_PROMPT
+        assert "jangan menyebut rincian yang tidak ditanyakan" in SYSTEM_PROMPT
+        # Tanpa ini model menyalin baris "Topik yang sedang dipilih mahasiswa:
+        # Kemahasiswaan" apa adanya ke jawaban (8 dari 27, ablasi 2026-10-08).
+        assert "jangan menyalin barisnya" in SYSTEM_PROMPT
+
+    def test_catatan_topik_tidak_berlaku_untuk_data_alat(self):
+        """T41: data SADS tidak dibatasi topik, tetapi "Pak Wayan ngajar apa?"
+        dijawab "ganti topik ke unit yang menangani data dosen"."""
+        from app.rag.prompts import TOOL_SYSTEM_PROMPT
+
+        assert "data alat mencakup seluruh kampus" in TOOL_SYSTEM_PROMPT
+        assert "data alat mencakup seluruh kampus" not in SYSTEM_PROMPT
+
     def test_jawaban_sebagian_tidak_menebak_unit(self):
         """T39: LLM tidak tahu unit mana menangani apa. Tanpa larangan ini,
         biaya TOEIC (UPS) disarankan ditanyakan ke Kemahasiswaan dan jadwal

@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import re
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Any
 
 from app.config import Settings
-from app.rag.tools.base import Lampiran, ToolResult, ToolSpec
+from app.rag.tools.base import Lampiran, ToolResult, ToolSpec, kunci_sebutan
 from app.rag.tools.client import SadsClient
 
 LABEL_SADS = "Data akademik SADS"
@@ -118,7 +119,7 @@ async def _daftar_dosen(client: SadsClient, *, nama: str = "", gelar: str = "") 
         name="get_daftar_dosen",
         label=LABEL_SADS,
         text=teks,
-        attachment=Lampiran(title=judul, source=LABEL_SADS, items=tuple(cocok)),
+        attachments=(Lampiran(title=judul, source=LABEL_SADS, items=tuple(cocok)),),
     )
 
 
@@ -151,12 +152,55 @@ def _varian_ejaan(matkul: str) -> list[str]:
     return [matkul] if rapat == matkul else [matkul, rapat]
 
 
+@dataclass
+class _MataKuliah:
+    ejaan: dict[str, set[str]] = field(default_factory=dict)
+    """Penulisan nama di SADS -> dosen yang tercatat dengan penulisan itu."""
+    dosen: list[str] = field(default_factory=list)
+
+    @property
+    def nama(self) -> str:
+        """Penulisan yang paling banyak dipakai; seri = yang muncul lebih dulu."""
+        return max(self.ejaan, key=lambda e: len(self.ejaan[e]))
+
+
+def _gabung_per_mk(*respons: Any) -> list[_MataKuliah]:
+    """Kelompokkan respons `mk-diampu-dosen` per mata kuliah, terbanyak dosennya dulu.
+
+    Satu kata kunci cocok dengan beberapa mata kuliah ("Basis Data" dan "Basis
+    Data Lanjut"), dan varian ejaan ("Artificial Inteligence") digabung ke mata
+    kuliah yang sama. Dulu hasilnya diratakan per dosen, sehingga model yang
+    menyaring "Lanjut", menghitung, dan menyalin daftarnya (T49)."""
+    per_mk: dict[str, _MataKuliah] = {}
+    for data in respons:
+        for d in data:
+            nm = _bersih(d.get("nmdosen"))
+            if not nm:
+                continue
+            for m in d.get("matkul") or []:
+                mk = _bersih(m.get("matkul"))
+                if not mk:
+                    continue
+                kelompok = per_mk.setdefault(kunci_sebutan(mk), _MataKuliah())
+                kelompok.ejaan.setdefault(mk, set()).add(nm)
+                if nm not in kelompok.dosen:
+                    kelompok.dosen.append(nm)
+    return sorted(per_mk.values(), key=lambda k: -len(k.dosen))
+
+
+def _rincian_mk(mk: _MataKuliah) -> str:
+    lain = [e for e in mk.ejaan if e != mk.nama]
+    juga = "".join(f'juga tertulis "{e}"; ' for e in lain)
+    daftar = "\n".join(f"- {nm}" for nm in sorted(mk.dosen))
+    return f"{mk.nama} ({juga}jumlah dosen pengampu: {len(mk.dosen)} orang):\n{daftar}"
+
+
 async def _mk_diampu_dosen(client: SadsClient, *, matkul: str) -> ToolResult:
     respons = await asyncio.gather(
         *(client.get_json(PATH_MK_DIAMPU, params={"matkul": v}) for v in _varian_ejaan(matkul))
     )
-    per_dosen = _gabung_per_dosen(*respons)
-    if not per_dosen:
+    per_mk = _gabung_per_mk(*respons)
+    if not per_mk:
         # Tidak ada yang cocok adalah jawaban sah dari SADS, bukan galat (T43).
         # DATA_TIDAK_TERSEDIA ("tidak dapat diambil saat ini") membuat model
         # mengira layanannya gangguan: ia tidak mencoba nama Inggris, lalu
@@ -168,12 +212,28 @@ async def _mk_diampu_dosen(client: SadsClient, *, matkul: str) -> ToolResult:
             f'Tidak ada mata kuliah di SADS yang namanya memuat "{matkul}": 0 dosen pengampu.'
         )
         return ToolResult(name="get_mk_diampu_dosen", label=LABEL_SADS, text=teks)
-    baris = [f"- {nm}: {', '.join(mk)}" for nm, mk in per_dosen.items()]
+    # Setiap mata kuliah berlampiran sendiri, dengan jumlah dari handler: model
+    # yang menyalin 35 nama "Artificial Intelligence" kadang kehilangan satu
+    # nama, atau hanya menulis 4 nama "antara lain" (T49, uji 2026-10-07).
+    # Lampiran yang tampil dipilih dari nama mata kuliah yang ditulis jawaban
+    # (`pilih_lampiran`), supaya "Basis Data Lanjut" tidak menempel di bawah
+    # jawaban tentang "Basis Data".
     teks = (
-        f'Dosen pengampu untuk mata kuliah yang cocok dengan "{matkul}" '
-        f"(jumlah: {len(baris)} orang):\n" + "\n".join(baris)
+        f'Mata kuliah di SADS yang namanya memuat "{matkul}": {len(per_mk)} mata kuliah.\n\n'
+        + "\n\n".join(_rincian_mk(mk) for mk in per_mk)
     )
-    return ToolResult(name="get_mk_diampu_dosen", label=LABEL_SADS, text=teks)
+    lampiran = tuple(
+        Lampiran(
+            title=f"Dosen pengampu {mk.nama}",
+            source=LABEL_SADS,
+            items=tuple(sorted(mk.dosen)),
+            disebut=mk.nama,
+        )
+        for mk in per_mk
+    )
+    return ToolResult(
+        name="get_mk_diampu_dosen", label=LABEL_SADS, text=teks, attachments=lampiran
+    )
 
 
 MAKS_DOSEN_DIRINCI = 5
@@ -217,16 +277,15 @@ async def _mk_dosen(client: SadsClient, *, nama: str) -> ToolResult:
         + "\n".join(f"- {m}" for m in mk)
         for nm, mk in cocok.items()
     ]
-    lampiran = None
+    lampiran: tuple[Lampiran, ...] = ()
     if len(cocok) == 1:
         # Satu dosen bisa mengampu 25 mata kuliah: daftarnya tampil langsung di
         # widget, model cukup merangkum (docs/tool-call.md §10a).
         [(nm, mk)] = cocok.items()
-        lampiran = Lampiran(
-            title=f"Mata kuliah yang diampu {nm}", source=LABEL_SADS, items=tuple(mk)
-        )
+        judul = f"Mata kuliah yang diampu {nm}"
+        lampiran = (Lampiran(title=judul, source=LABEL_SADS, items=tuple(mk)),)
     return ToolResult(
-        name="get_mk_dosen", label=LABEL_SADS, text="\n\n".join(bagian), attachment=lampiran
+        name="get_mk_dosen", label=LABEL_SADS, text="\n\n".join(bagian), attachments=lampiran
     )
 
 

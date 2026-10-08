@@ -45,15 +45,23 @@ dipakai, dengan format [Judul Dokumen, hal. N]. Potongan tanpa halaman (tanya \
 jawab resmi) cukup dikutip [Judul].
 3. Jika KONTEKS sama sekali tidak memuat jawabannya, balas HANYA dengan \
 [TIDAK_DITEMUKAN] tanpa kata lain; sistem akan menampilkan penolakan resmi \
-beserta kontak unit terkait. Jika hanya sebagian yang terjawab, jawab bagian \
-itu beserta sumbernya, lalu tulis bagian mana yang tidak tercantum di dokumen \
-resmi. Jangan menebak unit mana yang menangani bagian itu; sebut nama unit \
-hanya bila dokumen resmi menyebutnya. Bila ada baris "Topik yang sedang \
-dipilih mahasiswa", tulis bahwa pencarian hanya mencakup dokumen topik itu, \
-lalu sarankan mengganti topik ke unit yang menangani bagian itu dan bertanya \
+beserta kontak unit terkait. Jika hanya sebagian pertanyaan yang terjawab, \
+jawab bagian itu beserta sumbernya, lalu tulis bagian pertanyaan mana yang \
+tidak tercantum di dokumen resmi. Yang dimaksud hanya hal yang benar-benar \
+ditanyakan mahasiswa: jangan menyebut rincian yang tidak ditanyakan sebagai \
+tidak tercantum. Jangan menebak unit mana yang menangani bagian itu; sebut \
+nama unit hanya bila dokumen resmi menyebutnya. Hanya bila Anda menulis bagian \
+yang tidak tercantum seperti itu, tambahkan satu kalimat penutup. Bila pesan \
+mahasiswa memuat baris "Topik yang sedang dipilih mahasiswa", kalimat itu \
+menyebut bahwa pencarian hanya mencakup dokumen topik tersebut (sebut nama \
+topiknya, jangan menyalin barisnya), jadi bila bagian itu ditangani unit lain, \
+mahasiswa dapat mengganti topik ke unit yang menangani bagian itu lalu bertanya \
 lagi; jangan menyarankan memilih topik yang sedang dipilih. Tanpa baris itu, \
-sarankan memilih topik unit yang menanganinya lalu bertanya lagi. \
-Dilarang menyimpulkan, menebak, atau menggabungkan informasi yang tidak tertulis.
+kalimat itu menyarankan memilih topik unit yang menanganinya lalu bertanya \
+lagi. Bila seluruh pertanyaan terjawab, \
+jangan menulis catatan tentang topik, cakupan pencarian, atau saran mengganti \
+topik. Dilarang menyimpulkan, menebak, atau menggabungkan informasi yang \
+tidak tertulis.
 4. Jika pertanyaan jelas tidak berkaitan dengan INSTIKI atau urusan sebagai \
 mahasiswanya -- misalnya resep, berita, olahraga, cuaca, belanja, pengetahuan \
 umum, bantuan pemrograman umum, atau meminta Anda mengerjakan tugas atau \
@@ -119,7 +127,11 @@ data: ikuti catatannya.
 T6. Sebagian nama mata kuliah di data akademik ditulis dalam bahasa Inggris \
 untuk mata kuliah yang sama, mis. Artificial Intelligence untuk Kecerdasan \
 Buatan. Menjawab dari padanan seperti itu bukan menebak (aturan 3): jawab \
-seperti biasa, lalu sebut nama yang tercatat di data."""
+seperti biasa, lalu sebut nama yang tercatat di data.
+T7. Topik yang dipilih mahasiswa hanya membatasi dokumen resmi di KONTEKS; \
+data alat mencakup seluruh kampus. Untuk bagian yang dijawab atau dicari \
+dengan alat, jangan menulis bahwa pencarian hanya mencakup dokumen topik itu \
+dan jangan menyarankan mengganti topik."""
 """Aturan tambahan untuk jalur tool-calling (docs/tool-call.md §9).
 
 Disisipkan sebelum blok KONTEKS pada `SYSTEM_PROMPT` lewat `TOOL_SYSTEM_PROMPT`,
@@ -137,7 +149,12 @@ dengan jumlah yang benar (docs/tool-call.md §10a).
 T6 ada karena aturan 3 ("dilarang menyimpulkan") mengalahkan petunjuk di
 `description` `get_mk_diampu_dosen`: "dosen Kecerdasan Buatan?" menemukan 35
 pengampu "Artificial Intelligence", lalu dijawab "belum dapat dipastikan apakah
-mata kuliah tersebut sama" tanpa satu nama pun (T47, uji live 2026-10-07)."""
+mata kuliah tersebut sama" tanpa satu nama pun (T47, uji live 2026-10-07).
+
+T7 ada karena baris `TOPIK_AKTIF` juga dikirim ke loop tool, sehingga catatan
+topik aturan 3 ikut menempel di jawaban dari data SADS: "Pak Wayan" dijawab
+"ganti topik ke unit yang menangani data dosen", padahal SADS tidak dibatasi
+unit (T41, uji browser 2026-10-07)."""
 
 
 def _sisipkan_aturan_tool(system_prompt: str, aturan: str) -> str:
@@ -155,7 +172,23 @@ TOPIK_AKTIF = "Topik yang sedang dipilih mahasiswa: {unit}"
 Tanpa ini LLM tidak tahu topik mana yang sedang aktif, sehingga untuk bagian
 yang tidak tercantum ia menyuruh mahasiswa yang sudah berada di topik
 Kemahasiswaan "memilih topik Kemahasiswaan" (T39: 3 dari 12 jawaban, uji
-2026-10-05). Baris ini ditaruh di pesan, bukan di `SYSTEM_PROMPT`, supaya
+2026-10-05).
+
+Versi pertama aturan 3 ("Bila ada baris ini, tulis bahwa pencarian hanya
+mencakup dokumen topik itu") dibaca model sebagai perintah tanpa syarat, karena
+baris ini selalu ada di widget. Catatan topik akhirnya muncul di 11 dari 14
+jawaban widget sejak aturan itu dipasang (10-05 13:55 s.d. 10-06), termasuk
+jawaban yang lengkap, dan model
+mengarang bagian "tidak tercantum" yang tidak ditanyakan sebagai alasannya
+(T41). Kini catatannya bersyarat pada bagian yang tidak tercantum. Ablasi
+2026-10-08 (LLM, retriever, dan SADS asli; 3 percobaan per pertanyaan): catatan
+di jawaban lengkap turun dari 8/18 menjadi 0/18, dan tetap ada di 6/6 jawaban
+yang memang sebagian. Versi antara ("…seperti itu: dengan baris "Topik…",
+tambahkan satu kalimat…") membuat model menyalin baris ini mentah-mentah ke
+jawaban (8 dari 27), sehingga aturan 3 kini menyebut "jangan menyalin
+barisnya".
+
+Baris ini ditaruh di pesan, bukan di `SYSTEM_PROMPT`, supaya
 kontrak `llm_call(pertanyaan_terbungkus, dokumen)` tidak berubah. Aman di luar
 tag: nama unit sudah dicocokkan ke tabel `units` (`unit_terdaftar`), bukan teks
 bebas mahasiswa, dan teks mahasiswa tidak bisa keluar dari tag

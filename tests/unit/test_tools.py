@@ -179,19 +179,21 @@ class TestHandlerSads:
             ("/service/tp/chatbot/mk-diampu-dosen", {"matkul": "Programming"}),
             ("/service/tp/chatbot/mk-diampu-dosen", {"matkul": "Programing"}),
         ]
-        assert r.text.count("- Budi: Web Programming, Mobile") == 1 and r.ok
-        assert "(jumlah: 1 orang)" in r.text
+        assert r.ok
+        assert 'yang namanya memuat "Programming": 2 mata kuliah.' in r.text
+        assert r.text.count("Web Programming (jumlah dosen pengampu: 1 orang):\n- Budi") == 1
+        assert r.text.count("Mobile (jumlah dosen pengampu: 1 orang):\n- Budi") == 1
 
     async def test_hasil_kosong_bukan_kegagalan(self):
         """T43/T47: tidak ada yang cocok adalah jawaban sah SADS. Dulu dibalas
         DATA_TIDAK_TERSEDIA ("tidak dapat diambil saat ini"), sehingga model
         mengira layanannya gangguan dan tidak mencoba nama Inggrisnya."""
         r = await sads._mk_diampu_dosen(FakeSads([]), matkul="Kecerdasan Buatan")
-        assert r.ok and r.attachment is None
+        assert r.ok and r.attachments == ()
         assert '"Kecerdasan Buatan": 0 dosen pengampu' in r.text
         assert "DATA_TIDAK_TERSEDIA" not in r.pesan_untuk_model()
 
-    async def test_varian_ejaan_digabung_per_dosen(self):
+    async def test_varian_ejaan_digabung_jadi_satu_mata_kuliah(self):
         """T47: SADS menulis "Artificial Intelligence" dan "Artificial Inteligence";
         kata kunci yang benar ejaannya melewatkan dosen yang hanya ada di varian."""
         client = FakeSadsPerKataKunci(
@@ -207,9 +209,56 @@ class TestHandlerSads:
             }
         )
         r = await sads._mk_diampu_dosen(client, matkul="Artificial Intelligence")
-        assert "(jumlah: 3 orang)" in r.text
-        assert "- Budi: Artificial Intelligence, Artificial Inteligence" in r.text
-        assert "- Citra: Artificial Inteligence" in r.text
+        assert ": 1 mata kuliah." in r.text
+        # Seri (2 lawan 2 dosen): penulisan yang muncul lebih dulu menjadi nama.
+        assert (
+            'Artificial Intelligence (juga tertulis "Artificial Inteligence"; '
+            "jumlah dosen pengampu: 3 orang):\n- Ani\n- Budi\n- Citra"
+        ) in r.text
+        [lampiran] = r.attachments
+        assert lampiran.items == ("Ani", "Budi", "Citra")
+        assert lampiran.disebut == "Artificial Intelligence"
+
+    async def test_setiap_mata_kuliah_dihitung_dan_berlampiran_sendiri(self):
+        """T49: hasil yang diratakan per dosen membuat model menyaring "Lanjut",
+        menghitung, lalu menyalin 35 nama -- dan kadang kehilangan satu nama."""
+        client = FakeSads(
+            [
+                _mk("Budi", "Basis Data Lanjut"),
+                _mk("Ani ", "Basis Data", "Basis Data Lanjut"),
+                _mk("Citra", "basis data"),
+                _mk("Dewi", "Basis Data Lanjut"),
+            ]
+        )
+        r = await sads._mk_diampu_dosen(client, matkul="Basis Data")
+        assert 'yang namanya memuat "Basis Data": 2 mata kuliah.' in r.text
+        # Terbanyak dosennya lebih dulu; huruf besar-kecil tidak memisahkan.
+        lanjut = "Basis Data Lanjut (jumlah dosen pengampu: 3 orang):"
+        dasar = 'Basis Data (juga tertulis "basis data"; jumlah dosen pengampu: 2 orang):'
+        assert r.text.index(lanjut) < r.text.index(dasar)
+        assert [(a.title, a.items, a.disebut) for a in r.attachments] == [
+            ("Dosen pengampu Basis Data Lanjut", ("Ani", "Budi", "Dewi"), "Basis Data Lanjut"),
+            ("Dosen pengampu Basis Data", ("Ani", "Citra"), "Basis Data"),
+        ]
+        assert all(a.source == LABEL for a in r.attachments)
+
+    async def test_beberapa_mata_kuliah_minta_model_menulis_namanya(self):
+        from app.rag.prompts import TOOL_SYSTEM_PROMPT
+        from app.rag.tools.base import CATATAN_LAMPIRAN, CATATAN_SEBUT
+
+        dua = await sads._mk_diampu_dosen(
+            FakeSads([_mk("Ani", "Basis Data", "Basis Data Lanjut")]), matkul="Basis Data"
+        )
+        assert CATATAN_LAMPIRAN in dua.pesan_untuk_model()
+        assert CATATAN_SEBUT in dua.pesan_untuk_model()
+        satu = await sads._mk_diampu_dosen(
+            FakeSads([_mk("Ani", "Web Programming")]), matkul="Web Programming"
+        )
+        assert CATATAN_LAMPIRAN in satu.pesan_untuk_model()
+        assert CATATAN_SEBUT not in satu.pesan_untuk_model()
+        # Aturan T5 mengesahkan penanda yang sama.
+        assert CATATAN_SEBUT.startswith("(DAFTAR_DITAMPILKAN:")
+        assert "DAFTAR_DITAMPILKAN" in TOOL_SYSTEM_PROMPT
 
     async def test_tanpa_huruf_ganda_satu_panggilan(self):
         client = FakeSads([])
@@ -269,22 +318,22 @@ class TestMkDosen:
         assert client.calls == [("/service/tp/chatbot/mk-diampu-dosen", None)]
         assert r.ok and r.label == LABEL
         assert "Ahmad Asroni, S.Kom., M.Kom (jumlah: 3 mata kuliah)" in r.text
-        assert r.attachment is not None
-        assert r.attachment.items == ("Algorithms", "Database", "Web Programming")
-        assert r.attachment.title == "Mata kuliah yang diampu Ahmad Asroni, S.Kom., M.Kom"
-        assert r.attachment.source == LABEL
+        assert len(r.attachments) == 1
+        assert r.attachments[0].items == ("Algorithms", "Database", "Web Programming")
+        assert r.attachments[0].title == "Mata kuliah yang diampu Ahmad Asroni, S.Kom., M.Kom"
+        assert r.attachments[0].source == LABEL
 
     @pytest.mark.parametrize(
         "nama", ["totok", "Pak Totok", "bapak totok suryawan", "Bu. Totok"]
     )
     async def test_nama_tanpa_sapaan_dan_gelar(self, nama):
         r = await sads._mk_dosen(FakeSadsPerKataKunci({}, semua=_MK_SEMUA), nama=nama)
-        assert r.attachment is not None
-        assert r.attachment.items == ("Basis Data",)
+        assert len(r.attachments) == 1
+        assert r.attachments[0].items == ("Basis Data",)
 
     async def test_nama_umum_hanya_nama_dosen(self):
         r = await sads._mk_dosen(FakeSadsPerKataKunci({}, semua=_MK_SEMUA), nama="Wayan")
-        assert r.ok and r.attachment is None
+        assert r.ok and r.attachments == ()
         assert 'Ada 6 dosen dengan nama memuat "Wayan"' in r.text
         assert "- I Wayan Enam, S.Kom" in r.text
         assert "Mata kuliah yang diampu" not in r.text
@@ -292,13 +341,13 @@ class TestMkDosen:
     async def test_beberapa_dosen_dirinci_tanpa_lampiran(self):
         semua = [_mk("Budi Satu", "A"), _mk("Budi Dua", "B", "C")]
         r = await sads._mk_dosen(FakeSadsPerKataKunci({}, semua=semua), nama="budi")
-        assert r.attachment is None
+        assert r.attachments == ()
         assert "Mata kuliah yang diampu Budi Dua (jumlah: 2 mata kuliah)" in r.text
         assert "Mata kuliah yang diampu Budi Satu (jumlah: 1 mata kuliah)" in r.text
 
     async def test_tidak_ada_dosen_bukan_kegagalan(self):
         r = await sads._mk_dosen(FakeSadsPerKataKunci({}, semua=_MK_SEMUA), nama="Zaenal")
-        assert r.ok and r.attachment is None
+        assert r.ok and r.attachments == ()
         assert '"Zaenal": 0 orang (dari 8 dosen yang mengampu mata kuliah)' in r.text
 
     async def test_sads_kosong_tetap_kegagalan(self):
@@ -904,13 +953,13 @@ class TestSaringDaftarDosen:
         assert r.ok
         assert "Jumlah dosen yang mengajar di INSTIKI bergelar Dr.: 2 orang." in r.text
         assert "(Seluruh dosen yang mengajar: 5 orang.)" in r.text
-        assert r.attachment is not None
-        assert r.attachment.items == (
+        assert len(r.attachments) == 1
+        assert r.attachments[0].items == (
             "Dr. Ani Wijaya, S.Kom., M.T.",
             "Dr.Ir. Citra Dewi, S.Kom.,M.Kom.",
         )
-        assert r.attachment.title == "Dosen bergelar Dr."
-        assert r.attachment.source == LABEL
+        assert r.attachments[0].title == "Dosen bergelar Dr."
+        assert r.attachments[0].source == LABEL
 
     @pytest.mark.parametrize(
         ("gelar", "jumlah"),
@@ -926,40 +975,40 @@ class TestSaringDaftarDosen:
     )
     async def test_penulisan_gelar_disamakan(self, gelar, jumlah):
         r = await sads._daftar_dosen(FakeSads(_DOSEN), gelar=gelar)
-        assert len(r.attachment.items if r.attachment else ()) == jumlah
+        assert len(r.attachments[0].items if r.attachments else ()) == jumlah
 
     async def test_nama_dicocokkan_ke_nama_inti_bukan_gelar(self):
         """"kom" mencocokkan "Komang", bukan gelar "S.Kom" milik hampir semua orang."""
         r = await sads._daftar_dosen(FakeSads(_DOSEN), nama="kom")
-        assert r.attachment.items == ("I Wayan Komang, S.Kom",)
+        assert r.attachments[0].items == ("I Wayan Komang, S.Kom",)
 
     async def test_nama_tanpa_beda_huruf_dan_spasi(self):
         r = await sads._daftar_dosen(FakeSads(_DOSEN), nama="ni wayan")
-        assert r.attachment.items == ("Ni  Wayan Dita, Ph.D.",)
+        assert r.attachments[0].items == ("Ni  Wayan Dita, Ph.D.",)
         semua_wayan = await sads._daftar_dosen(FakeSads(_DOSEN), nama="WAYAN")
-        assert len(semua_wayan.attachment.items) == 2
+        assert len(semua_wayan.attachments[0].items) == 2
 
     async def test_nama_dan_gelar_digabung(self):
         r = await sads._daftar_dosen(FakeSads(_DOSEN), nama="wayan", gelar="doktor")
-        assert r.attachment.items == ("Ni  Wayan Dita, Ph.D.",)
+        assert r.attachments[0].items == ("Ni  Wayan Dita, Ph.D.",)
         assert 'bergelar doktor dengan nama memuat "wayan"' in r.text
 
     async def test_saringan_tanpa_hasil_bukan_kegagalan(self):
         """Tidak ada yang cocok = jawaban sah SADS, bukan DATA_TIDAK_TERSEDIA (T43):
         yang terakhir membuat model menolak dan menyuruh bertanya ke FO."""
         r = await sads._daftar_dosen(FakeSads(_DOSEN), gelar="Prof.")
-        assert r.ok and r.attachment is None
+        assert r.ok and r.attachments == ()
         assert "Tidak ada dosen yang mengajar di INSTIKI bergelar Prof.: 0 orang" in r.text
         assert "DATA_TIDAK_TERSEDIA" not in r.pesan_untuk_model()
 
     async def test_sads_kosong_tetap_kegagalan(self):
         r = await sads._daftar_dosen(FakeSads([]), gelar="Dr.")
-        assert not r.ok and r.attachment is None
+        assert not r.ok and r.attachments == ()
 
     async def test_tanpa_saringan_seluruh_dosen_berlampiran(self):
         r = await sads._daftar_dosen(FakeSads(_DOSEN))
-        assert r.attachment.title == "Dosen yang mengajar di INSTIKI"
-        assert len(r.attachment.items) == 5
+        assert r.attachments[0].title == "Dosen yang mengajar di INSTIKI"
+        assert len(r.attachments[0].items) == 5
         assert "Seluruh dosen" not in r.text  # baris pembanding hanya saat disaring
 
     def test_skema_saringan_opsional(self):
@@ -978,7 +1027,7 @@ class TestLampiran:
         from app.rag.prompts import TOOL_SYSTEM_PROMPT
         from app.rag.tools.base import CATATAN_LAMPIRAN
 
-        berlampiran = ToolResult("a", LABEL, "- Ani", True, attachment=_lampiran("Ani"))
+        berlampiran = ToolResult("a", LABEL, "- Ani", True, attachments=(_lampiran("Ani"),))
         pesan = berlampiran.pesan_untuk_model()
         assert CATATAN_LAMPIRAN in pesan and "- Ani" in pesan  # data tetap dikirim
         tanpa = ToolResult("a", LABEL, "- Ani", True).pesan_untuk_model()
@@ -991,7 +1040,9 @@ class TestLampiran:
         lampiran = _lampiran("Ani", "Citra")
 
         async def handler(*, matkul: str) -> ToolResult:
-            return ToolResult("get_mk_diampu_dosen", LABEL, "- Ani", True, attachment=lampiran)
+            return ToolResult(
+                "get_mk_diampu_dosen", LABEL, "- Ani", True, attachments=(lampiran,)
+            )
 
         llm = FakeChat(
             [
@@ -1001,6 +1052,20 @@ class TestLampiran:
         )
         res = await _jalankan(llm, handler)
         assert res.attachments == [lampiran]
+
+    async def test_loop_hanya_meneruskan_mata_kuliah_yang_ditulis_jawaban(self):
+        bd, bdl = _mk_lampiran("Basis Data"), _mk_lampiran("Basis Data Lanjut")
+
+        async def handler(*, matkul: str) -> ToolResult:
+            return ToolResult("get_mk_diampu_dosen", LABEL, "-", True, attachments=(bdl, bd))
+
+        llm = FakeChat(
+            [
+                _tool_turn("get_mk_diampu_dosen", '{"matkul":"Basis Data"}'),
+                _answer_turn(f"Basis Data diampu 2 dosen [{LABEL}]."),
+            ]
+        )
+        assert (await _jalankan(llm, handler)).attachments == [bd]
 
     async def test_pipeline_meneruskan_lampiran_yang_sumbernya_dikutip(self):
         lampiran = _lampiran("Ani", "Citra")
@@ -1068,6 +1133,56 @@ class TestLampiran:
             ChatLogEntry(session_id="s", question="q", outcome=tanpa, latency_ms=1)
         )
         assert meta_tanpa["attachments"] is None
+
+
+def _mk_lampiran(nama: str):
+    from app.rag.tools.base import Lampiran
+
+    return Lampiran(title=f"Dosen pengampu {nama}", source=LABEL, items=("Ani",), disebut=nama)
+
+
+class TestPilihLampiran:
+    """T49: satu pencarian `get_mk_diampu_dosen` berlampiran per mata kuliah; yang
+    tampil hanya mata kuliah yang ditulis jawaban."""
+
+    def _pilih(self, jawaban: str, *nama: str) -> list[str]:
+        from app.rag.tools.base import pilih_lampiran
+
+        return [a.disebut for a in pilih_lampiran([_mk_lampiran(n) for n in nama], jawaban)]
+
+    def test_hanya_yang_ditulis(self):
+        jawaban = "Basis Data diampu 10 dosen [Data akademik SADS]."
+        assert self._pilih(jawaban, "Basis Data Lanjut", "Basis Data") == ["Basis Data"]
+
+    def test_nama_panjang_tidak_dihitung_sebagai_nama_pendek(self):
+        jawaban = "Basis Data Lanjut diampu 13 dosen."
+        assert self._pilih(jawaban, "Basis Data", "Basis Data Lanjut") == ["Basis Data Lanjut"]
+        keduanya = "Basis Data diampu 10 dosen, Basis Data Lanjut 13 dosen."
+        assert self._pilih(keduanya, "Basis Data", "Basis Data Lanjut") == [
+            "Basis Data",
+            "Basis Data Lanjut",
+        ]
+
+    def test_ejaan_dan_huruf_besar_disamakan(self):
+        jawaban = "Kecerdasan Buatan (tercatat sebagai **artificial  inteligence**)."
+        nama = ("Artificial Intelligence", "Advanced Artificial Intelligence")
+        assert self._pilih(jawaban, *nama) == ["Artificial Intelligence"]
+
+    def test_tidak_ada_yang_ditulis_semuanya_tampil(self):
+        """Model hanya menulis "Kecerdasan Buatan": lebih baik dua daftar daripada
+        "diampu 35 dosen" tanpa daftar yang dijanjikan `CATATAN_LAMPIRAN`."""
+        nama = ("Artificial Intelligence", "Advanced Artificial Intelligence")
+        assert self._pilih("Kecerdasan Buatan diampu 35 dosen.", *nama) == list(nama)
+
+    def test_bukan_potongan_kata(self):
+        assert self._pilih("Ada Databases dan Data.", "Database", "Data") == ["Data"]
+
+    def test_satu_lampiran_atau_tanpa_sebutan_selalu_tampil(self):
+        from app.rag.tools.base import pilih_lampiran
+
+        assert self._pilih("tidak menyebut apa pun", "Basis Data") == ["Basis Data"]
+        tanpa = _lampiran("Ani")
+        assert pilih_lampiran([tanpa], "x") == [tanpa]
 
 
 class ToolLLMBerlampiran(ToolLLM):

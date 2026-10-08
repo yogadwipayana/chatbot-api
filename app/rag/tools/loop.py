@@ -33,6 +33,7 @@ from app.rag.tools.base import (
     ToolResult,
     ToolSpec,
     hasil_tool_ke_dokumen,
+    pilih_lampiran,
     validasi_argumen,
 )
 
@@ -61,8 +62,9 @@ class ToolLoopResult:
     """Satu entri per panggilan tool: nama, argumen (mentah dari model), ok,
     latency_ms. Untuk `messages.meta` (observability, docs/tool-call.md §13)."""
     attachments: list[Lampiran] = field(default_factory=list)
-    """Lampiran dari tool yang berhasil, urut panggilan (docs/tool-call.md §10a).
-    Belum disaring: `generate` hanya meneruskan yang sumbernya dikutip jawaban."""
+    """Lampiran dari tool yang berhasil, urut panggilan (docs/tool-call.md §10a),
+    sudah dipilih menurut nama yang ditulis jawaban (`pilih_lampiran`). Sumbernya
+    belum diperiksa: `generate` hanya meneruskan yang sumbernya dikutip jawaban."""
 
 
 def _chunk_text(chunk: Any) -> str:
@@ -254,7 +256,7 @@ def _hasil_akhir(
     penolakan resmi beserta kontak unit."""
     if not teks.strip():
         teks = NOT_FOUND_MARKER
-    lampiran = [r.attachment for r in hasil if r.ok and r.attachment is not None]
+    lampiran = [a for r in hasil if r.ok for a in pilih_lampiran(r.attachments, teks)]
     return ToolLoopResult(teks, hasil_tool_ke_dokumen(hasil), usage, jejak, lampiran)
 
 
