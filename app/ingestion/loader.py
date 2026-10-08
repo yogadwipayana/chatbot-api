@@ -171,6 +171,23 @@ def _mungkin_header(baris: Sequence[str]) -> bool:
     )
 
 
+def _kepala_subtabel(baris: Sequence[str], kepala: Sequence[str]) -> bool:
+    """Apakah baris di tengah tabel ini header subtabel, bukan data.
+
+    Satu tabel PDF kerap memuat beberapa subtabel bertumpuk, masing-masing
+    dengan header sendiri ("SERTIFIKASI DASAR | HARGA | PRODI", lalu
+    "SERTIFIKASI BIDANG | HARGA | PRODI"). Tampang header saja tidak cukup --
+    baris data tanpa angka ("Budi | Ketua") juga lolos `_mungkin_header` --
+    jadi header subtabel harus mengulang setidaknya satu nama kolom di posisi
+    yang sama. Header yang terulang persis (tabel bersambung) ikut tertangkap.
+    """
+    return (
+        len(baris) == len(kepala)
+        and _mungkin_header(baris)
+        and any(a.casefold() == b.casefold() for a, b in zip(baris, kepala, strict=True))
+    )
+
+
 def tabel_ke_baris(tabel: Any) -> list[str]:
     """Ubah satu tabel menjadi baris teks yang berdiri sendiri.
 
@@ -214,6 +231,9 @@ def tabel_ke_baris(tabel: Any) -> list[str]:
 
     hasil: list[str] = []
     for row in baris[1:] if punya_kepala else baris:
+        if punya_kepala and _kepala_subtabel(row, kepala):
+            kepala = row  # berlaku untuk baris sesudahnya; header sendiri bukan data
+            continue
         if punya_kepala:
             bagian = [f"{k}: {v}" for k, v in zip(kepala, row, strict=False) if v]
         else:

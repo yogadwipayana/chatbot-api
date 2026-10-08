@@ -438,6 +438,41 @@ class TestPerataanTabel:
     def test_tabel_kosong_tidak_menghasilkan_baris(self):
         assert tabel_ke_baris(self._Tabel([["", ""], ["", ""]])) == []
 
+    def test_header_subtabel_menggantikan_header_awal(self):
+        """T37: HARGA SERTIFIKASI menumpuk tiga subtabel dalam satu tabel."""
+        tabel = self._Tabel(
+            [
+                ["", "SERTIFIKASI DASAR", "", "HARGA", "", "PRODI"],
+                ["IC3 GS6", "", "RP 1.050.000", "", "TI, RSK, BD", ""],
+                ["", "SERTIFIKASI BIDANG", "", "HARGA", "", "PRODI"],
+                ["META DIGITAL MARKETING", "", "RP 1.300.000", "", "BD", ""],
+                ["", "SERTIFIKASI TOEIC", "", "Harga", "", "PRODI"],
+                ["TOEIC ENGLISH", "", "RP 675.000", "", "TI, RSK, BD, DKV", ""],
+            ]
+        )
+        assert tabel_ke_baris(tabel) == [
+            "SERTIFIKASI DASAR: IC3 GS6 | HARGA: RP 1.050.000 | PRODI: TI, RSK, BD",
+            "SERTIFIKASI BIDANG: META DIGITAL MARKETING | HARGA: RP 1.300.000 | PRODI: BD",
+            "SERTIFIKASI TOEIC: TOEIC ENGLISH | Harga: RP 675.000 | PRODI: TI, RSK, BD, DKV",
+        ]
+
+    def test_header_terulang_persis_dilewati(self):
+        tabel = self._Tabel(
+            [["Hari", "Jam"], ["Senin", "08.00"], ["Hari", "Jam"], ["Selasa", "09.00"]]
+        )
+        assert tabel_ke_baris(tabel) == [
+            "Hari: Senin | Jam: 08.00",
+            "Hari: Selasa | Jam: 09.00",
+        ]
+
+    def test_data_tanpa_angka_bukan_header_subtabel(self):
+        """Tampang header saja tidak cukup: harus mengulang nama kolom."""
+        tabel = self._Tabel([["Nama", "Jabatan"], ["Budi", "Ketua"], ["Sari", "Sekretaris"]])
+        assert tabel_ke_baris(tabel) == [
+            "Nama: Budi | Jabatan: Ketua",
+            "Nama: Sari | Jabatan: Sekretaris",
+        ]
+
 
 class TestPeringatanKepadatan:
     """Panduan berbasis tangkapan layar lolos deteksi scan -- tiap halaman punya
