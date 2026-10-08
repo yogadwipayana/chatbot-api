@@ -375,14 +375,14 @@ dimensinya muat: vektor dari dua model berbeda tidak dapat dibandingkan.
 ### Trigger `tsv`
 
 ```sql
--- Sejak 0014: judul dokumen (bobot C) + isi potongan (bobot D).
+-- Sejak 0014: judul dokumen + isi potongan; sejak 0015 keduanya bobot D (T36).
 CREATE FUNCTION chunks_tsv_update() RETURNS trigger AS $$
 BEGIN
     NEW.tsv :=
         setweight(to_tsvector('indonesian', COALESCE((
             SELECT CASE WHEN d.type = 'tanya_jawab' THEN '' ELSE d.title END
             FROM documents d WHERE d.id = NEW.document_id
-        ), '')), 'C')
+        ), '')), 'D')
         || to_tsvector('indonesian', COALESCE(NEW.content, ''));
     RETURN NEW;
 END
@@ -656,6 +656,7 @@ pertanyaan hari sebelumnya.
 | `0012_nama_resmi_ups` | Deskripsi unit UPS: "Unit Pelayanan Sertifikasi" → "Unit Pelaksana Sertifikasi" (nama resmi di FAQ kampus); deskripsi yang sudah disunting admin dibiarkan |
 | `0013_identifier_bahasa_inggris` | Seluruh identifier Indonesia → Inggris: tabel `unanswered` → `unanswered_questions`, kolom, constraint, index, fungsi trigger `tsv`, dan kunci `messages.meta` di baris lama |
 | `0014_judul_di_tsv` | `chunks.tsv` = judul dokumen (bobot C, kecuali tanya jawab) + isi; trigger `trg_documents_title_tsv` menghitung ulang saat judul berubah; semua potongan diisi ulang |
+| `0015_judul_bobot_d` | Judul di `chunks.tsv` turun ke bobot D (setara isi): kata judul yang umum ("sertifikasi", "beasiswa") tidak lagi mengangkat seluruh potongan dokumen di atas TRANSKRIP/FAQ (T36); semua potongan diisi ulang |
 
 Catatan per migrasi:
 

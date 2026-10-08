@@ -61,7 +61,7 @@ INSERT_CHUNK_SQL = text(
     """
 )
 """`tsv` sengaja tidak diisi di sini: trigger `trg_chunks_tsv` yang membentuknya
-dari judul dokumen (bobot C) dan isi potongan (migrasi 0014). Nilai yang diisi
+dari judul dokumen dan isi potongan (migrasi 0014, 0015). Nilai yang diisi
 di sini selalu ditimpa trigger, dan dua rumus di dua tempat cepat menyimpang."""
 
 
