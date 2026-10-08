@@ -45,6 +45,7 @@ from app.schemas.admin import (
     ThresholdDecisionOut,
     ThresholdValues,
     UnansweredGroup,
+    UnansweredPage,
     UnansweredUpdate,
 )
 from app.schemas.common import Error
@@ -59,7 +60,7 @@ router = APIRouter(
 
 # Semua level boleh melihat (staf perlu tahu dokumen apa yang dicari mahasiswa);
 # hanya admin ke atas yang menandai selesai.
-@router.get("/unanswered", response_model=list[UnansweredGroup])
+@router.get("/unanswered", response_model=UnansweredPage)
 async def list_unanswered(
     session: SessionDep,
     settings: BaseSettingsDep,
@@ -69,24 +70,29 @@ async def list_unanswered(
     since: date | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
-) -> list[UnansweredGroup]:
+) -> UnansweredPage:
     """AD-4. `limit` dan `offset` berlaku atas kelompok, bukan atas baris."""
     items = await fetch_items(
         session, resolved=resolved, sejak=since, timezone=settings.timezone
     )
-    kelompok = group_questions(items)[offset : offset + limit]
-    return [
-        UnansweredGroup(
-            ids=g.ids,
-            sample_question=g.representative.pertanyaan,
-            count=g.jumlah,
-            avg_top_score=g.top_score_rata2,
-            last_asked_at=g.terakhir_ditanyakan,
-            resolved=g.resolved,
-            unit=g.unit,
-        )
-        for g in kelompok
-    ]
+    kelompok = group_questions(items)
+    return UnansweredPage(
+        items=[
+            UnansweredGroup(
+                ids=g.ids,
+                sample_question=g.representative.pertanyaan,
+                count=g.jumlah,
+                avg_top_score=g.top_score_rata2,
+                last_asked_at=g.terakhir_ditanyakan,
+                resolved=g.resolved,
+                unit=g.unit,
+            )
+            for g in kelompok[offset : offset + limit]
+        ],
+        total=len(kelompok),
+        question_count=sum(g.jumlah for g in kelompok),
+        max_count=max((g.jumlah for g in kelompok), default=0),
+    )
 
 
 @router.patch(

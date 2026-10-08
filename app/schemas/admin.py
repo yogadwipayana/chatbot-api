@@ -198,6 +198,18 @@ class UnansweredGroup(BaseModel):
     None bila pesan asalnya sudah terhapus dari log."""
 
 
+class UnansweredPage(BaseModel):
+    items: list[UnansweredGroup]
+    total: int
+    """Jumlah kelompok yang cocok dengan seluruh filter, untuk penomoran halaman."""
+    question_count: int
+    """Jumlah pertanyaan di seluruh kelompok itu, bukan hanya di halaman ini."""
+    max_count: int
+    """`count` kelompok terbesar di seluruh halaman. Batang frekuensi diskalakan
+    terhadap angka ini, supaya kelompok kecil di halaman berikutnya tidak tampak
+    sama besar dengan kelompok terbesar."""
+
+
 class UnansweredUpdate(BaseModel):
     resolved: bool
 

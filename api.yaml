@@ -1035,21 +1035,23 @@ paths:
         - $ref: '#/components/parameters/Offset'
       responses:
         '200':
-          description: Kelompok pertanyaan
+          description: Satu halaman kelompok pertanyaan
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/UnansweredGroup' }
+              schema: { $ref: '#/components/schemas/UnansweredPage' }
               example:
-                - ids:
-                    - 0b6f2c1e-3a4d-4e5f-9a8b-7c6d5e4f3a2b
-                    - 1c7a3d2f-4b5e-4f60-8b9c-8d7e6f5a4b3c
-                  sample_question: Bagaimana cara mengurus surat keterangan lulus?
-                  count: 12
-                  avg_top_score: 0.21
-                  last_asked_at: '2026-09-09T14:22:11Z'
-                  resolved: false
+                items:
+                  - ids:
+                      - 0b6f2c1e-3a4d-4e5f-9a8b-7c6d5e4f3a2b
+                      - 1c7a3d2f-4b5e-4f60-8b9c-8d7e6f5a4b3c
+                    sample_question: Bagaimana cara mengurus surat keterangan lulus?
+                    count: 12
+                    avg_top_score: 0.21
+                    last_asked_at: '2026-09-09T14:22:11Z'
+                    resolved: false
+                total: 1
+                question_count: 12
+                max_count: 12
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -2670,6 +2672,29 @@ components:
             Unit yang dipilih mahasiswa saat menanyakan `sample_question`. Chatbot
             hanya mencari di dokumen unit itu, jadi uji coba ulangnya juga harus
             memakai unit ini. Null bila pesan asalnya sudah terhapus dari log.
+
+    UnansweredPage:
+      type: object
+      required: [items, total, question_count, max_count]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/UnansweredGroup' }
+        total:
+          type: integer
+          minimum: 0
+          description: Jumlah kelompok yang cocok dengan seluruh filter, untuk penomoran halaman.
+        question_count:
+          type: integer
+          minimum: 0
+          description: Jumlah pertanyaan di seluruh kelompok itu, bukan hanya di halaman ini.
+        max_count:
+          type: integer
+          minimum: 0
+          description: |
+            `count` kelompok terbesar di seluruh halaman. Batang frekuensi diskalakan
+            terhadap angka ini, supaya kelompok kecil di halaman berikutnya tidak tampak
+            sama besar dengan kelompok terbesar.
 
     FeedbackItem:
       type: object

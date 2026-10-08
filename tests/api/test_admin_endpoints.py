@@ -8,6 +8,7 @@ sungguhan.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -15,6 +16,7 @@ import openai
 import pytest
 import yaml
 
+from app.admin.grouping import UnansweredItem
 from app.config import Settings, get_settings
 from app.deps import build_llm_call
 from app.rag.chain import OutcomeKind
@@ -201,6 +203,54 @@ class TestKillSwitchAdmin:
         data = client.get("/health").json()
         assert data["chat_enabled"] is False
         assert data["kill_switch_reason"] == "jawaban keliru soal UKT"
+
+
+class TestTakTerjawab:
+    """Penomoran halaman AD-4. Query SQL-nya diganti: yang diuji di sini
+    potongan halaman dan angka ringkasan, yang harus mencakup semua kelompok."""
+
+    @pytest.fixture
+    def butir(self, monkeypatch):
+        teks = ["cara daftar wisuda"] * 3 + ["jadwal krs"] * 2
+        teks += ["syarat cuti", "beasiswa prestasi"]
+        t0 = datetime(2026, 10, 1, 8, 0, tzinfo=UTC)
+        data = [
+            UnansweredItem(f"id-{i}", q, 0.2, t0 + timedelta(minutes=i), False)
+            for i, q in enumerate(teks)
+        ]
+
+        async def palsu(session, **_):
+            return data
+
+        monkeypatch.setattr("app.routers.admin_quality.fetch_items", palsu)
+
+    def ambil(self, client, headers, **query):
+        r = client.get("/api/admin/unanswered", params=query, headers=headers)
+        assert r.status_code == 200
+        return r.json()
+
+    def test_halaman_pertama_kelompok_terbesar(self, client, admin_headers, butir):
+        data = self.ambil(client, admin_headers, limit=2)
+        assert [g["count"] for g in data["items"]] == [3, 2]
+
+    def test_ringkasan_mencakup_halaman_lain(self, client, admin_headers, butir):
+        data = self.ambil(client, admin_headers, limit=2, offset=2)
+        assert [g["count"] for g in data["items"]] == [1, 1]
+        assert data["total"] == 4
+        assert data["question_count"] == 7
+        assert data["max_count"] == 3
+
+    def test_kosong(self, client, admin_headers, monkeypatch):
+        async def palsu(session, **_):
+            return []
+
+        monkeypatch.setattr("app.routers.admin_quality.fetch_items", palsu)
+        assert self.ambil(client, admin_headers) == {
+            "items": [],
+            "total": 0,
+            "question_count": 0,
+            "max_count": 0,
+        }
 
 
 class TestUjiCoba:
