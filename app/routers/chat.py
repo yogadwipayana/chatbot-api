@@ -383,6 +383,13 @@ def citations_for(outcome: PipelineOutcome) -> list[CitationOut]:
         )
         # Chunk berbeda dari halaman yang sama menghasilkan kartu yang sama.
         tersedia.setdefault((kartu.title.casefold(), kartu.page), kartu)
+        # Daftar bab (aturan 9) dikutip dengan halaman awal tiap bab, bukan
+        # dengan satu halaman: setiap bab menjadi kartu yang membuka halaman itu.
+        for bab in meta.get("daftar_bab") or ():
+            tersedia.setdefault(
+                (kartu.title.casefold(), bab["halaman"]),
+                kartu.model_copy(update={"page": bab["halaman"]}),
+            )
 
     # Entri tanya jawab dan kartu tool dikutip `[Judul]` tanpa halaman (T25).
     tanpa_halaman = {

@@ -14,9 +14,15 @@ threshold dapat membacanya.
 Bila reranker dipasang, RRF dipotong menjadi `rerank_candidates` dulu, lalu
 reranker memilih top 5 dari situ (`app.rag.reranker`).
 
+Top 5 dibatasi paling banyak `max_per_document` potongan dari satu dokumen
+(T59), supaya ringkasan TRANSKRIP yang cocok dengan banyak kata tidak menutup
+dokumen lain yang memuat jawabannya.
+
 Terakhir, beberapa hasil teratas diberi potongan lanjutannya dari dokumen yang
 sama (`neighbors`, lihat `NEIGHBOR_SQL`), supaya prosedur yang terbelah antar
-halaman sampai ke LLM utuh.
+halaman sampai ke LLM utuh. Dokumen yang hasilnya tersebar di beberapa bab
+diberi daftar babnya (`outline`, lihat `app.rag.outline`), supaya pertanyaan
+daftar ("jenis beasiswa apa saja?") terjawab lengkap.
 
 Bila pertanyaan ditulis ulang (FR-4), pertanyaan asli ikut dicari: kedua jalur
 dijalankan untuk masing-masing bentuk, dan keempat daftar digabung dalam satu
@@ -50,10 +56,12 @@ from langchain_core.retrievers import BaseRetriever
 from pydantic import ConfigDict
 from sqlalchemy import text
 
+from app.db.models import DocumentType
 from app.ingestion.chunker import LANJUTAN
 from app.rag.filters import active_document_clause
 from app.rag.fts_query import fulltext_queries
 from app.rag.fusion import RankedHit, fuse_ranked_lists
+from app.rag.outline import susun_daftar_bab
 from app.rag.reranker import rerank_documents
 from app.rag.threshold import LEXICAL_SOURCE, VECTOR_SOURCE
 
@@ -191,6 +199,55 @@ sebelumnya hanya dipakai bila sebagian yang sama (`_judul_potongan`), lihat
 dengan chunk sumber yang sudah lolos filter."""
 
 
+OUTLINE_SQL = text(
+    """
+    SELECT c.document_id::text AS document_id,
+           c.id::text AS chunk_id,
+           c.page,
+           split_part(c.content, chr(10), 1) AS kepala
+    FROM chunks c
+    WHERE c.document_id = ANY(CAST(:ids AS text[])::uuid[])
+    ORDER BY c.document_id, c.position
+    """
+)
+"""Baris pertama -- jejak judul -- setiap potongan dokumen, bahan daftar bab
+(`app.rag.outline.susun_daftar_bab`). Hanya baris pertamanya: pedoman beasiswa
+148 potongan, isinya tidak perlu ikut terkirim."""
+
+
+def _batasi_per_dokumen(
+    documents: Sequence[Document], top_n: int, maks: int
+) -> list[Document]:
+    """`top_n` hasil teratas dengan paling banyak `maks` potongan per dokumen.
+
+    T59: "sertifikasi dasar DKV apa dan berapa?" mengisi kelima kursi dengan
+    TRANSKRIP UPS, yang menyebut nama sertifikasinya tetapi tidak harganya.
+    Dokumen HARGA SERTIFIKASI ada di peringkat 6, sehingga dijawab "dokumen
+    resmi tidak mencantumkan biayanya" (4/4).
+
+    Kursi yang tersisa karena dokumen lain kehabisan hasil diisi kembali oleh
+    potongan yang tadi dilewati: unit berdokumen tunggal (Keuangan) tetap
+    mendapat `top_n` potongan. Urutan peringkat dipertahankan. `maks` 0 = tanpa
+    batas.
+    """
+    if maks <= 0 or len(documents) <= top_n:
+        return list(documents[:top_n])
+    terpilih: list[int] = []
+    dilewati: list[int] = []
+    jumlah: dict[str, int] = {}
+    for i, doc in enumerate(documents):
+        dokumen = doc.metadata["document_id"]
+        if jumlah.get(dokumen, 0) < maks:
+            jumlah[dokumen] = jumlah.get(dokumen, 0) + 1
+            terpilih.append(i)
+            if len(terpilih) == top_n:
+                break
+        else:
+            dilewati.append(i)
+    terpilih += dilewati[: top_n - len(terpilih)]
+    return [documents[i] for i in sorted(terpilih)]
+
+
 def _judul_potongan(isi: str) -> str:
     """Baris pertama potongan -- jejak judul bagiannya -- tanpa penanda lanjutan."""
     baris = isi.split("\n", 1)[0].strip()
@@ -268,10 +325,19 @@ class PostgresHybridRetriever(BaseRetriever):
     reranker: Any = None
     """`app.rag.reranker.Reranker`, atau None untuk memakai urutan RRF langsung."""
     rerank_candidates: int = 20
+    max_per_document: int = 0
+    """Paling banyak berapa potongan satu dokumen di antara `top_n` hasil (T59,
+    `_batasi_per_dokumen`). 0 = tanpa batas."""
     neighbors: int = 0
     """Berapa hasil teratas yang diberi potongan lanjutannya (`NEIGHBOR_SQL`).
     0 = mati. Potongan lanjutan disisipkan tepat sesudah sumbernya dan tidak
     membawa skor, jadi tidak ikut menentukan keputusan threshold FR-3."""
+    outline: int = 0
+    """Paling banyak berapa dokumen yang daftar babnya ikut ke konteks (T9,
+    `app.rag.outline`). 0 = mati. Hanya dokumen yang hasilnya menyentuh dua bab
+    atau lebih: pertanyaan satu bab ("syarat KIP") tidak butuh gambaran
+    seluruh dokumen. Daftar bab ditaruh paling akhir dan, seperti potongan
+    lanjutan, tidak membawa skor."""
 
     async def _aget_relevant_documents(
         self,
@@ -326,10 +392,10 @@ class PostgresHybridRetriever(BaseRetriever):
                 LEXICAL_SOURCE: self.weight_fulltext,
             },
             k=self.rrf_k,
+            # Tanpa reranker seluruh hasil fusi dibawa: batas per dokumen bisa
+            # mengambil pengganti dari peringkat berapa pun.
             top_n=(
-                max(self.rerank_candidates, self.top_n)
-                if self.reranker is not None
-                else self.top_n
+                max(self.rerank_candidates, self.top_n) if self.reranker is not None else None
             ),
         )
 
@@ -355,9 +421,13 @@ class PostgresHybridRetriever(BaseRetriever):
             for hit in fused
         ]
         documents = await rerank_documents(
-            query, documents, self.reranker, top_n=self.top_n
+            query, documents, self.reranker, top_n=len(documents)
         )
-        return await self._with_neighbors(documents)
+        documents = _batasi_per_dokumen(documents, self.top_n, self.max_per_document)
+        lengkap, daftar_bab = await asyncio.gather(
+            self._with_neighbors(documents), self._daftar_bab(documents)
+        )
+        return [*lengkap, *daftar_bab]
 
     async def _with_neighbors(self, documents: list[Document]) -> list[Document]:
         """Sisipkan potongan sesudah tiap hasil teratas, dan potongan sebelumnya
@@ -395,6 +465,59 @@ class PostgresHybridRetriever(BaseRetriever):
             if belakang is not None and belakang["chunk_id"] not in sudah:
                 hasil.append(_tetangga(belakang, chunk_id))
                 sudah.add(belakang["chunk_id"])
+        return hasil
+
+    async def _daftar_bab(self, documents: list[Document]) -> list[Document]:
+        """Daftar bab dokumen yang hasil teratasnya tersebar di dua bab atau lebih.
+
+        Dokumen diurutkan menurut hasil terbaiknya. Dokumen dengan satu hasil
+        saja tidak diperiksa: satu potongan hanya menyentuh satu bab."""
+        if self.outline <= 0:
+            return []
+        per_dokumen: dict[str, list[Document]] = {}
+        for doc in documents:
+            # Entri tanya jawab satu potongan per dokumen, tanpa bab.
+            if doc.metadata.get("jenis") == DocumentType.TANYA_JAWAB:
+                continue
+            per_dokumen.setdefault(doc.metadata["document_id"], []).append(doc)
+        calon = [d for d, docs in per_dokumen.items() if len(docs) >= 2]
+        if not calon:
+            return []
+        rows = await self._jalankan(OUTLINE_SQL, {"ids": calon})
+
+        kepala: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            kepala.setdefault(row["document_id"], []).append(row)
+        hasil: list[Document] = []
+        for document_id in calon:
+            docs = per_dokumen[document_id]
+            daftar = susun_daftar_bab(kepala.get(document_id, []))
+            ids = [d.metadata["chunk_id"] for d in docs]
+            if daftar is None or len(daftar.tersentuh(ids)) < 2:
+                continue
+            meta = docs[0].metadata
+            hasil.append(
+                Document(
+                    page_content=daftar.teks(meta["judul"]),
+                    metadata={
+                        # Tanpa `chunk_id`: bukan potongan, jadi tidak dicatat
+                        # sebagai potongan terambil (log, tabel Uji coba).
+                        "document_id": document_id,
+                        "judul": meta["judul"],
+                        "jenis": meta.get("jenis"),
+                        "halaman": daftar.bab[0].halaman,
+                        "file_path": meta["file_path"],
+                        "rrf_score": 0.0,
+                        "raw_scores": {},
+                        "ranks": {},
+                        "daftar_bab": [
+                            {"judul": b.judul, "halaman": b.halaman} for b in daftar.bab
+                        ],
+                    },
+                )
+            )
+            if len(hasil) >= self.outline:
+                break
         return hasil
 
     def _get_relevant_documents(

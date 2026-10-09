@@ -323,7 +323,9 @@ jev_gate                       cari (subgraph)
   │                                │
   │                                ▼
   │                              retrieve  (FTS ∥ pgvector → RRF → rerank,
-  │                                │        filter unit, potongan lanjutan)
+  │                                │        filter unit, potongan lanjutan,
+  │                                │        maks. 4 potongan per dokumen,
+  │                                │        daftar bab dokumen)
   └──────────────┬─────────────────┘
                  ▼
 validate_context             (titik temu, lalu FR-3 + gerbang kelayakan tool)

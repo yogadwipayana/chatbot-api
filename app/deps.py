@@ -409,12 +409,14 @@ def build_retriever(settings: SettingsDep) -> Any:
         embed_query=EmbedQuery(embeddings, settings.embed_model),
         candidates=settings.retrieval_candidates,
         top_n=settings.retrieval_top_n,
+        max_per_document=settings.retrieval_max_per_document,
         rrf_k=settings.rrf_k,
         weight_vector=settings.rrf_weight_vector,
         weight_fulltext=settings.rrf_weight_fulltext,
         reranker=build_reranker(settings),
         rerank_candidates=settings.rerank_candidates,
         neighbors=settings.retrieval_neighbors,
+        outline=settings.retrieval_outline,
     )
 
 

@@ -24,6 +24,7 @@ from app.rag.retriever import (
     FULLTEXT_SQL,
     ITERATIVE_SCAN_SQL,
     NEIGHBOR_SQL,
+    OUTLINE_SQL,
     VECTOR_SQL,
     PostgresHybridRetriever,
     fulltext_sql,
@@ -596,3 +597,209 @@ class TestPotonganSebelumnya:
         )
         docs = await retriever_dengan(pabrik, neighbors=2).ainvoke("KRS")
         assert [d.metadata["chunk_id"] for d in docs] == ["b", "f1", "a"]
+
+
+def kepala(chunk_id: str, halaman: int, judul: str, dokumen: str = "d1") -> dict:
+    return {"document_id": dokumen, "chunk_id": chunk_id, "page": halaman, "kepala": judul}
+
+
+class PabrikDenganBab(PabrikSesiPalsu):
+    def __init__(self, *args, bab: list[dict]) -> None:
+        super().__init__(*args)
+        self.bab = bab
+
+    def baris_untuk(self, sql) -> list[dict]:
+        return self.bab if sql is OUTLINE_SQL else super().baris_untuk(sql)
+
+    def panggilan_bab(self) -> list[dict]:
+        return [p for s in self.sesi for q, p in s.panggilan if q is OUTLINE_SQL]
+
+
+PEDOMAN = [
+    kepala("a", 11, "BAB II KIP KULIAH › 2.8 Persyaratan"),
+    kepala("x", 12, "BAB II KIP KULIAH › 2.9 Dokumen (lanjutan)"),
+    kepala("b", 27, "BAB VI BERPRESTASI › 6.1 Gambaran Umum"),
+    kepala("y", 28, "BAB VI BERPRESTASI › 6.5 Kuota"),
+    kepala("c", 32, "BAB VII TALENTA › 7.1 Ketentuan Umum"),
+]
+
+
+class TestDaftarBab:
+    """T9: "jenis beasiswa apa saja?" -- enam jenis, satu per bab pedoman.
+
+    Peringkat awal (lihat fixture `pabrik`): b, a, c, semuanya dokumen d1,
+    masing-masing di bab yang berbeda.
+    """
+
+    def pabrik(self, bab: list[dict] = PEDOMAN, vector=None, fulltext=None) -> PabrikDenganBab:
+        return PabrikDenganBab(
+            vector if vector is not None else [baris("a", 0.91), baris("b", 0.80)],
+            fulltext if fulltext is not None else [baris("b", 0.40), baris("c", 0.30)],
+            bab=bab,
+        )
+
+    @staticmethod
+    def daftar(docs) -> list:
+        return [d for d in docs if d.metadata.get("daftar_bab")]
+
+    async def test_mati_secara_bawaan_tanpa_query_tambahan(self):
+        pabrik = self.pabrik()
+        docs = await retriever_dengan(pabrik).ainvoke("beasiswa")
+        assert self.daftar(docs) == []
+        assert pabrik.panggilan_bab() == []
+
+    async def test_daftar_bab_ditaruh_paling_akhir(self):
+        docs = await retriever_dengan(self.pabrik(), outline=2).ainvoke("beasiswa")
+        assert [d.metadata.get("chunk_id") for d in docs] == ["b", "a", "c", None]
+        assert docs[-1].metadata["daftar_bab"] == [
+            {"judul": "BAB II KIP KULIAH", "halaman": 11},
+            {"judul": "BAB VI BERPRESTASI", "halaman": 27},
+            {"judul": "BAB VII TALENTA", "halaman": 32},
+        ]
+
+    async def test_isi_dan_metadata_sitasi(self):
+        docs = await retriever_dengan(self.pabrik(), outline=2).ainvoke("beasiswa")
+        meta = docs[-1].metadata
+        assert meta["judul"] == "Panduan Akademik 2025"
+        assert meta["document_id"] == "d1"
+        assert meta["file_path"] == "documents/d1.pdf"
+        assert meta["halaman"] == 11
+        assert "- BAB VI BERPRESTASI (hal. 27)" in docs[-1].page_content
+
+    async def test_tanpa_skor_dan_bukan_potongan(self):
+        """Tidak boleh meloloskan threshold atas namanya sendiri, dan tidak
+        dicatat sebagai potongan terambil (`chunk_id` dipakai log dan Uji coba)."""
+        docs = await retriever_dengan(self.pabrik(), outline=2).ainvoke("beasiswa")
+        meta = docs[-1].metadata
+        assert meta["raw_scores"] == {}
+        assert meta["rrf_score"] == 0.0
+        assert "chunk_id" not in meta
+
+    async def test_sql_hanya_untuk_dokumen_dengan_dua_hasil_atau_lebih(self):
+        pabrik = self.pabrik()
+        await retriever_dengan(pabrik, outline=2).ainvoke("beasiswa")
+        assert pabrik.panggilan_bab() == [{"ids": ["d1"]}]
+
+    async def test_hasil_satu_bab_tidak_diberi_daftar(self):
+        """ "syarat KIP": semua hasil di BAB II, gambaran dokumen tidak perlu."""
+        bab = [
+            kepala("a", 11, "BAB II KIP KULIAH › 2.8 Persyaratan"),
+            kepala("b", 12, "BAB II KIP KULIAH › 2.9 Dokumen"),
+            kepala("c", 12, "BAB II KIP KULIAH › 2.10 Mekanisme"),
+            kepala("y", 27, "BAB VI BERPRESTASI › 6.1 Gambaran Umum"),
+            kepala("z", 32, "BAB VII TALENTA › 7.1 Ketentuan Umum"),
+        ]
+        docs = await retriever_dengan(self.pabrik(bab), outline=2).ainvoke("syarat KIP")
+        assert self.daftar(docs) == []
+
+    async def test_dokumen_dengan_satu_hasil_tidak_dicari(self):
+        pabrik = self.pabrik(
+            vector=[{**baris("a", 0.91), "document_id": "d2"}, baris("b", 0.80)],
+            fulltext=[baris("b", 0.40), {**baris("c", 0.30), "document_id": "d3"}],
+        )
+        await retriever_dengan(pabrik, outline=2).ainvoke("beasiswa")
+        assert pabrik.panggilan_bab() == []
+
+    async def test_tanya_jawab_dilewati(self):
+        tj = {"type": "tanya_jawab"}
+        pabrik = self.pabrik(
+            vector=[{**baris("a", 0.91), **tj}, {**baris("b", 0.80), **tj}],
+            fulltext=[{**baris("b", 0.40), **tj}],
+        )
+        await retriever_dengan(pabrik, outline=2).ainvoke("beasiswa")
+        assert pabrik.panggilan_bab() == []
+
+    async def test_jumlah_dokumen_dibatasi_menurut_hasil_terbaik(self):
+        """Peringkat: b (d2), a (d1), c (d1), e (d2)."""
+        d2 = {"document_id": "d2", "title": "Buku SKP"}
+        bab = [
+            *PEDOMAN,
+            kepala("b", 19, "SATUAN KREDIT PARTISIPASI › A. PENGERTIAN", "d2"),
+            kepala("e", 23, "KEGIATAN WAJIB INSTITUSI", "d2"),
+            kepala("e2", 23, "KEGIATAN WAJIB INSTITUSI (lanjutan)", "d2"),
+            kepala("f", 38, "TEKNIS PELAKSANAAN SKP", "d2"),
+        ]
+        vector = [baris("a", 0.91), {**baris("b", 0.80), **d2}]
+        fulltext = [{**baris("b", 0.40), **d2}, baris("c", 0.30), {**baris("e", 0.20), **d2}]
+
+        satu = await retriever_dengan(self.pabrik(bab, vector, fulltext), outline=1).ainvoke(
+            "skp"
+        )
+        assert [d.metadata["judul"] for d in self.daftar(satu)] == ["Buku SKP"]
+
+        dua = await retriever_dengan(self.pabrik(bab, vector, fulltext), outline=2).ainvoke(
+            "skp"
+        )
+        assert [d.metadata["judul"] for d in self.daftar(dua)] == [
+            "Buku SKP",
+            "Panduan Akademik 2025",
+        ]
+
+    async def test_bersama_potongan_lanjutan(self):
+        """Dua query tambahan, masing-masing di sesinya sendiri."""
+        pabrik = PabrikDenganBab(
+            [baris("a", 0.91), baris("b", 0.80)],
+            [baris("b", 0.40), baris("c", 0.30)],
+            bab=PEDOMAN,
+        )
+        lanjutan = [baris_lanjutan("b", "b2")]
+        pabrik.baris_untuk = lambda sql, asli=pabrik.baris_untuk: (
+            lanjutan if sql is NEIGHBOR_SQL else asli(sql)
+        )
+        docs = await retriever_dengan(pabrik, neighbors=1, outline=2).ainvoke("beasiswa")
+        assert [d.metadata.get("chunk_id") for d in docs] == ["b", "b2", "a", "c", None]
+
+    def test_sql_hanya_mengambil_baris_pertama_menurut_posisi(self):
+        sql = str(OUTLINE_SQL)
+        assert "split_part(c.content, chr(10), 1) AS kepala" in sql
+        assert "ORDER BY c.document_id, c.position" in sql
+
+
+def dari(dokumen: str, chunk_id: str, skor: float) -> dict:
+    return {**baris(chunk_id, skor), "document_id": dokumen}
+
+
+class TestBatasPerDokumen:
+    """T59: "sertifikasi dasar DKV apa dan berapa?" -- kelima kursi diisi
+    TRANSKRIP UPS, HARGA SERTIFIKASI (yang memuat harganya) di peringkat 6."""
+
+    @staticmethod
+    def pabrik(*vektor: dict) -> PabrikSesiPalsu:
+        return PabrikSesiPalsu(vector_rows=list(vektor), fulltext_rows=[])
+
+    @staticmethod
+    def ids(docs) -> list[str]:
+        return [d.metadata["chunk_id"] for d in docs]
+
+    async def test_mati_secara_bawaan(self):
+        pabrik = self.pabrik(dari("d1", "a", 0.9), dari("d1", "b", 0.8), dari("d2", "e", 0.5))
+        assert self.ids(await retriever_dengan(pabrik, top_n=2).ainvoke("q")) == ["a", "b"]
+
+    async def test_pengganti_diambil_dari_luar_top_n(self):
+        transkrip = [dari("transkrip", x, 0.9 - i / 100) for i, x in enumerate("abcde")]
+        pabrik = self.pabrik(*transkrip, dari("harga", "h", 0.5))
+        docs = await retriever_dengan(pabrik, top_n=5, max_per_document=4).ainvoke("dkv")
+        assert self.ids(docs) == ["a", "b", "c", "d", "h"]
+
+    async def test_kursi_sisa_diisi_dokumen_yang_sama_menurut_peringkat(self):
+        """Peringkat a, b, c (d1), e (d2), f (d1). Batas 2: a, b, e, lalu satu
+        kursi tersisa diisi c, potongan d1 terbaik yang dilewati."""
+        pabrik = self.pabrik(
+            dari("d1", "a", 0.9),
+            dari("d1", "b", 0.8),
+            dari("d1", "c", 0.7),
+            dari("d2", "e", 0.6),
+            dari("d1", "f", 0.5),
+        )
+        docs = await retriever_dengan(pabrik, top_n=4, max_per_document=2).ainvoke("q")
+        assert self.ids(docs) == ["a", "b", "c", "e"]
+
+    async def test_unit_berdokumen_tunggal_tetap_mendapat_top_n(self):
+        pabrik = self.pabrik(*(dari("va", x, 0.9 - i / 10) for i, x in enumerate("abcd")))
+        docs = await retriever_dengan(pabrik, top_n=3, max_per_document=1).ainvoke("atm")
+        assert self.ids(docs) == ["a", "b", "c"]
+
+    async def test_tanpa_batas_seluruh_hasil_fusi_tidak_ikut(self):
+        """Fusi kini membawa semua hasil; yang keluar tetap `top_n`."""
+        pabrik = self.pabrik(*(dari("d1", x, 0.9 - i / 10) for i, x in enumerate("abcd")))
+        assert len(await retriever_dengan(pabrik, top_n=2).ainvoke("q")) == 2

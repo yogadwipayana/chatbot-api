@@ -183,6 +183,16 @@ class Settings(BaseSettings):
     """Top-N per sumber sebelum fusi. PRD FR-2: 20 vector + 20 fulltext."""
     retrieval_top_n: int = 5
     """Jumlah chunk yang masuk konteks LLM setelah RRF."""
+    retrieval_max_per_document: int = Field(default=4, ge=0)
+    """Paling banyak berapa chunk satu dokumen di antara `retrieval_top_n` (T59).
+    0 = tanpa batas. Kursi yang tak terisi dokumen lain tetap diisi dokumen yang
+    sama, jadi unit berdokumen tunggal tidak kehilangan konteks.
+
+    4 = satu kursi top 5 selalu untuk dokumen lain bila ada. "sertifikasi dasar
+    DKV apa dan berapa?" mengisi kelima kursi dengan TRANSKRIP UPS, dan harganya
+    (HARGA SERTIFIKASI, peringkat 6) tidak pernah sampai ke LLM. Simulasi
+    2026-10-09 atas 27 pertanyaan: 4 mengubah top 5 di 6 pertanyaan, 2 dan 3
+    memasukkan banyak potongan yang tidak relevan."""
     retrieval_neighbors: int = Field(default=5, ge=0)
     """Berapa chunk teratas yang diberi potongan sesudahnya dari dokumen yang
     sama. Konteks LLM paling banyak `retrieval_top_n + retrieval_neighbors`
@@ -191,6 +201,14 @@ class Settings(BaseSettings):
     5 = setiap chunk konteks. Dengan 2, daftar larangan Pasal 10 Kode Etik
     (peringkat 3) terpotong di butir 6; dengan 5 lengkap 10 butir, dengan
     tambahan sekitar 12% token input (uji 2026-09-29)."""
+    retrieval_outline: int = Field(default=2, ge=0)
+    """Paling banyak berapa dokumen yang daftar babnya ikut ke konteks LLM (T9).
+    0 = mati. Hanya dokumen yang potongan teratasnya menyentuh dua bab atau
+    lebih, jadi dengan `retrieval_top_n` 5 paling banyak dua. Lihat
+    `app.rag.outline`.
+
+    Tanpa daftar bab, "jenis beasiswa apa saja?" dijawab empat dari enam jenis
+    (10/10 uji 2026-10-09), walau bab Berprestasi dan Talenta ikut terambil."""
     rrf_k: int = 60
     rrf_weight_vector: float = 1.0
     rrf_weight_fulltext: float = 1.0

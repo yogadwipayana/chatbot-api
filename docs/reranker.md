@@ -45,7 +45,7 @@ User mengisi `RERANK_API_KEY` dan `RERANK_ENABLED=true` (bge, `:8082`). Uji lewa
 - Perbaikan dengan reranker: skornya mutlak (0–1), jadi `RERANK_THRESHOLD` bisa menggantikan ambang vektor/leksikal sebagai dasar penolakan.
 
 ### T5/T9 (sedang): peringkat pencarian (bagian reranker saja)
-- T9 tetap terbuka di `browseract.md`. T5 (Pasal 10 terpotong) sudah selesai tanpa reranker, lewat `RETRIEVAL_NEIGHBORS=5` (2026-09-29 sesi 11).
+- T9 selesai tanpa reranker (2026-10-09 sesi 43): bab Berprestasi dan Talenta sebenarnya sudah ikut terambil, tetapi model hanya mengikuti daftar empat jenis di TRANSKRIP. Perbaikannya daftar bab dokumen di konteks (`RETRIEVAL_OUTLINE`, `app/rag/outline.py`), bukan peringkat. T5 (Pasal 10 terpotong) sudah selesai tanpa reranker, lewat `RETRIEVAL_NEIGHBORS=5` (2026-09-29 sesi 11).
 - Peran reranker: mengurutkan ulang 20 kandidat RRF supaya potongan yang benar-benar menjawab naik ke 5 teratas.
 - **Kasus terkuat: "Apa saja jenis beasiswa yang tersedia?" (Kemahasiswaan).** Ditolak LLM 4/4 kali, baik di nilai NEIGHBORS 2 maupun 5. Potongan yang menjawab ada di peringkat RRF **11** (h27 "6.1 Gambaran Umum", Beasiswa Prestasi Internal) dan **15** (h4, keputusan rektor), jadi masih di dalam 20 kandidat yang dinilai reranker. Lima besar saat ini diisi h20/h32/h33 (profil program, Talenta Unggul, evaluasi). Dengan kalimat "…bagi mahasiswa INSTIKI?", keduanya naik ke 5 besar dan pertanyaannya terjawab sebagian.
 - Sudah tidak relevan: "Kapan pendaftaran sertifikasi dibuka?" (UPS) sekarang terjawab 5/6 kali (pengumuman di awal, tengah, dan akhir semester) tanpa reranker.

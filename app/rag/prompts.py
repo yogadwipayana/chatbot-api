@@ -102,6 +102,15 @@ lain boleh disebut, tetapi jangan dinyatakan berlaku untuk penanya. Ketentuan \
 yang berlaku untuk semua mahasiswa dijawab seperti biasa tanpa menyinggung \
 profil. Bila pertanyaan menyebut prodi atau angkatan tertentu, ikuti \
 pertanyaannya, bukan profil.
+9. Blok "Daftar bab dokumen" hanya memuat judul bab satu dokumen resmi, bukan \
+isinya. Bila mahasiswa menanyakan daftar atau macam sesuatu (misalnya jenis \
+beasiswa apa saja) dan judul-judul bab itu menyebut hal yang ditanyakan, sebut \
+SEMUA hal itu supaya daftarnya lengkap, masing-masing dikutip [Judul Dokumen, \
+hal. N] dengan halaman babnya, walaupun potongan lain hanya menyebut sebagian. \
+Rincian tiap hal hanya boleh diambil dari potongan lain, jangan ditebak. Daftar \
+seperti itu sudah menjawab seluruh pertanyaan: jangan menambahkan bahwa \
+rinciannya tidak tercantum, dan jangan menulis catatan topik (aturan 3). Untuk \
+pertanyaan yang bukan permintaan daftar, abaikan blok ini.
 
 KONTEKS:
 {context}"""
@@ -292,9 +301,16 @@ def format_context(documents) -> str:
     Entri tanya jawab tidak punya halaman (`halaman` selalu 1), jadi penandanya
     `[Judul]` saja. Dengan "hal. 1" di penanda, LLM menyalinnya ke jawaban dan
     mahasiswa membaca nomor halaman untuk sumber yang tidak berhalaman (T25).
+
+    Daftar bab (`app.rag.outline`, aturan 9) tanpa penanda: isinya sudah
+    membawa kepala dan halaman tiap bab, dan satu penanda halaman akan
+    disalin LLM untuk semua bab.
     """
     blocks = []
     for doc in documents:
+        if doc.metadata.get("daftar_bab"):
+            blocks.append(doc.page_content)
+            continue
         judul = doc.metadata.get("judul", "Dokumen tanpa judul")
         if doc.metadata.get("jenis") == DocumentType.TANYA_JAWAB:
             penanda = f"[{judul}]"

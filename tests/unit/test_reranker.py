@@ -363,3 +363,21 @@ class TestPolicyFrom:
         assert policy_from(setelan(rerank_threshold=0.4)).rerank_threshold == 0.4
         mati = setelan(rerank_enabled=False, rerank_threshold=0.4)
         assert policy_from(mati).rerank_threshold is None
+
+
+class TestBatasPerDokumenSesudahRerank:
+    async def test_batas_memakai_urutan_reranker(self):
+        """T59: batas per dokumen berlaku atas urutan akhir, bukan urutan RRF."""
+        pabrik = PabrikSesiPalsu(
+            vector_rows=[
+                baris("a", 0.9),
+                baris("b", 0.8),
+                {**baris("c", 0.7), "document_id": "d2"},
+            ],
+            fulltext_rows=[],
+        )
+        reranker = RerankerPalsu({"isi b": 0.9, "isi a": 0.8, "isi c": 0.1})
+        retriever = retriever_dengan(
+            pabrik, top_n=2, reranker=reranker, rerank_candidates=3, max_per_document=1
+        )
+        assert [d.metadata["chunk_id"] for d in await retriever.ainvoke("q")] == ["b", "c"]
