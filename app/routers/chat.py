@@ -15,6 +15,7 @@ from sqlalchemy import text
 
 from app.deps import (
     EmbedKeyDep,
+    JawabanTerkirimDep,
     SessionDep,
     SettingsDep,
     UnitDirectoryDep,
@@ -43,7 +44,6 @@ from app.observability.tracing import (
 from app.prodi import ProfilMahasiswa
 from app.rag.chain import OutcomeKind, PipelineOutcome, run_pipeline
 from app.rag.citations import extract_citations
-from app.rag.rewriter import Turn
 from app.rag.threshold import ThresholdPolicy
 from app.schemas.chat import (
     AttachmentOut,
@@ -55,6 +55,7 @@ from app.schemas.chat import (
     FeedbackRequest,
 )
 from app.schemas.common import Error
+from app.security.riwayat import riwayat_tepercaya
 from app.security.sanitize import sanitize_question
 
 router = APIRouter(prefix="/api", tags=["chat"], dependencies=[Depends(guard_kill_switch)])
@@ -89,6 +90,7 @@ async def chat(
     settings: SettingsDep,
     units: UnitDirectoryDep,
     embed_key: EmbedKeyDep,
+    jawaban_terkirim: JawabanTerkirimDep,
     retriever: Any = Depends(build_retriever),
     llm_call: Any = Depends(build_llm_call),
     rewrite_call: Any = Depends(build_rewrite_call),
@@ -100,6 +102,7 @@ async def chat(
     """Jawaban sekali kirim. Dipakai kotak uji coba admin (AD-6) dan test."""
     unit = await unit_terdaftar(units, payload.unit) if payload.unit else None
     profil = profil_dari_nim(payload.nim)
+    riwayat = await riwayat_tepercaya(payload.history, payload.session_id, jawaban_terkirim)
     mulai = time.perf_counter()
     run_id = id_giliran()
     tandai_sesi(payload.session_id, llm_call, rewrite_call)
@@ -122,7 +125,7 @@ async def chat(
                 llm_call=llm_call,
                 rewrite_call=rewrite_call,
                 gate_call=gate_call,
-                history=[Turn(t.role, t.content) for t in payload.history],
+                history=riwayat,
                 policy=policy_from(settings),
                 unit=unit,
                 profile=profil,
@@ -161,6 +164,7 @@ async def chat_stream(
     settings: SettingsDep,
     units: UnitDirectoryDep,
     embed_key: EmbedKeyDep,
+    jawaban_terkirim: JawabanTerkirimDep,
     retriever: Any = Depends(build_retriever),
     llm_call: Any = Depends(build_llm_call),
     rewrite_call: Any = Depends(build_rewrite_call),
@@ -176,6 +180,9 @@ async def chat_stream(
     sanitize_question(payload.question)
     unit = await unit_terdaftar(units, payload.unit) if payload.unit else None
     profil = profil_dari_nim(payload.nim)
+    # Di sini, bukan di dalam aliran: sesi database permintaan ini belum tentu
+    # masih terbuka saat generator berjalan.
+    riwayat = await riwayat_tepercaya(payload.history, payload.session_id, jawaban_terkirim)
     mulai = time.perf_counter()
     run_id = id_giliran()
     tandai_sesi(payload.session_id, llm_call, rewrite_call)
@@ -217,7 +224,7 @@ async def chat_stream(
                             llm_call=llm_call,
                             rewrite_call=rewrite_call,
                             gate_call=gate_call,
-                            history=[Turn(t.role, t.content) for t in payload.history],
+                            history=riwayat,
                             policy=policy_from(settings),
                             on_token=token,
                             on_stage=lambda stage: antrean.put(("status", {"stage": stage})),

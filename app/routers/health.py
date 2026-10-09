@@ -22,6 +22,5 @@ async def health(switch: KillSwitchDep) -> HealthResponse:
     return HealthResponse(
         status="ok",
         chat_enabled=not switch.engaged,
-        kill_switch_reason=switch.reason,
         tracing_enabled=sedang_menjejak(),
     )

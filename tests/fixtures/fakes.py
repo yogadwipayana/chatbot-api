@@ -20,6 +20,7 @@ from app.admin.permissions import ROLE_LEVEL, AdminRole
 from app.admin.runtime_config import NilaiTersimpan
 from app.embed_keys import EDITABLE_FIELDS as EMBED_EDITABLE_FIELDS
 from app.embed_keys import KunciSematan, bentuk_sah, buat_kunci
+from app.security.killswitch import KillSwitch
 from app.units import (
     EDITABLE_FIELDS as UNIT_EDITABLE_FIELDS,
 )
@@ -172,6 +173,35 @@ class FakeChatLogger:
         return None if self.fail else self.message_id
 
 
+class FakeJawabanTerkirim:
+    """Pengganti `SqlJawabanTerkirim`.
+
+    Jawaban yang dicatat `FakeChatLogger` ikut terhitung, jadi alur tanya lalu
+    tanya lanjutan di test berjalan seperti di produksi. `tambah` mengisi
+    jawaban lama yang tidak lewat test itu sendiri.
+    """
+
+    def __init__(self, chat_logger: FakeChatLogger | None = None) -> None:
+        self.chat_logger = chat_logger
+        self.per_sesi: dict[str, list[str]] = {}
+        self.gagal = False
+        self.ditanya = 0
+
+    def tambah(self, session_id: str, *jawaban: str) -> None:
+        self.per_sesi.setdefault(session_id, []).extend(jawaban)
+
+    async def terakhir(self, session_id: str, batas: int) -> list[str]:
+        self.ditanya += 1
+        if self.gagal:
+            raise RuntimeError("database tidak dapat dihubungi")
+        tercatat = list(self.per_sesi.get(session_id, []))
+        if self.chat_logger is not None:
+            tercatat += [
+                e.outcome.text for e in self.chat_logger.entries if e.session_id == session_id
+            ]
+        return tercatat[::-1][:batas]
+
+
 class FakeLogSink:
     """Pengganti `LogWriter`: baris log SQLite ditampung di memori."""
 
@@ -316,6 +346,29 @@ class FakeRuntimeConfigStore:
 
     async def clear(self) -> None:
         self.values.clear()
+
+
+class FakeKillSwitchStore:
+    """Pengganti `SqlKillSwitchStore`: tabel `kill_switch` di memori.
+
+    `gagal=True` meniru database yang menolak tulis (mis. tabel belum dimigrasi).
+    """
+
+    def __init__(self, tersimpan: KillSwitch | None = None, *, gagal: bool = False) -> None:
+        self.tersimpan = tersimpan
+        self.gagal = gagal
+        self.simpan_ke = 0
+
+    async def load(self) -> KillSwitch | None:
+        if self.gagal:
+            raise RuntimeError('relation "kill_switch" does not exist')
+        return replace(self.tersimpan) if self.tersimpan else None
+
+    async def save(self, switch: KillSwitch) -> None:
+        if self.gagal:
+            raise RuntimeError('relation "kill_switch" does not exist')
+        self.simpan_ke += 1
+        self.tersimpan = replace(switch) if switch.engaged else None
 
 
 UNIT_RESMI = (

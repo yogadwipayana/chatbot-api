@@ -45,6 +45,7 @@ from app.ingestion.pipeline import EmptyDocumentError, ingest_document
 from app.routers.common import terjemahkan_galat_ai
 from app.schemas.admin import Chunk, Document, DocumentPage, DocumentUpdate, IngestionResult
 from app.schemas.common import Error
+from app.security.batas_body import pesan_berkas_terlalu_besar
 from app.storage import StorageError
 
 logger = logging.getLogger(__name__)
@@ -151,7 +152,7 @@ async def upload_document(
                 if ukuran > batas:
                     raise HTTPException(
                         status.HTTP_413_CONTENT_TOO_LARGE,
-                        f"Berkas terlalu besar. Ukuran maksimum {settings.max_upload_mb} MB.",
+                        pesan_berkas_terlalu_besar(settings.max_upload_mb),
                     )
                 keluaran.write(potongan)
 

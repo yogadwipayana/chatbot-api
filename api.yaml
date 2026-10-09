@@ -2210,9 +2210,11 @@ components:
           default: []
           maxItems: 50
           description: |
-            Riwayat percakapan. Hanya 3 pesan terakhir yang dipakai untuk
-            penulisan ulang query (FR-4); sisanya dibuang server, dan lebih dari
-            50 ditolak 422.
+            Riwayat percakapan yang terlihat di layar. Hanya 3 pesan terakhir yang
+            dipakai untuk penulisan ulang query (FR-4); sisanya dibuang server, dan
+            lebih dari 50 ditolak 422. Giliran `assistant` hanya dipakai bila cocok
+            dengan jawaban yang pernah dikirim ke `session_id` yang sama; selebihnya
+            dibuang tanpa galat, sehingga jawaban bot tidak dapat dipalsukan.
           items: { $ref: '#/components/schemas/TurnIn' }
         unit:
           type: [string, 'null']
@@ -2417,8 +2419,9 @@ components:
         status: { type: string, const: ok }
         chat_enabled:
           type: boolean
-          description: false berarti kill switch aktif; proses tetap sehat.
-        kill_switch_reason: { type: [string, 'null'] }
+          description: >-
+            false berarti kill switch aktif; proses tetap sehat. Alasannya hanya ada di
+            GET /api/admin/kill-switch, karena endpoint ini publik.
         tracing_enabled:
           type: boolean
           description: >-

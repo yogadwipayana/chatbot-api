@@ -189,6 +189,30 @@ class TestKillSwitchAdmin:
         assert r.json()["reason"] is None
         assert client.post("/api/chat", json=payload).status_code == 200
 
+    def test_menyalakan_dan_melepas_disimpan_ke_database(
+        self, client, admin_headers, kill_switch_store
+    ):
+        """Supaya restart atau deploy tidak diam-diam menyalakan lagi layanan."""
+        self.nyalakan(client, admin_headers)
+        tersimpan = kill_switch_store.tersimpan
+        assert tersimpan is not None
+        assert tersimpan.reason == "jawaban keliru soal UKT"
+        assert tersimpan.engaged_by == ADMIN_EMAIL
+        client.post("/api/admin/kill-switch", json={"engaged": False}, headers=admin_headers)
+        assert kill_switch_store.tersimpan is None
+
+    def test_gagal_menyimpan_tidak_menggagalkan_mematikan_layanan(
+        self, client, admin_headers, payload, kill_switch_store, caplog
+    ):
+        """Saat insiden, mematikan layanan harus berhasil walau database menolak;
+        yang hilang hanya ketahanannya setelah restart, dan itu tercatat."""
+        kill_switch_store.gagal = True
+        r = self.nyalakan(client, admin_headers)
+        assert r.status_code == 200
+        assert r.json()["engaged"] is True
+        assert client.post("/api/chat", json=payload).status_code == 503
+        assert "tidak akan bertahan setelah restart" in caplog.text
+
     def test_dashboard_tetap_hidup_saat_aktif(self, client, admin_headers):
         """Justru saat insiden admin perlu masuk dan mendiagnosis."""
         self.nyalakan(client, admin_headers)
@@ -202,7 +226,9 @@ class TestKillSwitchAdmin:
         self.nyalakan(client, admin_headers)
         data = client.get("/health").json()
         assert data["chat_enabled"] is False
-        assert data["kill_switch_reason"] == "jawaban keliru soal UKT"
+        assert "kill_switch_reason" not in data
+        alasan = client.get("/api/admin/kill-switch", headers=admin_headers).json()["reason"]
+        assert alasan == "jawaban keliru soal UKT"
 
 
 class TestTakTerjawab:

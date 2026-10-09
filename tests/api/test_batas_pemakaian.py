@@ -134,6 +134,15 @@ class TestBatasHarian:
         # Admin melihatnya di dashboard lewat status kill switch yang sama.
         assert tanya(client, payload, sesi="sesi-lain-67890").status_code == 503
 
+    def test_kill_switch_otomatis_ikut_disimpan(self, atur, payload, kill_switch_store):
+        """Restart di tengah hari tidak boleh menyalakan lagi layanan yang
+        dimatikan batas harian."""
+        client = atur(chat_daily_limit=1)
+        tanya(client, payload)
+        tanya(client, payload)
+        assert kill_switch_store.tersimpan is not None
+        assert kill_switch_store.tersimpan.engaged_by == OLEH_BATAS_HARIAN
+
     def test_menyalakan_lagi_tanpa_menaikkan_batas_mati_lagi(self, atur, payload, kill_switch):
         client = atur(chat_daily_limit=1)
         tanya(client, payload)
@@ -184,7 +193,9 @@ class TestBatasPanjang:
         r = client.post("/api/chat", json={**payload, "question": "kapan KRS " * 50})
         assert r.status_code == 200
 
-    def test_riwayat_dipangkas_ke_tiga_giliran_terakhir(self, client, payload, api_rewriter):
+    def test_riwayat_dipangkas_ke_tiga_giliran_terakhir(
+        self, client, payload, api_rewriter, jawaban_terkirim
+    ):
         riwayat = [
             {
                 "role": "user" if i % 2 == 0 else "assistant",
@@ -192,6 +203,11 @@ class TestBatasPanjang:
             }
             for i in range(10)
         ]
+        # Jawaban utuh (5000+) yang dulu dikirim; riwayat klien membawa potongan
+        # 2000 karakternya, dan keduanya tetap harus cocok.
+        jawaban_terkirim.tambah(
+            payload["session_id"], *(t["content"] for t in riwayat if t["role"] == "assistant")
+        )
         r = client.post("/api/chat", json={**payload, "history": riwayat})
         assert r.status_code == 200
         _, teks_riwayat = api_rewriter.calls[-1]

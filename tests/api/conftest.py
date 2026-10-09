@@ -22,6 +22,8 @@ from app.deps import (
     get_chat_logger,
     get_embed_key_store,
     get_embeddings,
+    get_jawaban_terkirim,
+    get_kill_switch_store,
     get_log_sink,
     get_log_store,
     get_runtime_config_store,
@@ -47,6 +49,8 @@ from tests.fixtures.fakes import (
     FakeChatLogger,
     FakeEmbeddings,
     FakeEmbedKeyStore,
+    FakeJawabanTerkirim,
+    FakeKillSwitchStore,
     FakeLogSink,
     FakeRetriever,
     FakeRuntimeConfigStore,
@@ -76,6 +80,12 @@ def kill_switch() -> KillSwitch:
 
 
 @pytest.fixture
+def kill_switch_store() -> FakeKillSwitchStore:
+    """Tabel `kill_switch` yang masih kosong."""
+    return FakeKillSwitchStore()
+
+
+@pytest.fixture
 def api_llm() -> RecordingLLM:
     return RecordingLLM()
 
@@ -88,6 +98,12 @@ def api_rewriter() -> RecordingRewriter:
 @pytest.fixture
 def chat_logger() -> FakeChatLogger:
     return FakeChatLogger()
+
+
+@pytest.fixture
+def jawaban_terkirim(chat_logger) -> FakeJawabanTerkirim:
+    """Jawaban yang pernah dikirim per sesi: yang dicatat test ini, plus `tambah`."""
+    return FakeJawabanTerkirim(chat_logger)
 
 
 @pytest.fixture
@@ -153,9 +169,11 @@ def accounts() -> FakeAccountStore:
 @pytest.fixture
 def make_client(
     kill_switch,
+    kill_switch_store,
     api_llm,
     api_rewriter,
     chat_logger,
+    jawaban_terkirim,
     login_limiter,
     chat_limiter,
     daily_counter,
@@ -183,8 +201,10 @@ def make_client(
         # None = gerbang mati, apa pun isi JEV_ENABLED di .env mesin ini.
         app.dependency_overrides[build_gate_call] = lambda: gate
         app.dependency_overrides[get_kill_switch] = lambda: kill_switch
+        app.dependency_overrides[get_kill_switch_store] = lambda: kill_switch_store
         app.dependency_overrides[get_session] = lambda: session
         app.dependency_overrides[get_chat_logger] = lambda: chat_logger
+        app.dependency_overrides[get_jawaban_terkirim] = lambda: jawaban_terkirim
         app.dependency_overrides[get_login_limiter] = lambda: login_limiter
         app.dependency_overrides[get_chat_limiter] = lambda: chat_limiter
         app.dependency_overrides[get_daily_counter] = lambda: daily_counter

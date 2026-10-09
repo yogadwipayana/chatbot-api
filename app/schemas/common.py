@@ -16,8 +16,9 @@ class Error(BaseModel):
 class HealthResponse(BaseModel):
     status: Literal["ok"]
     chat_enabled: bool
-    """False berarti kill switch aktif; proses tetap sehat."""
-    kill_switch_reason: str | None = None
+    """False berarti kill switch aktif; proses tetap sehat. Alasannya sengaja
+    tidak ikut: endpoint ini publik, dan alasan adalah catatan insiden internal
+    (`GET /api/admin/kill-switch`, khusus admin)."""
     tracing_enabled: bool = False
     """Apakah trace FR-8 benar-benar terkirim ke LangSmith.
 

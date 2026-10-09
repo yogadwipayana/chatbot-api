@@ -13,12 +13,14 @@ from app.deps import (
     BaseSettingsDep,
     CurrentAdminDep,
     KillSwitchDep,
+    KillSwitchStoreDep,
     SessionDep,
     require_admin,
     require_role,
 )
 from app.schemas.admin import Costs, KillSwitchRequest, KillSwitchState, Stats
 from app.schemas.common import Error
+from app.security.killswitch import simpan_status
 
 audit = logging.getLogger("app.audit")
 
@@ -105,10 +107,14 @@ def get_kill_switch_state(switch: KillSwitchDep) -> KillSwitchState:
     dependencies=[Depends(require_role(AdminRole.SUPERADMIN))],
     responses={403: {"model": Error}},
 )
-def set_kill_switch(
-    payload: KillSwitchRequest, switch: KillSwitchDep, admin: CurrentAdminDep
+async def set_kill_switch(
+    payload: KillSwitchRequest,
+    switch: KillSwitchDep,
+    store: KillSwitchStoreDep,
+    admin: CurrentAdminDep,
 ) -> KillSwitchState:
-    """FR-9. Setiap perubahan dicatat ke log audit beserta pelakunya."""
+    """FR-9. Setiap perubahan dicatat ke log audit beserta pelakunya, dan
+    disimpan ke database supaya bertahan melewati restart."""
     pelaku = admin.email
     if payload.engaged:
         switch.engage(payload.reason or "", by=pelaku)
@@ -117,6 +123,7 @@ def set_kill_switch(
         if switch.engaged:
             audit.warning("Kill switch dimatikan oleh %s", pelaku)
         switch.release()
+    await simpan_status(switch, store)
     return _state(switch)
 
 

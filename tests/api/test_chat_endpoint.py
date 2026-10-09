@@ -82,8 +82,9 @@ class TestQueryRewriting:
 
     @pytest.mark.parametrize("path", ["/api/chat", "/api/chat/stream"])
     def test_riwayat_memicu_rewrite_produksi(
-        self, client, payload, api_rewriter, chat_logger, path
+        self, client, payload, api_rewriter, chat_logger, jawaban_terkirim, path
     ):
+        jawaban_terkirim.tambah(payload["session_id"], "Tanggal 1-7 Agustus.")
         r = client.post(
             path,
             json={

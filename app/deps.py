@@ -30,7 +30,7 @@ from app.security.batas_harian import (
     alasan_batas_harian,
     get_daily_counter,
 )
-from app.security.killswitch import KillSwitch, get_kill_switch
+from app.security.killswitch import KillSwitch, get_kill_switch, simpan_status
 from app.security.ratelimit import (
     BatasLaju,
     FailureLimiter,
@@ -53,6 +53,26 @@ satu query tambahan (verifikasi token pada setiap permintaan admin).
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 KillSwitchDep = Annotated[KillSwitch, Depends(get_kill_switch)]
 LoginLimiterDep = Annotated[FailureLimiter, Depends(get_login_limiter)]
+
+
+def get_kill_switch_store(session: SessionDep) -> Any:
+    """Tabel `kill_switch`: kill switch bertahan melewati restart. Di-override di test."""
+    from app.security.killswitch import SqlKillSwitchStore
+
+    return SqlKillSwitchStore(session)
+
+
+KillSwitchStoreDep = Annotated[Any, Depends(get_kill_switch_store)]
+
+
+def get_jawaban_terkirim(session: SessionDep) -> Any:
+    """Jawaban yang pernah dikirim ke satu sesi, pembanding riwayat. Di-override di test."""
+    from app.security.riwayat import SqlJawabanTerkirim
+
+    return SqlJawabanTerkirim(session)
+
+
+JawabanTerkirimDep = Annotated[Any, Depends(get_jawaban_terkirim)]
 
 
 def get_runtime_config_store(session: SessionDep) -> Any:
@@ -268,6 +288,7 @@ async def batas_harian(
     settings: SettingsDep,
     switch: KillSwitchDep,
     penghitung: DailyCounterDep,
+    store: KillSwitchStoreDep,
 ) -> None:
     """Nyalakan kill switch begitu pertanyaan hari ini melewati `CHAT_DAILY_LIMIT`.
 
@@ -288,6 +309,7 @@ async def batas_harian(
             jumlah,
             batas,
         )
+        await simpan_status(switch, store)
     raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, switch.message)
 
 

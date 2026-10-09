@@ -340,8 +340,9 @@ class Settings(BaseSettings):
     menampilkan kode sematan siap tempel."""
 
     max_upload_mb: int = 50
-    """Batas ukuran PDF yang diunggah admin (AD-3). Batas keras ukuran body
-    tetap perlu dipasang di Caddy; nilai ini untuk pesan galat yang jelas."""
+    """Batas ukuran PDF yang diunggah admin (AD-3). Batas keras body unggahan
+    (nilai ini + 1 MB untuk field form) ditegakkan `app.security.batas_body`
+    sebelum berkas dibaca; handler unggah menegakkan ukuran berkas persisnya."""
 
     timezone: str = "Asia/Jakarta"
     """Zona waktu IANA untuk pengelompokan harian statistik (AD-5)."""
