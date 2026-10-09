@@ -406,9 +406,9 @@ class TestGerbangDiAlur:
         pencarian_mulai = asyncio.Event()
 
         class RetrieverPenanda(FakeRetriever):
-            async def ainvoke(self, query, *, unit=None):
+            async def ainvoke(self, query, *, unit=None, original_query=None):
                 pencarian_mulai.set()
-                return await super().ainvoke(query, unit=unit)
+                return await super().ainvoke(query, unit=unit, original_query=original_query)
 
         async def gerbang(question, history=(), unit=None):
             await asyncio.wait_for(pencarian_mulai.wait(), timeout=2)
@@ -486,9 +486,9 @@ class TestTenggatMengikutiPencarian:
     @staticmethod
     def retriever_lambat(tunda: float) -> FakeRetriever:
         class Lambat(FakeRetriever):
-            async def ainvoke(self, query, *, unit=None):
+            async def ainvoke(self, query, *, unit=None, original_query=None):
                 await asyncio.sleep(tunda)
-                return await super().ainvoke(query, unit=unit)
+                return await super().ainvoke(query, unit=unit, original_query=original_query)
 
         return Lambat([make_document("c1", vector_score=0.8)])
 
@@ -606,7 +606,7 @@ class TestBlokirMenghentikanPencarian:
         dibatalkan: list = []
 
         class RetrieverLambat(FakeRetriever):
-            async def ainvoke(self, query, *, unit=None):
+            async def ainvoke(self, query, *, unit=None, original_query=None):
                 try:
                     await asyncio.sleep(5.0)
                 except asyncio.CancelledError:

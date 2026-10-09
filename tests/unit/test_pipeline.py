@@ -246,6 +246,7 @@ class TestQueryRewriting:
         assert not rewriter.called
         assert hasil.rewritten_query is None
         assert strong_retriever.queries == ["kapan KRS dibuka"]
+        assert strong_retriever.original_queries == [None]
 
     async def test_pesan_pertama_berbahasa_inggris_diterjemahkan(
         self, strong_retriever, llm, rewriter
@@ -279,6 +280,21 @@ class TestQueryRewriting:
         assert hasil.rewritten_query == rewriter.rewritten
         assert strong_retriever.queries == [rewriter.rewritten]
 
+    async def test_pertanyaan_asli_ikut_dikirim_ke_retriever(
+        self, strong_retriever, llm, rewriter
+    ):
+        """T40: rewrite mengganti "harga" menjadi "biaya"; kata asli mahasiswa
+        harus tetap dicari."""
+        await run_pipeline(
+            "harga sertifikasi bidang DKV berapa?",
+            retriever=strong_retriever,
+            llm_call=llm,
+            rewrite_call=rewriter,
+            history=[Turn("user", "toeic itu apa?"), Turn("assistant", "Tes bahasa Inggris.")],
+            policy=POLICY,
+        )
+        assert strong_retriever.original_queries == ["harga sertifikasi bidang DKV berapa?"]
+
     async def test_hasil_tulis_ulang_kosong_jatuh_ke_pertanyaan_asli(
         self, strong_retriever, llm
     ):
@@ -293,6 +309,7 @@ class TestQueryRewriting:
             policy=POLICY,
         )
         assert strong_retriever.queries == ["kalau telat gimana?"]
+        assert strong_retriever.original_queries == [None]
 
     async def test_llm_menerima_pertanyaan_asli_bukan_hasil_tulis_ulang(
         self, strong_retriever, llm, rewriter

@@ -138,6 +138,21 @@ class TestPromptTulisUlang:
     def test_menyediakan_slot_riwayat(self):
         assert "{history}" in REWRITE_SYSTEM_PROMPT
 
+    def test_mempertahankan_kata_mahasiswa(self):
+        """T40: "harga" ditulis ulang menjadi "biaya", dan "mahasiswa" ditambahkan;
+        potongan HARGA SERTIFIKASI lalu terlempar dari top 5."""
+        assert "Pertahankan kata-kata mahasiswa" in REWRITE_SYSTEM_PROMPT
+        assert '"harga" tetap' in REWRITE_SYSTEM_PROMPT
+
+    def test_topik_riwayat_tidak_disusupkan_ke_pertanyaan_mandiri(self):
+        """T40 (uji browser s42): setelah membahas TOEIC, "harga sertifikasi
+        bidang DKV berapa?" ditulis ulang menjadi "... TOEIC bidang DKV?"."""
+        assert "Riwayat hanya dipakai bila pertanyaan merujuk padanya" in REWRITE_SYSTEM_PROMPT
+
+    def test_melarang_mengarang_kepanjangan_singkatan(self):
+        """T40: "SKP" menjadi "Satuan Kredit Prestasi"; dokumennya "Partisipasi"."""
+        assert "kepanjangan singkatan" in REWRITE_SYSTEM_PROMPT
+
 
 class TestTemplate:
     def test_prompt_jawaban_meminta_context_dan_question(self):

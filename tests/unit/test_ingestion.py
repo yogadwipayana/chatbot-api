@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.ingestion.chunker import LANJUTAN, split_pages, split_qa
@@ -10,6 +12,7 @@ from app.ingestion.loader import (
     LoadedPage,
     empty_page_ratio,
     is_probably_scanned,
+    load_pdf,
     peringatan_kepadatan,
     tabel_ke_baris,
 )
@@ -413,13 +416,43 @@ class TestPemecahanSadarStruktur:
         assert all(c.halaman == 1 for c in chunks)
 
 
-class TestPerataanTabel:
-    class _Tabel:
-        def __init__(self, baris):
-            self._baris = baris
+class _Tabel:
+    """Tiruan `pymupdf.table.Table`: sel (i, j) berkotak 10x10 di kolom j, baris i.
 
-        def extract(self):
-            return self._baris
+    `rentang` memberi sel (i, j) tinggi beberapa baris (di-merge ke bawah);
+    posisi yang ditutupinya ditulis `None`, seperti keluaran PyMuPDF. `geser`
+    menggeser seluruh kolom, seperti tabel yang bersambung di halaman lain.
+    """
+
+    def __init__(self, baris, rentang=None, geser=0.0):
+        self._baris = baris
+        rentang = rentang or {}
+        self.rows = [
+            SimpleNamespace(
+                cells=[
+                    None
+                    if nilai is None
+                    else (
+                        10 * j + geser,
+                        10 * i,
+                        10 * (j + 1) + geser,
+                        10 * (i + rentang.get((i, j), 1)),
+                    )
+                    for j, nilai in enumerate(row)
+                ]
+            )
+            for i, row in enumerate(baris)
+        ]
+
+    def extract(self):
+        return self._baris
+
+
+KEPALA_POIN = ["No", "Kegiatan", "Tingkat", "Jabatan", "Poin"]
+
+
+class TestPerataanTabel:
+    _Tabel = _Tabel
 
     def test_sel_merge_yang_terduplikasi_diruntuhkan(self):
         """PyMuPDF mengulang nilai sel yang di-merge ke tiap kolom yang dilewatinya."""
@@ -429,17 +462,63 @@ class TestPerataanTabel:
                 ["1", "1", "1", "Kapan KRS dibuka?", "Kapan KRS dibuka?", "", ""],
             ]
         )
-        assert tabel_ke_baris(tabel) == ["No.: 1 | Pertanyaan: Kapan KRS dibuka?"]
+        assert tabel_ke_baris(tabel).baris == ["No.: 1 | Pertanyaan: Kapan KRS dibuka?"]
 
     def test_tanpa_header_baris_tetap_terbaca(self):
         tabel = self._Tabel([["Senin", "08.00"], ["Selasa", "09.00"]])
-        assert tabel_ke_baris(tabel) == ["Senin | 08.00", "Selasa | 09.00"]
+        assert tabel_ke_baris(tabel) == (["Senin | 08.00", "Selasa | 09.00"], None)
 
     def test_tabel_kosong_tidak_menghasilkan_baris(self):
-        assert tabel_ke_baris(self._Tabel([["", ""], ["", ""]])) == []
+        assert tabel_ke_baris(self._Tabel([["", ""], ["", ""]])) == ([], None)
+
+    def test_sel_kosong_di_tengah_tidak_menggeser_kolom(self):
+        """T52: dulu "25" jatuh ke kolom Jabatan karena sel kosong dibuang lalu
+        sisanya diratakan dari kiri."""
+        tabel = self._Tabel([KEPALA_POIN, ["3", "Pendukung", "Internasional", "", "25"]])
+        assert tabel_ke_baris(tabel).baris == [
+            "No: 3 | Kegiatan: Pendukung | Tingkat: Internasional | Poin: 25"
+        ]
+
+    def test_sel_merge_ke_bawah_diwariskan(self):
+        """T52: tabel poin Buku SKP -- kegiatan dan tingkat di-merge ke bawah."""
+        tabel = self._Tabel(
+            [
+                KEPALA_POIN,
+                ["1", "Pengurus Organisasi", "Nasional", "Pengurus Inti", "40"],
+                [None, None, None, "Anggota", "20"],
+                [None, None, "Regional", "Pengurus Inti", "30"],
+                [None, None, None, "Anggota", "10"],
+            ],
+            rentang={(1, 0): 4, (1, 1): 4, (1, 2): 2, (3, 2): 2},
+        )
+        assert tabel_ke_baris(tabel).baris == [
+            "No: 1 | Kegiatan: Pengurus Organisasi | Tingkat: Nasional"
+            " | Jabatan: Pengurus Inti | Poin: 40",
+            "No: 1 | Kegiatan: Pengurus Organisasi | Tingkat: Nasional"
+            " | Jabatan: Anggota | Poin: 20",
+            "No: 1 | Kegiatan: Pengurus Organisasi | Tingkat: Regional"
+            " | Jabatan: Pengurus Inti | Poin: 30",
+            "No: 1 | Kegiatan: Pengurus Organisasi | Tingkat: Regional"
+            " | Jabatan: Anggota | Poin: 10",
+        ]
+
+    def test_sel_kosong_sesudah_sel_merge_tidak_mewarisi(self):
+        """Sel merge hanya diwariskan ke baris yang benar-benar dijangkaunya."""
+        tabel = self._Tabel(
+            [
+                KEPALA_POIN,
+                ["1", "Organisasi", "Nasional", "Ketua", "40"],
+                [None, None, None, "Anggota", "20"],
+                ["2", "Seminar", "", "", "10"],
+            ],
+            rentang={(1, 0): 2, (1, 1): 2, (1, 2): 2},
+        )
+        assert tabel_ke_baris(tabel).baris[-1] == "No: 2 | Kegiatan: Seminar | Poin: 10"
 
     def test_header_subtabel_menggantikan_header_awal(self):
-        """T37: HARGA SERTIFIKASI menumpuk tiga subtabel dalam satu tabel."""
+        """T37: HARGA SERTIFIKASI menumpuk tiga subtabel dalam satu tabel. Grid
+        bawaan PyMuPDF untuk tabel ini tidak sejajar dengan header-nya, jadi
+        perataan dari kiri yang dipakai."""
         tabel = self._Tabel(
             [
                 ["", "SERTIFIKASI DASAR", "", "HARGA", "", "PRODI"],
@@ -450,7 +529,7 @@ class TestPerataanTabel:
                 ["TOEIC ENGLISH", "", "RP 675.000", "", "TI, RSK, BD, DKV", ""],
             ]
         )
-        assert tabel_ke_baris(tabel) == [
+        assert tabel_ke_baris(tabel).baris == [
             "SERTIFIKASI DASAR: IC3 GS6 | HARGA: RP 1.050.000 | PRODI: TI, RSK, BD",
             "SERTIFIKASI BIDANG: META DIGITAL MARKETING | HARGA: RP 1.300.000 | PRODI: BD",
             "SERTIFIKASI TOEIC: TOEIC ENGLISH | Harga: RP 675.000 | PRODI: TI, RSK, BD, DKV",
@@ -460,7 +539,7 @@ class TestPerataanTabel:
         tabel = self._Tabel(
             [["Hari", "Jam"], ["Senin", "08.00"], ["Hari", "Jam"], ["Selasa", "09.00"]]
         )
-        assert tabel_ke_baris(tabel) == [
+        assert tabel_ke_baris(tabel).baris == [
             "Hari: Senin | Jam: 08.00",
             "Hari: Selasa | Jam: 09.00",
         ]
@@ -468,9 +547,128 @@ class TestPerataanTabel:
     def test_data_tanpa_angka_bukan_header_subtabel(self):
         """Tampang header saja tidak cukup: harus mengulang nama kolom."""
         tabel = self._Tabel([["Nama", "Jabatan"], ["Budi", "Ketua"], ["Sari", "Sekretaris"]])
-        assert tabel_ke_baris(tabel) == [
+        assert tabel_ke_baris(tabel).baris == [
             "Nama: Budi | Jabatan: Ketua",
             "Nama: Sari | Jabatan: Sekretaris",
+        ]
+
+
+class TestTabelBersambung:
+    """Tabel poin Buku SKP bersambung beberapa halaman. Sel yang di-merge ke
+    bawah terpotong pergantian halaman dan tampil kosong di halaman baru."""
+
+    def _ekor_halaman_1(self):
+        tabel = _Tabel(
+            [KEPALA_POIN, ["1", "Pengurus Organisasi", "Internasional", "Pengurus Inti", "50"]]
+        )
+        return tabel_ke_baris(tabel).ekor
+
+    def test_header_diulang_kolom_awal_diisi_dari_halaman_sebelumnya(self):
+        tabel = _Tabel(
+            [
+                KEPALA_POIN,
+                ["", "", "", "Anggota", "30"],
+                [None, None, "Nasional", "Pengurus Inti", "40"],
+            ],
+            rentang={(1, 0): 2, (1, 1): 2},
+        )
+        assert tabel_ke_baris(tabel, self._ekor_halaman_1()).baris == [
+            "No: 1 | Kegiatan: Pengurus Organisasi | Tingkat: Internasional"
+            " | Jabatan: Anggota | Poin: 30",
+            "No: 1 | Kegiatan: Pengurus Organisasi | Tingkat: Nasional"
+            " | Jabatan: Pengurus Inti | Poin: 40",
+        ]
+
+    def test_tanpa_header_memakai_header_halaman_sebelumnya(self):
+        """Batas kolom Word bergeser 1-2 pt antarhalaman."""
+        tabel = _Tabel(
+            [
+                ["", "", "Regional", "Anggota", "10"],
+                ["2", "Panitia", "Nasional", "Anggota", "20"],
+            ],
+            geser=2,
+        )
+        rakitan = tabel_ke_baris(tabel, self._ekor_halaman_1())
+        assert rakitan.baris == [
+            "No: 1 | Kegiatan: Pengurus Organisasi | Tingkat: Regional"
+            " | Jabatan: Anggota | Poin: 10",
+            "No: 2 | Kegiatan: Panitia | Tingkat: Nasional | Jabatan: Anggota | Poin: 20",
+        ]
+        assert rakitan.ekor is not None
+        assert rakitan.ekor.nilai == ("2", "Panitia", "Nasional", "Anggota", "20")
+
+    def test_kolom_berbeda_bukan_sambungan(self):
+        tabel = _Tabel([["", "Catatan", "lain"]], geser=40)
+        assert tabel_ke_baris(tabel, self._ekor_halaman_1()) == (["Catatan | lain"], None)
+
+    def test_header_lain_tidak_mewarisi(self):
+        tabel = _Tabel([["Hari", "Jam"], ["", "08.00"]])
+        assert tabel_ke_baris(tabel, self._ekor_halaman_1()).baris == ["Jam: 08.00"]
+
+
+class TestTabelPdf:
+    """Ujung ke ujung lewat `load_pdf` dengan PDF yang meniru tabel Word: tiap
+    sel diberi kotak latar putih yang ikut terbaca sebagai garis oleh strategi
+    bawaan PyMuPDF, sehingga sel yang di-merge ke bawah terpecah (T52)."""
+
+    KOLOM = (50, 80, 200, 280, 320)
+    PARAGRAF = "Tabel berikut memuat poin kegiatan kemahasiswaan yang diakui institut."
+
+    def _tabel(self, page, baris, y=40):
+        """`baris`: (isi sel, tinggi); `None` = tertutup sel di atasnya."""
+        pymupdf = pytest.importorskip("pymupdf")
+        y_awal = y
+        for sel, tinggi in baris:
+            for j, isi in enumerate(sel):
+                if isi is None:
+                    continue
+                x0, x1 = self.KOLOM[j], self.KOLOM[j + 1]
+                page.draw_line((x0, y), (x1, y))
+                page.draw_rect(
+                    pymupdf.Rect(x0 + 1, y + 1, x1 - 1, y + tinggi - 1),
+                    color=None,
+                    fill=(1, 1, 1),
+                )
+                if isi:
+                    page.insert_text((x0 + 3, y + 13), isi, fontsize=8)
+            y += tinggi
+        page.draw_line((self.KOLOM[0], y), (self.KOLOM[-1], y))
+        for x in self.KOLOM:
+            page.draw_line((x, y_awal), (x, y))
+
+    def test_sel_merge_dan_tabel_bersambung_tanpa_header(self, tmp_path):
+        pymupdf = pytest.importorskip("pymupdf")
+        dokumen = pymupdf.open()
+        satu = dokumen.new_page()
+        satu.insert_text((50, 30), self.PARAGRAF, fontsize=8)
+        self._tabel(
+            satu,
+            [
+                (["No", "Kegiatan", "Tingkat", "Poin"], 20),
+                (["1", "Pengurus Organisasi", "Nasional", "40"], 20),
+                ([None, None, "Regional", "30"], 20),
+            ],
+        )
+        dua = dokumen.new_page()
+        dua.insert_text((50, 30), self.PARAGRAF, fontsize=8)
+        self._tabel(
+            dua,
+            [
+                (["", "", "Himaprodi", "20"], 20),
+                ([None, None, "UKM", "10"], 20),
+                (["2", "Panitia", "Nasional", "25"], 20),
+            ],
+        )
+        path = tmp_path / "skp.pdf"
+        dokumen.save(path)
+
+        tabel = [b.teks for p in load_pdf(path) for b in p.baris if b.jenis == "tabel"]
+        assert tabel == [
+            "No: 1 | Kegiatan: Pengurus Organisasi | Tingkat: Nasional | Poin: 40",
+            "No: 1 | Kegiatan: Pengurus Organisasi | Tingkat: Regional | Poin: 30",
+            "No: 1 | Kegiatan: Pengurus Organisasi | Tingkat: Himaprodi | Poin: 20",
+            "No: 1 | Kegiatan: Pengurus Organisasi | Tingkat: UKM | Poin: 10",
+            "No: 2 | Kegiatan: Panitia | Tingkat: Nasional | Poin: 25",
         ]
 
 

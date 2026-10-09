@@ -20,9 +20,9 @@ pernah terambil.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 MIN_CHARS_PER_PAGE = 100
 """Di bawah ini, satu halaman dianggap tanpa lapisan teks."""
@@ -188,59 +188,202 @@ def _kepala_subtabel(baris: Sequence[str], kepala: Sequence[str]) -> bool:
     )
 
 
-def tabel_ke_baris(tabel: Any) -> list[str]:
+TOLERANSI_RENTANG = 1.0
+"""Selisih vertikal (pt) yang masih dianggap garis yang sama saat memeriksa
+apakah sel gabungan dari baris di atas masih menjangkau baris ini."""
+
+TOLERANSI_KOLOM = 3.0
+"""Selisih batas kolom (pt) yang masih dianggap kolom yang sama antara tabel di
+dua halaman. Tabel Word yang bersambung bergeser 1-2 pt antarhalaman."""
+
+
+@dataclass(frozen=True)
+class _Sel:
+    """Satu sel grid tabel beserta kotaknya di halaman."""
+
+    teks: str
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+    def irisan(self, lain: _Sel) -> float:
+        """Lebar tumpang-tindih horizontal dengan sel lain; <= 0 bila tidak."""
+        return min(self.x1, lain.x1) - max(self.x0, lain.x0)
+
+
+@dataclass(frozen=True)
+class EkorTabel:
+    """Header dan nilai baris data terakhir sebuah tabel.
+
+    Dipakai bila tabel bersambung ke halaman berikutnya. Halaman baru bisa
+    mengulang header-nya atau tidak, dan sel yang di-merge ke bawah terpotong
+    pergantian halaman sehingga di halaman baru tampil kosong.
+    """
+
+    kepala: tuple[_Sel, ...]
+    nilai: tuple[str, ...]
+
+
+class TabelRakitan(NamedTuple):
+    baris: list[str]
+    ekor: EkorTabel | None
+
+
+def _padat(isi: Sequence[str]) -> list[str]:
+    """Isi baris tanpa sel kosong dan tanpa ulangan nilai sel gabungan."""
+    hasil: list[str] = []
+    for nilai in isi:
+        if nilai and (not hasil or hasil[-1] != nilai):
+            hasil.append(nilai)
+    return hasil
+
+
+def _sel_per_baris(tabel: Any) -> list[list[_Sel]]:
+    """Sel tiap baris grid, tanpa posisi yang tertutup sel gabungan (`None`).
+
+    PyMuPDF kadang mengulang nilai sel gabungan ke tiap kolom grid yang
+    dilewatinya; sel kembar yang berdampingan disatukan menjadi satu sel
+    selebar gabungannya.
+    """
+    hasil: list[list[_Sel]] = []
+    for row, isi in zip(tabel.rows, tabel.extract(), strict=True):
+        sel: list[_Sel] = []
+        for kotak, nilai in zip(row.cells, isi, strict=True):
+            if kotak is None:
+                continue
+            baru = _Sel(_sel(nilai), *kotak)
+            if sel and baru.teks and sel[-1].teks == baru.teks:
+                lama = sel[-1]
+                sel[-1] = _Sel(
+                    lama.teks, lama.x0, min(lama.y0, baru.y0), baru.x1, max(lama.y1, baru.y1)
+                )
+            else:
+                sel.append(baru)
+        hasil.append(sel)
+    return hasil
+
+
+def _jajarkan(sel: Sequence[_Sel], kepala: Sequence[_Sel]) -> dict[int, _Sel] | None:
+    """Pasangkan tiap sel dengan kolom header yang paling lebar ditumpanginya.
+
+    `None` bila ada sel bertulisan yang tidak berada di bawah header mana pun,
+    atau dua isi berbeda jatuh ke kolom yang sama: tanda grid tabel tidak
+    sejajar dengan header-nya.
+    """
+    hasil: dict[int, _Sel] = {}
+    for s in sel:
+        lebar, k = max((s.irisan(h), k) for k, h in enumerate(kepala))
+        if lebar <= 0:
+            if s.teks:
+                return None
+            continue
+        lama = hasil.get(k)
+        if lama is not None and lama.teks and s.teks and lama.teks != s.teks:
+            return None
+        if lama is None or not lama.teks:
+            hasil[k] = s
+    return hasil
+
+
+def _kolom_sama(sel: Sequence[_Sel], kepala: Sequence[_Sel]) -> bool:
+    """Apakah batas sel baris ini sama dengan batas kolom header."""
+    return len(sel) == len(kepala) and all(
+        abs(a.x0 - b.x0) <= TOLERANSI_KOLOM and abs(a.x1 - b.x1) <= TOLERANSI_KOLOM
+        for a, b in zip(sel, kepala, strict=True)
+    )
+
+
+def tabel_ke_baris(tabel: Any, lanjutan: EkorTabel | None = None) -> TabelRakitan:
     """Ubah satu tabel menjadi baris teks yang berdiri sendiri.
 
     Tiap baris ditulis `Kolom: nilai | Kolom: nilai` alih-alih pipa markdown,
     supaya potongannya tetap bermakna saat dibaca terpisah dari header
     tabelnya -- baik oleh pencarian vektor maupun oleh LLM yang mengutipnya.
 
-    Sel yang di-merge membuat PyMuPDF mengulang nilai yang sama di beberapa
-    kolom berturut-turut, dan pengulangan itu tidak selalu sejajar antara baris
-    header dan baris isi. Karena itu perataan dilakukan per baris: sel kembar
-    yang berdampingan diruntuhkan, sel kosong dibuang, lalu sisanya disejajarkan
-    dari kiri. Asumsinya kolom yang kosong ada di sebelah kanan -- pola lazim
-    pada borang yang belum terisi.
+    Sel dipasangkan dengan kolom header menurut letak horizontalnya, bukan
+    urutannya, karena sel kosong di tengah baris dan sel yang di-merge ke bawah
+    (rowspan) membuat urutan tidak lagi sejajar. Sel yang di-merge ke bawah
+    diwariskan ke tiap baris yang dijangkaunya, supaya "Anggota | 20" tetap
+    membawa kegiatan dan tingkatnya (T52). Baris yang selnya tidak dapat
+    dijajarkan mundur ke perataan dari kiri, dengan asumsi kolom yang kosong
+    ada di sebelah kanan -- pola lazim pada borang yang belum terisi.
+
+    `lanjutan` adalah ekor tabel di halaman sebelumnya. Tabel ini dianggap
+    sambungannya bila header-nya sama, atau bila tanpa header tetapi batas
+    kolomnya sama. Kolom kosong di awal baris data pertama lalu diisi dari situ.
     """
     try:
-        mentah = tabel.extract()
+        semua = [r for r in _sel_per_baris(tabel) if r]
     except Exception:  # pragma: no cover - tabel rusak, lewati saja
-        return []
+        return TabelRakitan([], None)
 
-    baris: list[list[str]] = []
-    for row in mentah:
-        padat: list[str] = []
-        for sel in row:
-            nilai = _sel(sel)
-            if nilai and (not padat or padat[-1] != nilai):
-                padat.append(nilai)
-        if padat:
-            baris.append(padat)
+    isi = [_padat([s.teks for s in r]) for r in semua]
+    berisi = [i for i, t in enumerate(isi) if t]
+    if not berisi:
+        return TabelRakitan([], None)
 
-    if not baris:
-        return []
+    kepala = [s for s in semua[berisi[0]] if s.teks]
+    awal = berisi[0] + 1  # baris data pertama
+    sambung = None
+    if lanjutan is not None:
+        if [s.teks.casefold() for s in kepala] == [s.teks.casefold() for s in lanjutan.kepala]:
+            sambung = lanjutan
+        elif _kolom_sama(semua[berisi[0]], lanjutan.kepala):
+            kepala, awal, sambung = list(lanjutan.kepala), berisi[0], lanjutan
+    nama = [s.teks for s in kepala]
 
-    kepala = baris[0]
     punya_kepala = (
-        len(baris) > 1
-        # Header yang lebih sempit daripada isinya berarti tebakan perataan
-        # meleset, dan label yang salah lebih buruk daripada tanpa label.
-        and len(kepala) >= max(len(r) for r in baris[1:])
-        and _mungkin_header(kepala)
+        sambung is not None
+        or (
+            len(berisi) > 1
+            # Header yang lebih sempit daripada isinya berarti tebakan perataan
+            # meleset, dan label yang salah lebih buruk daripada tanpa label.
+            and len(kepala) >= max(len(isi[i]) for i in berisi[1:])
+            and _mungkin_header(nama)
+        )
     )
+    if not punya_kepala:
+        return TabelRakitan([" | ".join(isi[i]) for i in berisi], None)
 
     hasil: list[str] = []
-    for row in baris[1:] if punya_kepala else baris:
-        if punya_kepala and _kepala_subtabel(row, kepala):
-            kepala = row  # berlaku untuk baris sesudahnya; header sendiri bukan data
+    atas: dict[int, _Sel] = {}  # sel terakhir tiap kolom, untuk sel gabungan ke bawah
+    terakhir: dict[int, str] = {}
+    for row, teks in zip(semua[awal:], isi[awal:], strict=True):
+        if teks and _kepala_subtabel(teks, nama):
+            # Berlaku untuk baris sesudahnya; header sendiri bukan data.
+            kepala = [s for s in row if s.teks]
+            nama = [s.teks for s in kepala]
+            atas, terakhir, sambung = {}, {}, None
             continue
-        if punya_kepala:
-            bagian = [f"{k}: {v}" for k, v in zip(kepala, row, strict=False) if v]
-        else:
-            bagian = list(row)
-        if bagian:
-            hasil.append(" | ".join(bagian))
-    return hasil
+        milik = _jajarkan(row, kepala)
+        if milik is None:
+            bagian = [f"{k}: {v}" for k, v in zip(nama, teks, strict=False)]
+            if bagian:
+                hasil.append(" | ".join(bagian))
+            continue
+
+        y0 = min(s.y0 for s in row)
+        sel = {k: s for k, s in atas.items() if s.y1 > y0 + TOLERANSI_RENTANG} | milik
+        atas.update(milik)
+        if not teks:
+            continue  # nilai warisan saja bukan baris data
+
+        nilai = {k: s.teks for k, s in sel.items() if s.teks}
+        if sambung is not None:
+            for k, warisan in enumerate(sambung.nilai):
+                if nilai.get(k):
+                    break
+                if warisan:
+                    nilai[k] = warisan
+                    if k in sel:  # sel kosong itu menjangkau baris sesudahnya juga
+                        atas[k] = replace(sel[k], teks=warisan)
+            sambung = None
+        hasil.append(" | ".join(f"{nama[k]}: {v}" for k, v in sorted(nilai.items())))
+        terakhir = nilai
+
+    ekor = EkorTabel(tuple(kepala), tuple(terakhir.get(k, "") for k in range(len(kepala))))
+    return TabelRakitan(hasil, ekor if terakhir else None)
 
 
 def _judul_bagian(teks: str, tebal: bool) -> bool:
@@ -248,14 +391,41 @@ def _judul_bagian(teks: str, tebal: bool) -> bool:
     return tebal and len(teks) <= MAKS_PANJANG_JUDUL and not teks.endswith(_AKHIR_KALIMAT)
 
 
-def _baris_halaman(page: Any) -> list[LoadedLine]:
-    """Baris satu halaman menurut urutan baca, dengan tabel sudah dirakit."""
+def _tabel_halaman(page: Any) -> list[Any]:
+    """Tabel di halaman menurut urutan baca, diutamakan dari garis tegas saja.
+
+    Tabel Word yang dicetak ke PDF kerap memberi tiap sel kotak latar putih.
+    Strategi bawaan PyMuPDF ikut membaca tepi kotak itu sebagai garis, sehingga
+    grid pecah: satu sel "Pengurus Inti" terbelah menjadi beberapa baris dan
+    kolom, dan sel yang di-merge ke bawah tidak lagi tampak sebagai satu sel
+    (T52). `lines_strict` hanya memakai garis yang benar-benar digambar. Tabel
+    yang hanya tertangkap strategi bawaan tetap dipakai seperti sebelumnya.
+    """
     import pymupdf
 
-    try:
-        tabel = list(page.find_tables().tables)
-    except Exception:  # pragma: no cover - deteksi tabel gagal, lanjut tanpa
-        tabel = []
+    def cari(**opsi: Any) -> list[Any]:
+        try:
+            return list(page.find_tables(**opsi).tables)
+        except Exception:  # pragma: no cover - deteksi tabel gagal, lanjut tanpa
+            return []
+
+    ketat = cari(strategy="lines_strict")
+    kotak = [pymupdf.Rect(t.bbox) for t in ketat]
+    tabel = ketat + [t for t in cari() if not any(k.intersects(t.bbox) for k in kotak)]
+    return sorted(tabel, key=lambda t: (t.bbox[1], t.bbox[0]))
+
+
+def _baris_halaman(
+    page: Any, lanjutan: EkorTabel | None = None
+) -> tuple[list[LoadedLine], EkorTabel | None]:
+    """Baris satu halaman menurut urutan baca, dengan tabel sudah dirakit.
+
+    `lanjutan` adalah ekor tabel terakhir halaman sebelumnya, untuk tabel
+    pertama halaman ini. Ekor tabel terakhir halaman ini ikut dikembalikan.
+    """
+    import pymupdf
+
+    tabel = _tabel_halaman(page)
     kotak = [pymupdf.Rect(t.bbox) for t in tabel]
 
     # (posisi vertikal, posisi horizontal, baris) supaya tabel dan teks biasa
@@ -278,8 +448,11 @@ def _baris_halaman(page: Any) -> list[LoadedLine]:
             jenis: JenisBaris = "judul" if _judul_bagian(teks, tebal) else "teks"
             tersusun.append((y0, x0, LoadedLine(teks, jenis)))
 
-    for t, k in zip(tabel, kotak, strict=True):
-        for i, isi in enumerate(tabel_ke_baris(t)):
+    ekor = None
+    for nomor, (t, k) in enumerate(zip(tabel, kotak, strict=True)):
+        rakitan = tabel_ke_baris(t, lanjutan if nomor == 0 else None)
+        ekor = rakitan.ekor
+        for i, isi in enumerate(rakitan.baris):
             # Selisih kecil menjaga urutan antarbaris dalam satu tabel tanpa
             # menggeser tabel melewati paragraf sesudahnya.
             tersusun.append((k.y0 + i * 1e-3, k.x0, LoadedLine(isi, "tabel")))
@@ -292,7 +465,7 @@ def _baris_halaman(page: Any) -> list[LoadedLine]:
     jumlah_judul = sum(1 for b in baris if b.jenis == "judul")
     if baris and jumlah_judul > MAKS_RASIO_JUDUL * len(baris):
         baris = [LoadedLine(b.teks, "teks") if b.jenis == "judul" else b for b in baris]
-    return baris
+    return baris, ekor
 
 
 def load_pdf(path: str | Path) -> list[LoadedPage]:
@@ -323,16 +496,17 @@ def load_pdf(path: str | Path) -> list[LoadedPage]:
                 f"'{path.name}' dilindungi kata sandi. Unggah versi tanpa proteksi."
             )
         try:
-            halaman = [
-                LoadedPage(
-                    halaman=nomor + 1,
-                    konten="\n".join(b.teks for b in baris),
-                    baris=tuple(baris),
+            halaman: list[LoadedPage] = []
+            ekor = None  # tabel dapat bersambung ke halaman berikutnya
+            for nomor in range(dokumen.page_count):
+                baris, ekor = _baris_halaman(dokumen[nomor], ekor)
+                halaman.append(
+                    LoadedPage(
+                        halaman=nomor + 1,
+                        konten="\n".join(b.teks for b in baris),
+                        baris=tuple(baris),
+                    )
                 )
-                for nomor, baris in (
-                    (n, _baris_halaman(dokumen[n])) for n in range(dokumen.page_count)
-                )
-            ]
         except Exception as exc:
             raise UnreadablePdfError(
                 f"'{path.name}' tidak dapat dibaca sampai selesai. Berkasnya "

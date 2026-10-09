@@ -69,13 +69,31 @@ def reciprocal_rank_fusion(
     Urutan hasil deterministik: skor menurun, lalu peringkat terbaik menaik,
     lalu `chunk_id` menaik -- supaya evaluasi bisa direproduksi.
     """
+    return fuse_ranked_lists(list(ranked_lists.items()), weights=weights, k=k, top_n=top_n)
+
+
+def fuse_ranked_lists(
+    ranked_lists: Sequence[tuple[str, Sequence[RankedHit]]],
+    *,
+    weights: Mapping[str, float] | None = None,
+    k: int = DEFAULT_K,
+    top_n: int | None = None,
+) -> list[FusedHit]:
+    """RRF atas daftar (sumber, hasil); satu sumber boleh membawa beberapa daftar.
+
+    Dipakai saat satu putaran mencari dengan lebih dari satu bentuk pertanyaan
+    (pertanyaan asli dan hasil rewrite, FR-4): tiap daftar menyumbang skor RRF
+    sendiri, jadi potongan yang ditemukan kedua bentuk naik ke atas. Per sumber,
+    `ranks` memuat peringkat terbaik dan `raw_scores` skor mentah tertinggi di
+    antara daftar-daftarnya -- threshold FR-3 tetap membaca satu skor per sumber.
+    """
     if k <= 0:
         raise ValueError(f"k harus > 0, diberi {k}")
     if top_n is not None and top_n < 0:
         raise ValueError(f"top_n tidak boleh negatif, diberi {top_n}")
 
     weights = dict(weights or {})
-    unknown = set(weights) - set(ranked_lists)
+    unknown = set(weights) - {source for source, _ in ranked_lists}
     if unknown:
         raise ValueError(f"bobot untuk sumber tak dikenal: {sorted(unknown)}")
 
@@ -83,20 +101,22 @@ def reciprocal_rank_fusion(
     ranks: dict[str, dict[str, int]] = {}
     raw: dict[str, dict[str, float]] = {}
 
-    for source, hits in ranked_lists.items():
+    for source, hits in ranked_lists:
         weight = weights.get(source, 1.0)
         if weight == 0:
             continue
         seen: set[str] = set()
         for position, hit in enumerate(hits, start=1):
             if hit.chunk_id in seen:
-                # Sumber yang sama tidak boleh menyumbang dua kali untuk chunk
-                # yang sama; peringkat pertama yang dipakai.
+                # Satu daftar tidak boleh menyumbang dua kali untuk chunk yang
+                # sama; peringkat pertama yang dipakai.
                 continue
             seen.add(hit.chunk_id)
             scores[hit.chunk_id] = scores.get(hit.chunk_id, 0.0) + weight / (k + position)
-            ranks.setdefault(hit.chunk_id, {})[source] = position
-            raw.setdefault(hit.chunk_id, {})[source] = hit.score
+            peringkat = ranks.setdefault(hit.chunk_id, {})
+            peringkat[source] = min(position, peringkat.get(source, position))
+            skor = raw.setdefault(hit.chunk_id, {})
+            skor[source] = max(hit.score, skor.get(source, hit.score))
 
     fused = [
         FusedHit(

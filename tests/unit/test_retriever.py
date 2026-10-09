@@ -272,6 +272,98 @@ class TestSqlFulltext:
             fulltext_sql(0)
 
 
+class SesiPerQuery(SesiPalsu):
+    async def execute(self, sql, params=None):
+        self.panggilan.append((sql, params))
+        return HasilPalsu(self.pabrik.baris_untuk_params(sql, params))
+
+
+class PabrikPerQuery(PabrikSesiPalsu):
+    """Hasil berbeda untuk tiap bentuk pertanyaan: kunci vektor = literal
+    embedding-nya, kunci fulltext = query `or`-nya."""
+
+    def __init__(self, vektor: dict[str, list[dict]], kata: dict[str, list[dict]]) -> None:
+        super().__init__([], [])
+        self.vektor = vektor
+        self.kata = kata
+
+    def baris_untuk_params(self, sql, params) -> list[dict]:
+        if sql is VECTOR_SQL:
+            return self.vektor.get(params["query_embedding"], [])
+        return self.kata.get(params["query"], [])
+
+    def buat_sesi(self) -> SesiPalsu:
+        sesi = SesiPerQuery(self)
+        self.sesi.append(sesi)
+        return sesi
+
+
+class TestPertanyaanAsli:
+    """T40: rewrite mengganti "harga" menjadi "biaya", dan potongan HARGA
+    SERTIFIKASI terlempar dari top 5. Pertanyaan asli ikut dicari."""
+
+    REWRITE = "berapa biaya sertifikasi DKV?"
+    ASLI = "harga sertifikasi DKV"
+    EMBEDDING = {REWRITE: [0.1] * 4, ASLI: [0.2] * 4}
+
+    def pabrik(self) -> PabrikPerQuery:
+        v_rewrite, v_asli = (
+            vector_literal(self.EMBEDDING[q]) for q in (self.REWRITE, self.ASLI)
+        )
+        return PabrikPerQuery(
+            vektor={
+                v_rewrite: [baris("pedoman", 0.86), baris("harga", 0.80)],
+                v_asli: [baris("harga", 0.88), baris("transkrip", 0.84)],
+            },
+            kata={
+                fulltext_queries(self.REWRITE)[0]: [baris("pedoman", 0.07)],
+                fulltext_queries(self.ASLI)[0]: [baris("harga", 0.09), baris("pedoman", 0.03)],
+            },
+        )
+
+    def retriever(self, pabrik, **kw) -> PostgresHybridRetriever:
+        async def embed(q: str) -> list[float]:
+            return self.EMBEDDING[q]
+
+        return PostgresHybridRetriever(session_factory=pabrik, embed_query=embed, **kw)
+
+    async def test_kedua_bentuk_dicari_di_kedua_jalur(self):
+        pabrik = self.pabrik()
+        await self.retriever(pabrik).ainvoke(self.REWRITE, original_query=self.ASLI)
+        panggilan = [(q, p) for s in pabrik.sesi for q, p in s.panggilan]
+        assert sum(q is VECTOR_SQL for q, _ in panggilan) == 2
+        kata = sorted(p["query"] for q, p in panggilan if q is not VECTOR_SQL)
+        assert kata == sorted(
+            [fulltext_queries(self.REWRITE)[0], fulltext_queries(self.ASLI)[0]]
+        )
+
+    async def test_potongan_yang_ditemukan_kedua_bentuk_menang(self):
+        docs = await self.retriever(self.pabrik(), top_n=1).ainvoke(
+            self.REWRITE, original_query=self.ASLI
+        )
+        assert [d.metadata["chunk_id"] for d in docs] == ["harga"]
+
+    async def test_skor_mentah_tertinggi_dan_peringkat_terbaik_per_sumber(self):
+        docs = await self.retriever(self.pabrik()).ainvoke(
+            self.REWRITE, original_query=self.ASLI
+        )
+        harga = next(d for d in docs if d.metadata["chunk_id"] == "harga")
+        assert harga.metadata["raw_scores"] == {"vector": 0.88, "fulltext": 0.09}
+        assert harga.metadata["ranks"] == {"vector": 1, "fulltext": 1}
+
+    async def test_tanpa_pertanyaan_asli_hanya_satu_bentuk(self):
+        pabrik = self.pabrik()
+        docs = await self.retriever(pabrik).ainvoke(self.REWRITE)
+        assert len(pabrik.sesi) == 2
+        assert docs[0].metadata["chunk_id"] == "pedoman"
+
+    @pytest.mark.parametrize("asli", [REWRITE, "  Berapa BIAYA sertifikasi  DKV? "])
+    async def test_pertanyaan_asli_yang_sama_tidak_dicari_dua_kali(self, asli):
+        pabrik = self.pabrik()
+        await self.retriever(pabrik).ainvoke(self.REWRITE, original_query=asli)
+        assert len(pabrik.sesi) == 2
+
+
 class TestFilterUnit:
     def panggilan(self, pabrik, sql) -> list[dict]:
         return [p for s in pabrik.sesi for q, p in s.panggilan if q is sql]
@@ -359,11 +451,14 @@ class TestHasil:
         assert await retriever_dengan(kosong).ainvoke("resep rendang") == []
 
 
-def baris_lanjutan(sumber: str, chunk_id: str, halaman: int = 13) -> dict:
+def baris_lanjutan(
+    sumber: str, chunk_id: str, halaman: int = 13, *, arah: int = 1, isi: str | None = None
+) -> dict:
     return {
         "source_id": sumber,
+        "arah": arah,
         "chunk_id": chunk_id,
-        "content": f"lanjutan {chunk_id}",
+        "content": isi if isi is not None else f"lanjutan {chunk_id}",
         "page": halaman,
         "document_id": "d1",
         "title": "Panduan Akademik 2025",
@@ -437,7 +532,67 @@ class TestPotonganLanjutan:
         assert await retriever_dengan(pabrik, neighbors=2).ainvoke("x") == []
         assert pabrik.panggilan_lanjutan() == []
 
-    def test_sql_mengambil_posisi_berikutnya_di_dokumen_yang_sama(self):
+    def test_sql_mengambil_posisi_sebelum_dan_sesudah_di_dokumen_yang_sama(self):
         sql = str(NEIGHBOR_SQL)
-        assert "n.position = c.position + 1" in sql
+        assert "n.position IN (c.position - 1, c.position + 1)" in sql
+        assert "n.position - c.position AS arah" in sql
         assert "n.document_id = c.document_id" in sql
+
+
+class TestPotonganSebelumnya:
+    """T40: "SKP wajib apa saja?" menemukan butir d-f daftar kegiatan wajib
+    (halaman 21), sedangkan butir a-c ada di potongan sebelumnya (halaman 20).
+
+    Peringkat awal: b, a, c. Judul bagian `b` adalah "E. PENERAPAN".
+    """
+
+    def pabrik(self, *lanjutan: dict) -> PabrikDenganLanjutan:
+        b = {**baris("b", 0.80), "content": "E. PENERAPAN\nd. Alumni Pulang Kampus"}
+        return PabrikDenganLanjutan(
+            [baris("a", 0.91), b],
+            [{**b, "score": 0.40}, baris("c", 0.30)],
+            lanjutan=list(lanjutan),
+        )
+
+    async def test_bagian_yang_sama_disisipkan_sebelum_sumbernya(self):
+        pabrik = self.pabrik(
+            baris_lanjutan("b", "b0", 12, arah=-1, isi="E. PENERAPAN\na. PKKMB"),
+            baris_lanjutan("b", "b2", arah=1),
+        )
+        docs = await retriever_dengan(pabrik, neighbors=1).ainvoke("KRS")
+        assert [d.metadata["chunk_id"] for d in docs] == ["b0", "b", "b2", "a", "c"]
+        b0 = docs[0].metadata
+        assert b0["neighbor_of"] == "b"
+        assert b0["raw_scores"] == {}
+        assert b0["halaman"] == 12
+
+    async def test_penanda_lanjutan_diabaikan_saat_membandingkan_judul(self):
+        pabrik = self.pabrik(
+            baris_lanjutan("b", "b0", arah=-1, isi="E. PENERAPAN (lanjutan)\nc. Seminar")
+        )
+        docs = await retriever_dengan(pabrik, neighbors=1).ainvoke("KRS")
+        assert [d.metadata["chunk_id"] for d in docs][:2] == ["b0", "b"]
+
+    async def test_bagian_lain_tidak_disisipkan(self):
+        """Potongan sebelumnya yang judulnya lain adalah bagian lain: biasanya
+        tidak relevan, dan hanya memperpanjang konteks."""
+        pabrik = self.pabrik(
+            baris_lanjutan("b", "b0", arah=-1, isi="D. SISTEM PENILAIAN\nb. Partisipasi")
+        )
+        docs = await retriever_dengan(pabrik, neighbors=1).ainvoke("KRS")
+        assert [d.metadata["chunk_id"] for d in docs] == ["b", "a", "c"]
+
+    async def test_tetangga_dua_hasil_disisipkan_sekali(self):
+        """Potongan sesudah `b` sekaligus potongan sebelum `a`."""
+        a = {**baris("a", 0.91), "content": "F. PREDIKAT\n2. BAIK"}
+        b = {**baris("b", 0.80), "content": "E. PENERAPAN\nd. Alumni"}
+        pabrik = PabrikDenganLanjutan(
+            [a, b],
+            [{**b, "score": 0.40}],
+            lanjutan=[
+                baris_lanjutan("b", "f1", arah=1, isi="F. PREDIKAT\n1. SANGAT BAIK"),
+                baris_lanjutan("a", "f1", arah=-1, isi="F. PREDIKAT\n1. SANGAT BAIK"),
+            ],
+        )
+        docs = await retriever_dengan(pabrik, neighbors=2).ainvoke("KRS")
+        assert [d.metadata["chunk_id"] for d in docs] == ["b", "f1", "a"]

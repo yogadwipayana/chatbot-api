@@ -18,6 +18,10 @@ Terakhir, beberapa hasil teratas diberi potongan lanjutannya dari dokumen yang
 sama (`neighbors`, lihat `NEIGHBOR_SQL`), supaya prosedur yang terbelah antar
 halaman sampai ke LLM utuh.
 
+Bila pertanyaan ditulis ulang (FR-4), pertanyaan asli ikut dicari: kedua jalur
+dijalankan untuk masing-masing bentuk, dan keempat daftar digabung dalam satu
+RRF (`fuse_ranked_lists`).
+
 Jalur fulltext memperluas query dengan kamus sinonim kampus
 (`app.rag.glossary`): "STIKI" ikut mencari "INSTIKI", "UPS" ikut mencari
 "Unit Pelaksana Sertifikasi", dan sebaliknya. Setiap varian lalu dibersihkan
@@ -46,9 +50,10 @@ from langchain_core.retrievers import BaseRetriever
 from pydantic import ConfigDict
 from sqlalchemy import text
 
+from app.ingestion.chunker import LANJUTAN
 from app.rag.filters import active_document_clause
 from app.rag.fts_query import fulltext_queries
-from app.rag.fusion import RankedHit, reciprocal_rank_fusion
+from app.rag.fusion import RankedHit, fuse_ranked_lists
 from app.rag.reranker import rerank_documents
 from app.rag.threshold import LEXICAL_SOURCE, VECTOR_SOURCE
 
@@ -156,6 +161,7 @@ FULLTEXT_SQL = fulltext_sql(1)
 NEIGHBOR_SQL = text(
     """
     SELECT c.id::text AS source_id,
+           n.position - c.position AS arah,
            n.id::text AS chunk_id,
            n.content,
            n.page,
@@ -164,19 +170,56 @@ NEIGHBOR_SQL = text(
            d.type,
            d.file_path
     FROM chunks c
-    JOIN chunks n ON n.document_id = c.document_id AND n.position = c.position + 1
+    JOIN chunks n ON n.document_id = c.document_id
+                 AND n.position IN (c.position - 1, c.position + 1)
     JOIN documents d ON d.id = n.document_id
     WHERE c.id = ANY(CAST(:ids AS text[])::uuid[])
     """
 )
-"""Potongan sesudah (`position + 1`) setiap chunk sumber, dari dokumen yang sama.
+"""Potongan sebelum (`arah` -1) dan sesudah (`arah` 1) setiap chunk sumber,
+dari dokumen yang sama.
 
 Dokumen dipecah per halaman, sehingga satu prosedur sering terbelah: langkah
 7-8 panduan KRS MBKM ada di halaman 5 sendirian, format SMS pembayaran VA
 menyambung potongan "SMS Banking" tanpa mengulang judulnya. Potongan lanjutan
 seperti itu kalah peringkat karena tidak memuat kata kunci pertanyaannya,
-dan LLM lalu menjawab prosedur yang bolong di tengah. Status aktif tidak perlu
-diperiksa lagi: dokumennya sama dengan chunk sumber yang sudah lolos filter."""
+dan LLM lalu menjawab prosedur yang bolong di tengah. Arah sebaliknya sama:
+"SKP wajib apa saja?" menemukan butir d-f daftar kegiatan wajib di halaman 21,
+sedangkan butir a-c (PKKMB dst.) ada di potongan sebelumnya (T40). Potongan
+sebelumnya hanya dipakai bila sebagian yang sama (`_judul_potongan`), lihat
+`_with_neighbors`. Status aktif tidak perlu diperiksa lagi: dokumennya sama
+dengan chunk sumber yang sudah lolos filter."""
+
+
+def _judul_potongan(isi: str) -> str:
+    """Baris pertama potongan -- jejak judul bagiannya -- tanpa penanda lanjutan."""
+    baris = isi.split("\n", 1)[0].strip()
+    return baris.removesuffix(LANJUTAN).rstrip()
+
+
+def _tetangga(row: dict[str, Any], sumber: str) -> Document:
+    return Document(
+        id=row["chunk_id"],
+        page_content=row["content"],
+        metadata={
+            "chunk_id": row["chunk_id"],
+            "document_id": row["document_id"],
+            "judul": row["title"],
+            "jenis": row.get("type"),
+            "halaman": row["page"],
+            "file_path": row["file_path"],
+            # Tanpa skor: potongan ini ikut karena sumbernya, bukan karena mirip
+            # pertanyaan, dan tidak boleh meloloskan threshold atas namanya sendiri.
+            "rrf_score": 0.0,
+            "raw_scores": {},
+            "ranks": {},
+            "neighbor_of": sumber,
+        },
+    )
+
+
+def _kunci(teks: str) -> str:
+    return " ".join(teks.split()).casefold()
 
 
 def vector_literal(embedding: Sequence[float]) -> str:
@@ -236,29 +279,48 @@ class PostgresHybridRetriever(BaseRetriever):
         *,
         run_manager: AsyncCallbackManagerForRetrieverRun | None = None,
         unit: str | None = None,
+        original_query: str | None = None,
     ) -> list[Document]:
         """`unit`: nama resmi dari tabel `units` (lihat `app.units`), atau None
-        untuk semua unit. Diteruskan lewat `ainvoke(query, unit=...)`."""
+        untuk semua unit. Diteruskan lewat `ainvoke(query, unit=...)`.
+
+        `original_query`: pertanyaan mahasiswa sebelum ditulis ulang (FR-4),
+        bila `query` hasil rewrite. Keduanya dicari dan digabung dalam satu RRF
+        (T40). Rewrite melengkapi rujukan dari riwayat, tetapi kerap ikut
+        mengganti kata mahasiswa ("harga" menjadi "biaya") atau menambah kata
+        umum ("mahasiswa"), dan potongan yang cocok dengan kata aslinya
+        terlempar dari top 5. Pertanyaan asli menjaga kata-kata itu tetap dicari.
+        """
+        queries = [query]
+        if original_query and _kunci(original_query) != _kunci(query):
+            queries.append(original_query)
+
         # Bobot 0 mematikan sumbernya (lihat `reciprocal_rank_fusion`), jadi
         # pencariannya -- dan untuk vektor, panggilan embedding-nya -- dilewati.
         cari_vektor = self.weight_vector != 0
         cari_kata = self.weight_fulltext != 0
-        embedding = await self.embed_query(query) if cari_vektor else None
-
-        vector_rows, fulltext_rows = await asyncio.gather(
-            self._vector_search(embedding, unit) if embedding is not None else _tanpa_hasil(),
-            self._fulltext_search(query, unit) if cari_kata else _tanpa_hasil(),
+        embeddings = (
+            await asyncio.gather(*(self.embed_query(q) for q in queries))
+            if cari_vektor
+            else []
         )
+        vektor = [self._vector_search(e, unit) for e in embeddings] or [_tanpa_hasil()]
+        kata = (
+            [self._fulltext_search(q, unit) for q in queries]
+            if cari_kata
+            else [_tanpa_hasil()]
+        )
+        hasil = await asyncio.gather(*vektor, *kata)
+        daftar = [
+            *((VECTOR_SOURCE, rows) for rows in hasil[: len(vektor)]),
+            *((LEXICAL_SOURCE, rows) for rows in hasil[len(vektor) :]),
+        ]
 
-        fused = reciprocal_rank_fusion(
-            {
-                VECTOR_SOURCE: [
-                    RankedHit(r["chunk_id"], float(r["score"])) for r in vector_rows
-                ],
-                LEXICAL_SOURCE: [
-                    RankedHit(r["chunk_id"], float(r["score"])) for r in fulltext_rows
-                ],
-            },
+        fused = fuse_ranked_lists(
+            [
+                (sumber, [RankedHit(r["chunk_id"], float(r["score"])) for r in rows])
+                for sumber, rows in daftar
+            ],
             weights={
                 VECTOR_SOURCE: self.weight_vector,
                 LEXICAL_SOURCE: self.weight_fulltext,
@@ -271,7 +333,7 @@ class PostgresHybridRetriever(BaseRetriever):
             ),
         )
 
-        by_id = {r["chunk_id"]: r for r in (*vector_rows, *fulltext_rows)}
+        by_id = {r["chunk_id"]: r for _, rows in daftar for r in rows}
         documents = [
             Document(
                 id=hit.chunk_id,
@@ -298,40 +360,41 @@ class PostgresHybridRetriever(BaseRetriever):
         return await self._with_neighbors(documents)
 
     async def _with_neighbors(self, documents: list[Document]) -> list[Document]:
+        """Sisipkan potongan sesudah tiap hasil teratas, dan potongan sebelumnya
+        bila hasil itu lanjutan dari bagian yang sama (judul bagiannya sama)."""
         if self.neighbors <= 0 or not documents:
             return documents
         sumber = [doc.metadata["chunk_id"] for doc in documents[: self.neighbors]]
         rows = await self._jalankan(NEIGHBOR_SQL, {"ids": sumber})
 
-        sudah = {doc.metadata["chunk_id"] for doc in documents}
-        lanjutan = {r["source_id"]: r for r in rows if r["chunk_id"] not in sudah}
+        by_id = {doc.metadata["chunk_id"]: doc for doc in documents}
+        sudah = set(by_id)
+        sebelum: dict[str, dict[str, Any]] = {}
+        sesudah: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            if row["chunk_id"] in sudah:
+                continue
+            if row["arah"] > 0:
+                sesudah[row["source_id"]] = row
+            elif _judul_potongan(row["content"]) == _judul_potongan(
+                by_id[row["source_id"]].page_content
+            ):
+                sebelum[row["source_id"]] = row
+
         hasil: list[Document] = []
         for doc in documents:
+            chunk_id = doc.metadata["chunk_id"]
+            # Satu potongan bisa menjadi tetangga dua hasil (sesudah yang satu,
+            # sebelum yang lain); cukup disisipkan sekali.
+            depan = sebelum.get(chunk_id)
+            if depan is not None and depan["chunk_id"] not in sudah:
+                hasil.append(_tetangga(depan, chunk_id))
+                sudah.add(depan["chunk_id"])
             hasil.append(doc)
-            row = lanjutan.get(doc.metadata["chunk_id"])
-            if row is None:
-                continue
-            hasil.append(
-                Document(
-                    id=row["chunk_id"],
-                    page_content=row["content"],
-                    metadata={
-                        "chunk_id": row["chunk_id"],
-                        "document_id": row["document_id"],
-                        "judul": row["title"],
-                        "jenis": row.get("type"),
-                        "halaman": row["page"],
-                        "file_path": row["file_path"],
-                        # Tanpa skor: potongan ini ikut karena sumbernya, bukan
-                        # karena mirip pertanyaan, dan tidak boleh meloloskan
-                        # threshold atas namanya sendiri.
-                        "rrf_score": 0.0,
-                        "raw_scores": {},
-                        "ranks": {},
-                        "neighbor_of": doc.metadata["chunk_id"],
-                    },
-                )
-            )
+            belakang = sesudah.get(chunk_id)
+            if belakang is not None and belakang["chunk_id"] not in sudah:
+                hasil.append(_tetangga(belakang, chunk_id))
+                sudah.add(belakang["chunk_id"])
         return hasil
 
     def _get_relevant_documents(
@@ -340,9 +403,11 @@ class PostgresHybridRetriever(BaseRetriever):
         *,
         run_manager: CallbackManagerForRetrieverRun | None = None,
         unit: str | None = None,
+        original_query: str | None = None,
     ) -> list[Document]:
-        # `unit` harus ada juga di sini: LangChain hanya meneruskan argumen
-        # tambahan `ainvoke` bila tanda tangan metode SINKRON ini memintanya.
+        # `unit` dan `original_query` harus ada juga di sini: LangChain hanya
+        # meneruskan argumen tambahan `ainvoke` bila tanda tangan metode
+        # SINKRON ini memintanya.
         raise NotImplementedError(
             "Retriever ini hanya mendukung mode async; pakai `ainvoke`. "
             "Jalur sinkron sengaja tidak disediakan agar dua pencarian tetap paralel."

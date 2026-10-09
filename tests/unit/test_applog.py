@@ -110,7 +110,7 @@ class TestNodeRecorder:
 
     async def test_node_gagal_tercatat_sebagai_error(self, llm):
         class RetrieverRusak:
-            async def ainvoke(self, q, *, unit=None):
+            async def ainvoke(self, q, *, unit=None, original_query=None):
                 raise RuntimeError("database mati")
 
         recorder = NodeRecorder()
@@ -419,7 +419,7 @@ class TestRekamanIO:
 
     async def test_node_gagal_tetap_terekam(self, llm):
         class RetrieverRusak:
-            async def ainvoke(self, q, *, unit=None):
+            async def ainvoke(self, q, *, unit=None, original_query=None):
                 raise RuntimeError("database mati")
 
         recorder = NodeRecorder(rekam_io=True)

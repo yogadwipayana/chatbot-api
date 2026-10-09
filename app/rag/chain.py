@@ -185,7 +185,8 @@ async def run_pipeline(
 
     Args:
         question: pertanyaan mentah dari mahasiswa.
-        retriever: apa pun yang punya `ainvoke(str, *, unit) -> list[Document]`.
+        retriever: apa pun yang punya `ainvoke(str, *, unit) -> list[Document]`;
+            bila pertanyaan ditulis ulang, juga menerima `original_query`.
         llm_call: (pertanyaan_terbungkus, dokumen) -> teks jawaban.
         history: riwayat percakapan; kosong berarti pesan pertama (FR-4).
         rewrite_call: (pertanyaan, riwayat_terformat) -> pertanyaan mandiri.

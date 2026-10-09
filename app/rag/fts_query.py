@@ -67,6 +67,11 @@ STOPWORDS: frozenset[str] = frozenset(
         # Pembingkai pertanyaan: "bagaimana cara X" menanyakan X, dan potongan
         # jawabannya jarang memuat kata "cara".
         "cara",
+        # "Cara urus SKP" menanyakan prosedur SKP. Stemmer Postgres menyamakan
+        # "urus" dengan "pengurus", sehingga tabel poin organisasi yang penuh
+        # "Pengurus Inti" mengalahkan potongan prosedurnya (T40). "Pengurus"
+        # yang diketik mahasiswa tetap dicari: daftar ini memeriksa kata mentah.
+        "urus", "mengurus", "ngurus", "diurus",
         # Penanda entri tanya jawab ("Pertanyaan: ... / Jawaban: ...") -- ada di
         # setiap potongan tanya jawab, jadi tidak membedakan apa pun.
         "pertanyaan", "jawaban", "jawab", "menjawab",

@@ -289,12 +289,18 @@ async def rewrite(state: PipelineState, runtime: Rt) -> dict:
 async def retrieve(state: PipelineState, runtime: Rt) -> dict:
     """FR-2: vector + fulltext paralel, RRF, rerank -- semuanya di dalam retriever.
 
+    Bila pertanyaan ditulis ulang, pertanyaan aslinya ikut dikirim dan dicari
+    juga (T40, lihat `PostgresHybridRetriever`). Hanya saat itu argumennya
+    dikirim, jadi retriever tanpa dukungan multi-query tetap berjalan untuk
+    pesan pertama.
+
     Dihentikan bila JEV memblokir: hasilnya toh dibuang di `validate_context`."""
+    opsi: dict[str, Any] = {"unit": state.get("unit")}
+    if state.get("rewritten"):
+        opsi["original_query"] = state["clean"]
     try:
         jalan, documents = await _kecuali_diblokir(
-            lambda: runtime.context.retriever.ainvoke(
-                state["search_query"], unit=state.get("unit")
-            ),
+            lambda: runtime.context.retriever.ainvoke(state["search_query"], **opsi),
             runtime.context.gate_blocked,
         )
     finally:

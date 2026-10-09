@@ -81,10 +81,15 @@ class FakeRetriever:
         self.documents = list(documents or [])
         self.queries: list[str] = []
         self.units: list[str | None] = []
+        self.original_queries: list[str | None] = []
+        """Pertanyaan asli yang ikut dicari bila `query` hasil rewrite (T40)."""
 
-    async def ainvoke(self, query: str, *, unit: str | None = None) -> list[StubDocument]:
+    async def ainvoke(
+        self, query: str, *, unit: str | None = None, original_query: str | None = None
+    ) -> list[StubDocument]:
         self.queries.append(query)
         self.units.append(unit)
+        self.original_queries.append(original_query)
         return list(self.documents)
 
 

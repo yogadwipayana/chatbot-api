@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.rag.fusion import DEFAULT_K, FusedHit, RankedHit, reciprocal_rank_fusion
+from app.rag.fusion import (
+    DEFAULT_K,
+    FusedHit,
+    RankedHit,
+    fuse_ranked_lists,
+    reciprocal_rank_fusion,
+)
 
 
 def hits(*pairs: tuple[str, float]) -> list[RankedHit]:
@@ -154,6 +160,44 @@ class TestValidasiArgumen:
     def test_bobot_untuk_sumber_tak_dikenal_ditolak(self):
         """Salah ketik nama sumber akan diam-diam mengabaikan bobot; jangan biarkan."""
         with pytest.raises(ValueError, match="sumber tak dikenal"):
-            reciprocal_rank_fusion(
-                {"vector": hits(("a", 0.9))}, weights={"vetcor": 2.0}
-            )
+            reciprocal_rank_fusion({"vector": hits(("a", 0.9))}, weights={"vetcor": 2.0})
+
+
+class TestBeberapaDaftarPerSumber:
+    """T40: pertanyaan asli dan hasil rewrite dicari dua-duanya; tiap bentuk
+    menghasilkan daftar sendiri untuk sumber yang sama."""
+
+    def test_ditemukan_kedua_bentuk_naik_ke_atas(self):
+        fused = fuse_ranked_lists(
+            [
+                ("vector", hits(("a", 0.9), ("b", 0.8))),
+                ("vector", hits(("b", 0.85), ("c", 0.7))),
+            ]
+        )
+        assert fused[0].chunk_id == "b"
+        assert fused[0].rrf_score == pytest.approx(1 / 62 + 1 / 61)
+
+    def test_peringkat_terbaik_dan_skor_mentah_tertinggi_per_sumber(self):
+        """Threshold FR-3 tetap membaca satu skor per sumber."""
+        fused = fuse_ranked_lists(
+            [
+                ("vector", hits(("x", 0.9), ("b", 0.70))),
+                ("vector", hits(("b", 0.82))),
+                ("fulltext", hits(("b", 0.05))),
+                ("fulltext", hits(("y", 0.2), ("z", 0.1), ("b", 0.09))),
+            ]
+        )
+        b = next(h for h in fused if h.chunk_id == "b")
+        assert b.ranks == {"vector": 1, "fulltext": 1}
+        assert b.raw_scores == {"vector": 0.82, "fulltext": 0.09}
+
+    def test_satu_daftar_per_sumber_sama_dengan_rrf_biasa(self):
+        daftar = {"vector": hits(("a", 0.9), ("b", 0.8)), "fulltext": hits(("b", 0.5))}
+        assert fuse_ranked_lists(list(daftar.items())) == reciprocal_rank_fusion(daftar)
+
+    def test_bobot_berlaku_untuk_setiap_daftar_sumbernya(self):
+        fused = fuse_ranked_lists(
+            [("vector", hits(("a", 0.9))), ("vector", hits(("a", 0.9)))],
+            weights={"vector": 0.5},
+        )
+        assert fused[0].rrf_score == pytest.approx(2 * 0.5 / 61)

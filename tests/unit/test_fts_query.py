@@ -27,6 +27,10 @@ class TestKataUmumDibuang:
                 "bayar or va or bni or sms or banking",
             ),
             ("min mau tanya dong, syarat cuti apa aja ya kak?", "syarat or cuti"),
+            # T40: stemmer menyamakan "urus" dengan "pengurus" (tabel poin organisasi).
+            ("cara urus skp gimana?", "skp"),
+            ("gimana mengurusnya?", ""),
+            ("poin pengurus inti BEM", "poin or pengurus or inti or bem"),
         ],
     )
     def test_pertanyaan_menjadi_query_or(self, pertanyaan, query):
