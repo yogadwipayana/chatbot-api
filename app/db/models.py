@@ -374,3 +374,24 @@ class RuntimeConfigEntry(Base):
     )
     updated_by: Mapped[str | None] = mapped_column(String(255))
     """Email admin yang mengubah, untuk jejak audit di halaman Konfigurasi."""
+
+
+class KillSwitchRecord(Base):
+    """Kill switch yang sedang menyala, supaya tetap menyala setelah restart.
+
+    Paling banyak satu baris (`id` = 1). Tidak ada baris berarti layanan chat
+    hidup; menyalakan kembali layanan menghapus barisnya. Proses tetap memegang
+    salinannya di memori (`app.security.killswitch`) dan hanya membaca tabel
+    ini saat mulai -- tanpa itu deploy, crash, atau restart kontainer diam-diam
+    menyalakan lagi layanan yang dimatikan superadmin karena insiden.
+    """
+
+    __tablename__ = "kill_switch"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_kill_switch_satu_baris"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False, default=1)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    engaged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    engaged_by: Mapped[str | None] = mapped_column(String(255))
+    """Email superadmin, atau `batas harian otomatis`. `KILL_SWITCH_ENABLED`
+    tidak ditulis ke sini: ia dibaca ulang dari `.env` setiap start."""

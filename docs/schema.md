@@ -114,6 +114,13 @@ erDiagram
         varchar  updated_by "255 — email admin"
     }
 
+    kill_switch {
+        integer  id PK "selalu 1"
+        text     reason "NOT NULL"
+        timestamptz engaged_at "NOT NULL — awal insiden"
+        varchar  engaged_by "255 — email superadmin / batas harian otomatis"
+    }
+
     admins {
         uuid     id PK
         varchar  email "255, UNIQUE + unik lower()"
@@ -131,6 +138,12 @@ erDiagram
 `runtime_config` berdiri sendiri tanpa relasi: satu baris per parameter `.env` yang
 ditimpa dari dashboard, dan **hanya** parameter yang benar-benar ditimpa. Tidak
 ada barisnya berarti "ikut `.env`" -- lihat `app/admin/runtime_config.py`.
+
+`kill_switch` juga berdiri sendiri: paling banyak satu baris (`CHECK (id = 1)`),
+ada selama layanan chat dimatikan. Yang berlaku tetap salinan di memori proses;
+tabel ini hanya dibaca saat proses mulai, supaya restart atau deploy tidak
+diam-diam menyalakan lagi layanan yang dimatikan karena insiden -- lihat
+`app/security/killswitch.py`.
 
 `admins` hanya berelasi ke `units`. Jejak admin pada dokumen disimpan sebagai
 teks di `documents.uploaded_by`, bukan foreign key: menghapus akun tidak boleh
@@ -152,6 +165,7 @@ CONSTRAINT ck_admins_staff_unit CHECK (role <> 'staf' OR (unit IS NOT NULL AND b
 | **Log** | `conversations`, `messages`, `feedback`, `unanswered_questions` | `app/observability/chatlog.py`, `app/routers/chat.py` | dashboard AD-4, AD-5 |
 | **Akun** | `admins` | `app/admin/accounts.py`, `scripts/create_admin.py` | auth AD-1 |
 | **Setelan** | `runtime_config` | `app/routers/admin_config.py` | `get_effective_settings` di setiap permintaan |
+| **Operasional** | `kill_switch` | `app/routers/admin_ops.py` (superadmin), `deps.batas_harian` (otomatis) | `app.main.lifespan`, sekali saat proses mulai |
 | **Sematan** | `embed_keys` | `app/routers/admin_embed_keys.py` (halaman Sematan, superadmin) | `GET /api/embed/keys/{key}` (proxy portal), `deps.kunci_sematan` di setiap pertanyaan dari situs lain |
 
 Biaya model tidak punya tabel sendiri: seluruhnya menumpang `messages.meta`
@@ -593,9 +607,11 @@ Ini bagian skema yang paling mudah dilanggar tanpa sadar (PRD §11):
   layanan konseling]`. Jumlahnya tetap tercatat untuk statistik, tetapi curahan
   hati mahasiswa tidak ikut terbaca siapa pun yang membuka database.
 - **Uji coba admin (AD-6)** tidak dicatat sama sekali.
-- **Kill switch dan pembatas login** tinggal di memori proses, bukan tabel. Benar
+- **Pembatas login dan batas laju** tinggal di memori proses, bukan tabel. Benar
   untuk satu worker uvicorn (sesuai Dockerfile); harus dipindah ke Postgres bila
-  jumlah worker ditambah.
+  jumlah worker ditambah. Kill switch disimpan di `kill_switch` sejak `0016`,
+  tetapi tetap dibaca dari memori saat melayani: dengan beberapa worker, setiap
+  permintaan harus membaca tabel itu.
 
 ---
 
@@ -657,6 +673,7 @@ pertanyaan hari sebelumnya.
 | `0013_identifier_bahasa_inggris` | Seluruh identifier Indonesia → Inggris: tabel `unanswered` → `unanswered_questions`, kolom, constraint, index, fungsi trigger `tsv`, dan kunci `messages.meta` di baris lama |
 | `0014_judul_di_tsv` | `chunks.tsv` = judul dokumen (bobot C, kecuali tanya jawab) + isi; trigger `trg_documents_title_tsv` menghitung ulang saat judul berubah; semua potongan diisi ulang |
 | `0015_judul_bobot_d` | Judul di `chunks.tsv` turun ke bobot D (setara isi): kata judul yang umum ("sertifikasi", "beasiswa") tidak lagi mengangkat seluruh potongan dokumen di atas TRANSKRIP/FAQ (T36); semua potongan diisi ulang |
+| `0016_kill_switch` | `kill_switch` — kill switch yang menyala bertahan melewati restart dan deploy |
 
 Catatan per migrasi:
 

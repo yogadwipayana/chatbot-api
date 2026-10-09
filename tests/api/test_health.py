@@ -23,12 +23,14 @@ class TestHealth:
 
     def test_melaporkan_chat_nonaktif_saat_kill_switch(self, client, kill_switch):
         kill_switch.engage("insiden jawaban salah")
-        data = client.get("/health").json()
-        assert data["chat_enabled"] is False
-        assert data["kill_switch_reason"] == "insiden jawaban salah"
+        assert client.get("/health").json()["chat_enabled"] is False
 
-    def test_alasan_kosong_saat_normal(self, client):
-        assert client.get("/health").json()["kill_switch_reason"] is None
+    def test_alasan_tidak_dibocorkan(self, client, kill_switch):
+        """Endpoint publik: alasan adalah catatan insiden internal."""
+        kill_switch.engage("kunci API bocor, sedang dirotasi")
+        resp = client.get("/health")
+        assert "kill_switch_reason" not in resp.json()
+        assert "kunci API" not in resp.text
 
     def test_melaporkan_tracing_mati(self, client):
         """Tracing mati tidak menjatuhkan permintaan apa pun, jadi ia tidak pernah
