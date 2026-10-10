@@ -71,12 +71,29 @@ STOPWORDS: frozenset[str] = frozenset(
         # "urus" dengan "pengurus", sehingga tabel poin organisasi yang penuh
         # "Pengurus Inti" mengalahkan potongan prosedurnya (T40). "Pengurus"
         # yang diketik mahasiswa tetap dicari: daftar ini memeriksa kata mentah.
-        "urus", "mengurus", "ngurus", "diurus",
+        # Kata mentahnya dibuang, padanannya yang dicari (lihat PADANAN).
+        "urus", "mengurus", "ngurus", "diurus", "urusin", "ngurusin",
         # Penanda entri tanya jawab ("Pertanyaan: ... / Jawaban: ...") -- ada di
         # setiap potongan tanya jawab, jadi tidak membedakan apa pun.
         "pertanyaan", "jawaban", "jawab", "menjawab",
     }
 )  # fmt: skip
+
+PADANAN: dict[str, str] = dict.fromkeys(
+    ("urus", "mengurus", "ngurus", "diurus", "urusin", "ngurusin"), "pengajuan"
+)
+"""Kata percakapan -> kata yang dipakai dokumen untuk hal yang sama (T59).
+
+"Cara urus SKP gimana?" tanpa "urus" (stopword, T40) tinggal "skp", dan kata itu
+ada di seratus lebih potongan Buku SKP: peringkat fulltext hanya mengukur
+kepadatan "skp", sehingga "9. Proses Pengajuan dan Verifikasi SKP" jatuh ke
+peringkat RRF 12 dan dijawab "tidak tercantum" (4/4). Dokumen kampus menulis
+prosedur itu sebagai "pengajuan"/"mengajukan"/"diajukan" (satu leksem, `aju`).
+
+Padanan DITAMBAHKAN ke query `or`, bukan dijadikan varian `app.rag.glossary`:
+varian dinilai `GREATEST`, jadi potongan yang memuat "skp" dan "pengajuan" tidak
+naik di atas potongan yang hanya padat "skp" (diukur 2026-10-10). Setiap kunci
+harus ada di STOPWORDS, supaya kata mentahnya tidak ikut dicari."""
 
 _TOKEN = re.compile(r"[^\W_]+(?:-[^\W_]+)*")
 """Kata; istilah bertanda hubung (KIP-K) tetap utuh."""
@@ -98,12 +115,25 @@ def _kata_bermakna(teks: str) -> list[str]:
     return hasil
 
 
+def _padanan(teks: str) -> list[str]:
+    hasil = []
+    for token in _TOKEN.findall(teks.casefold()):
+        ganti = PADANAN.get(token) or PADANAN.get(_KLITIK.sub("", token))
+        if ganti:
+            hasil.append(ganti)
+    return hasil
+
+
 def fulltext_query(teks: str) -> str:
     """"berapa harga sertifikasi TOEIC?" -> "harga or sertifikasi or toeic".
 
     Istilah kamus kampus dikirim utuh -- yang multi-kata sebagai frasa berkutip,
     supaya "Pembelajaran di Luar Kampus" tidak terpecah menjadi kata umum dan
     "di" di dalamnya tidak ikut dibuang. String kosong bila semua kata stopword.
+
+    Padanan kata percakapan (PADANAN) hanya menyertai kata lain: "gimana
+    mengurusnya?" tetap kosong, karena "pengajuan" sendirian cocok dengan
+    prosedur apa pun dan tidak menunjuk topik.
     """
     bagian: list[str] = []
     awal = 0
@@ -113,6 +143,8 @@ def fulltext_query(teks: str) -> str:
         bagian.append(f'"{istilah}"' if " " in istilah else istilah)
         awal = cocok.end()
     bagian += _kata_bermakna(teks[awal:])
+    if bagian:
+        bagian += _padanan(teks)
     return " or ".join(dict.fromkeys(bagian))
 
 

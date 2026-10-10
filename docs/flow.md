@@ -474,6 +474,8 @@ Query-nya **bukan** pertanyaan utuh. `websearch_to_tsquery` menggabungkan setiap
 
 Karena itu `app/rag/fts_query.py` membuang kata tanya, kata sambung, dan sapaan (dari kata **mentah**, sebelum stemmer), lalu menggabungkan sisanya dengan `or`: `harga or sertifikasi or toeic`. Istilah kamus kampus multi-kata tetap dikirim sebagai frasa berkutip. Bila semua kata ternyata kata umum ("apa itu?"), pencarian teks penuh dilewati.
 
+Kata percakapan "urus" (mengurus, ngurus, diurus, urusin, ngurusin) dibuang seperti kata umum, tetapi padanannya di dokumen, "pengajuan", ditambahkan ke query (`PADANAN`): "cara urus skp gimana?" menjadi `skp or pengajuan`. Tanpa itu query-nya tinggal `skp`, dan bagian "Proses Pengajuan dan Verifikasi SKP" kalah dari potongan yang sekadar padat kata "SKP" (T59). Padanan tidak pernah dicari sendirian: "gimana mengurusnya?" tetap tanpa pencarian teks penuh.
+
 Sejak migrasi 0014, `chunks.tsv` juga memuat judul dokumen, sehingga pertanyaan yang menyebut nama dokumen ("menurut kode etik") ikut terbantu. Bobotnya D, sama dengan isi (migrasi 0015): dengan bobot C, kata judul yang umum ("sertifikasi", "beasiswa") mengangkat semua potongan dokumen itu di atas TRANSKRIP dan FAQ yang justru menjawab (T36). Lihat `docs/schema.md` bagian Trigger `tsv`.
 
 Skor `ts_rank` untuk query `or` dibagi rata dengan jumlah kata pertanyaan. Urutan di dalam satu pertanyaan tetap benar, tetapi skor antarpertanyaan tidak sebanding, sehingga `LEXICAL_THRESHOLD` belum dikalibrasi ulang (lihat `ThresholdPolicy.lexical_threshold`).

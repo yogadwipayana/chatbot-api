@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.rag.fts_query import STOPWORDS, fulltext_queries, fulltext_query
+from app.rag.fts_query import PADANAN, STOPWORDS, fulltext_queries, fulltext_query
 
 
 class TestKataUmumDibuang:
@@ -28,7 +28,9 @@ class TestKataUmumDibuang:
             ),
             ("min mau tanya dong, syarat cuti apa aja ya kak?", "syarat or cuti"),
             # T40: stemmer menyamakan "urus" dengan "pengurus" (tabel poin organisasi).
-            ("cara urus skp gimana?", "skp"),
+            # T59: yang dicari padanannya di dokumen, "pengajuan".
+            ("cara urus skp gimana?", "skp or pengajuan"),
+            ("ngurusin SKP dimana ya kak", "skp or pengajuan"),
             ("gimana mengurusnya?", ""),
             ("poin pengurus inti BEM", "poin or pengurus or inti or bem"),
         ],
@@ -47,6 +49,19 @@ class TestKataUmumDibuang:
 
     def test_kata_duplikat_sekali_saja(self):
         assert fulltext_query("KRS krs Krs") == "krs"
+
+    def test_padanan_tidak_digandakan(self):
+        assert fulltext_query("urus pengajuan cuti, ngurusnya gimana?") == "pengajuan or cuti"
+
+    def test_kata_mentah_padanan_tidak_ikut_dicari(self):
+        """Kunci PADANAN yang lolos STOPWORDS akan dicari dua kali: kata
+        mentahnya (leksem `urus`, sama dengan "pengurus") dan padanannya."""
+        assert set(PADANAN) <= STOPWORDS
+
+    def test_padanan_berlaku_di_setiap_varian_kamus(self):
+        varian = fulltext_queries("cara urus PLK")
+        assert varian[0] == "plk or pengajuan"
+        assert '"pembelajaran di luar kampus" or pengajuan' in varian
 
     def test_huruf_dan_digit_tunggal_dibuang_angka_panjang_tidak(self):
         """"1", "2", "3" ada di 40-47% potongan; tahun tetap bermakna."""
