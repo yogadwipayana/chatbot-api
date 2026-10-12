@@ -4,14 +4,17 @@ Jawaban pada topik ini SELALU disertai kontak unit resmi. Deteksi berbasis
 kata kunci, bukan LLM: hasilnya harus dapat diaudit dan tidak boleh berubah
 diam-diam saat model diganti.
 
-Semua topik saat ini diarahkan ke Front Office INSTIKI -- satu-satunya kontak
-kampus yang tercantum di sumber resmi publik (halaman Contact Us instiki.ac.id,
-Brand Guideline INSTIKI 2022, dan akun resmi kampus). Alamat email per unit
-yang dulu ada di sini (akademik@, keuangan@, kemahasiswaan@) tidak pernah
-tercantum di sumber mana pun; banner yang menyebut alamat yang tidak ada lebih
-buruk daripada tanpa banner. PRD §13 Fase 0 tetap berlaku: ganti entri
-`DEFAULT_CONTACTS` per topik dengan kontak unit yang disepakati biro akademik
-sebelum rilis.
+Kontak yang ditampilkan mengikuti unit (topik) yang dipilih mahasiswa:
+`UNIT_CONTACTS` memuat PIC per unit dari daftar "Kontak PIC per bidang"
+(2026-10-12).
+Unit yang belum punya PIC di daftar itu (Prodi, Fakultas, Akademik) dan
+pertanyaan tanpa unit (Uji coba admin "Semua unit") jatuh ke `DEFAULT_CONTACTS`
+per topik, yang semuanya masih Front Office INSTIKI.
+
+Alamat email per unit yang dulu ada di sini (akademik@, keuangan@,
+kemahasiswaan@) tidak pernah tercantum di sumber mana pun; banner yang menyebut
+alamat yang tidak ada lebih buruk daripada tanpa banner. Jangan menambah kontak
+yang tidak berasal dari kampus.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ class UnitContact:
 
     unit: str
     jam_layanan: str
+    """Kosong bila kampus belum menetapkannya; tampilan melewatinya."""
     kontak: str
 
 
@@ -86,9 +90,10 @@ _COMPILED: dict[RiskTopic, tuple[re.Pattern[str], ...]] = {
     for topic, patterns in _PATTERNS.items()
 }
 
-KONTAK_FRONT_OFFICE = "Telepon (0361) 256995 / WhatsApp 0813-3896-9832"
-"""Telepon dari halaman Contact Us dan Brand Guideline; WhatsApp dari akun resmi
-kampus ("WhatsApp Front Office"). Alamat: Jl. Tukad Pakerisan No. 97, Denpasar."""
+KONTAK_FRONT_OFFICE = "Telepon (0361) 256995 / WhatsApp +62 813-3982-2383"
+"""Telepon dari halaman Contact Us dan Brand Guideline; WhatsApp dari daftar
+kontak per unit (2026-10-12), menggantikan 0813-3896-9832. Alamat: Jl. Tukad
+Pakerisan No. 97, Denpasar."""
 
 JAM_FRONT_OFFICE = "Senin-Sabtu, 08.00-22.00 WITA"
 """Jam layanan di halaman Contact Us instiki.ac.id. Artikel resmi "Perdana!
@@ -101,9 +106,47 @@ FRONT_OFFICE = UnitContact(
     kontak=KONTAK_FRONT_OFFICE,
 )
 
+
+def _pic(nama: str, nomor: str) -> UnitContact:
+    """Nomor di daftar PIC adalah nomor ponsel; label "WhatsApp" yang membuat
+    widget membukanya di WhatsApp, bukan di aplikasi telepon."""
+    return UnitContact(unit=nama, jam_layanan="", kontak=f"WhatsApp {nomor}")
+
+
+UNIT_CONTACTS: dict[str, tuple[UnitContact, ...]] = {
+    # Kuncinya nama unit di tabel `units` (pilihan topik di widget). Unit yang
+    # diganti namanya dari dashboard harus diganti juga di sini; kalau tidak,
+    # kontaknya jatuh ke Front Office.
+    "Kemahasiswaan": (
+        _pic("PIC Kemahasiswaan", "+62 813-3936-5103"),
+        _pic("Bidang Pengembangan Karakter Mahasiswa (Ibu Asti)", "+62 812-3673-3230"),
+        _pic("Bidang Prestasi Mahasiswa (Pak Redy)", "+62 819-9843-9707"),
+        _pic("Beasiswa (Ibu Suci Ariantini)", "+62 812-3608-8993"),
+    ),
+    "BAAK": (_pic("PIC BAAK", "+62 813-5346-2032"),),
+    "UPS": (_pic("Layanan Pendidikan (UPS)", "+62 813-3734-8654"),),
+    "PLK": (_pic("Admin PLK INSTIKI", "+62 851-1931-5346"),),
+    "Keuangan": (_pic("Keuangan INSTIKI", "+62 851-7426-1765"),),
+    "FO": (FRONT_OFFICE,),
+}
+"""Kontak PIC per unit, dalam urutan tampil."""
+
+
+def contacts_for_unit(unit: str | None) -> tuple[UnitContact, ...]:
+    """Kontak PIC unit yang dipilih mahasiswa; kosong bila unit itu belum punya."""
+    if not unit:
+        return ()
+    kunci = unit.strip().casefold()
+    for nama, kontak in UNIT_CONTACTS.items():
+        if nama.casefold() == kunci:
+            return kontak
+    return ()
+
+
 DEFAULT_CONTACTS: dict[RiskTopic, UnitContact] = {
-    # Satu entri per topik walau isinya sama: begitu biro akademik menetapkan
-    # kontak per unit, cukup ganti entri topik itu.
+    # Dipakai bila unit yang dipilih tidak punya entri di `UNIT_CONTACTS`.
+    # Satu entri per topik walau isinya sama: begitu kampus menetapkan unit
+    # penanggung jawab per topik, cukup ganti entri topik itu.
     RiskTopic.DEADLINE: FRONT_OFFICE,
     RiskTopic.SYARAT_KELULUSAN: FRONT_OFFICE,
     RiskTopic.PEMBAYARAN: FRONT_OFFICE,

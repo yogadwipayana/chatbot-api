@@ -254,7 +254,9 @@ tidak bergantung pada model luar. Urutannya dijaga `tests/unit/test_graph.py`.
 
 Perlu diganti sebelum rilis — semuanya bergantung pada Fase 0 PRD §13:
 
-- `app/rag/risk.py` → `DEFAULT_CONTACTS`: nama unit, jam layanan, kontak resmi
+- `app/rag/risk.py` → `UNIT_CONTACTS`: PIC per unit sudah diisi (2026-10-12),
+  tetapi jam layanannya belum ada, dan Prodi, Fakultas, Akademik masih jatuh ke
+  Front Office lewat `DEFAULT_CONTACTS`
 - `app/rag/sensitive.py` → `CRISIS_CONTACTS`, `DISTRESS_CONTACTS`: verifikasi nomor
 - `ThresholdPolicy` default (0.35 / 0.05): ganti dengan hasil kalibrasi empiris
 - `app/observability/costs.py` → `PRICES_PER_MTOK`: perbarui dari halaman harga resmi

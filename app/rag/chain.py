@@ -96,7 +96,11 @@ SUPPORT_TEMPLATE = (
 
 def render_contacts(contacts) -> str:
     """Susun daftar kontak menjadi teks siap tampil (FE-3, FE-4)."""
-    return "\n".join(f"- {c.unit} ({c.jam_layanan}): {c.kontak}" for c in contacts)
+    baris = []
+    for c in contacts:
+        jam = f" ({c.jam_layanan})" if c.jam_layanan else ""
+        baris.append(f"- {c.unit}{jam}: {c.kontak}")
+    return "\n".join(baris)
 
 
 _NOT_FOUND_PROSE = re.compile(

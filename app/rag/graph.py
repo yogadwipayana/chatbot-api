@@ -366,14 +366,20 @@ async def refuse(state: PipelineState) -> dict:
     }
 
 
+def _kontak(state: PipelineState, assessment: risk_module.RiskAssessment) -> tuple[Any, ...]:
+    """Kontak PIC unit yang dipilih mahasiswa; tanpa itu, kontak per topik risiko."""
+    return risk_module.contacts_for_unit(state.get("unit")) or assessment.contacts
+
+
 def _penolakan(
     state: PipelineState, assessment: risk_module.RiskAssessment, *, llm_called: bool
 ) -> PipelineOutcome:
     """Satu bentuk penolakan, entah diputuskan threshold atau oleh LLM."""
-    # Semua unit terkait ditampilkan, bukan hanya yang pertama: pertanyaan
-    # "deadline pembayaran UKT" menyangkut akademik DAN keuangan sekaligus,
-    # dan mahasiswa yang ditolak tidak boleh dikirim ke loket yang salah.
-    contacts = assessment.contacts or (DEFAULT_FALLBACK_CONTACT,)
+    # Tanpa unit yang dipilih, semua unit terkait topik ditampilkan, bukan hanya
+    # yang pertama: pertanyaan "deadline pembayaran UKT" menyangkut akademik DAN
+    # keuangan sekaligus, dan mahasiswa yang ditolak tidak boleh dikirim ke
+    # loket yang salah.
+    contacts = _kontak(state, assessment) or (DEFAULT_FALLBACK_CONTACT,)
     text = REFUSAL_TEMPLATE.format(contacts=render_contacts(contacts))
     unit = state.get("unit")
     if unit is not None:
@@ -486,7 +492,7 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
             gate=state.get("gate"),
             rewritten_query=state.get("rewritten"),
             llm_called=True,
-            contacts=assessment.contacts,
+            contacts=_kontak(state, assessment) if assessment.needs_escalation else (),
             attachments=tuple(a for a in lampiran if a.source.casefold() in dikutip),
         )
     }

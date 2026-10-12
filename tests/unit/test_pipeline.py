@@ -122,6 +122,33 @@ class TestPenolakan:
         for kontak in hasil.contacts:
             assert kontak.kontak in hasil.text
 
+    async def test_penolakan_memakai_pic_unit_yang_dipilih(self, weak_retriever, llm):
+        hasil = await run_pipeline(
+            "sesuatu", retriever=weak_retriever, llm_call=llm, policy=POLICY, unit="BAAK"
+        )
+        assert hasil.contacts == risk_module.contacts_for_unit("BAAK")
+        assert "- PIC BAAK: WhatsApp +62 813-5346-2032" in hasil.text
+        assert "Front Office" not in hasil.text
+
+    async def test_pic_unit_menang_atas_kontak_topik_risiko(self, weak_retriever, llm):
+        """Mahasiswa sudah memilih unitnya; banner tidak boleh mengirimnya ke
+        loket lain hanya karena pertanyaannya menyebut pembayaran."""
+        hasil = await run_pipeline(
+            "kapan deadline pembayaran UKT",
+            retriever=weak_retriever,
+            llm_call=llm,
+            policy=POLICY,
+            unit="Keuangan",
+        )
+        assert hasil.kind is OutcomeKind.REFUSAL
+        assert hasil.contacts == risk_module.contacts_for_unit("Keuangan")
+
+    async def test_unit_tanpa_pic_jatuh_ke_front_office(self, weak_retriever, llm):
+        hasil = await run_pipeline(
+            "sesuatu", retriever=weak_retriever, llm_call=llm, policy=POLICY, unit="Prodi"
+        )
+        assert hasil.contacts == (risk_module.FRONT_OFFICE,)
+
     async def test_penolakan_membawa_top_score_untuk_dicatat(self, weak_retriever, llm):
         """Nilai ini yang masuk tabel unanswered_questions dan dipakai mengkalibrasi ambang."""
         hasil = await run_pipeline(
@@ -339,6 +366,18 @@ class TestEskalasiPadaJawaban:
         assert hasil.risk.needs_escalation
         assert hasil.contacts
 
+    async def test_topik_berisiko_memakai_pic_unit_yang_dipilih(self, strong_retriever, llm):
+        hasil = await run_pipeline(
+            "kapan deadline pembayaran UKT?",
+            retriever=strong_retriever,
+            llm_call=llm,
+            policy=POLICY,
+            unit="Kemahasiswaan",
+        )
+        assert hasil.kind is OutcomeKind.ANSWER
+        assert hasil.contacts == risk_module.contacts_for_unit("Kemahasiswaan")
+        assert len(hasil.contacts) == 4
+
     async def test_pertanyaan_biasa_tanpa_kontak(self, strong_retriever, llm):
         hasil = await run_pipeline(
             "di mana ruang tata usaha?",
@@ -346,6 +385,20 @@ class TestEskalasiPadaJawaban:
             llm_call=llm,
             policy=POLICY,
         )
+        assert hasil.contacts == ()
+
+    async def test_pertanyaan_biasa_tanpa_kontak_walau_unit_dipilih(
+        self, strong_retriever, llm
+    ):
+        """Banner hanya untuk topik berisiko; memilih unit saja tidak memunculkannya."""
+        hasil = await run_pipeline(
+            "di mana ruang tata usaha?",
+            retriever=strong_retriever,
+            llm_call=llm,
+            policy=POLICY,
+            unit="BAAK",
+        )
+        assert hasil.kind is OutcomeKind.ANSWER
         assert hasil.contacts == ()
 
 

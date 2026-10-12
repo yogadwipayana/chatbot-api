@@ -129,6 +129,7 @@ class CitationOut(BaseModel):
 class ContactOut(BaseModel):
     unit: str
     service_hours: str
+    """Kosong bila jam layanan belum ditetapkan (kontak PIC per unit)."""
     contact: str
 
 
