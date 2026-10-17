@@ -86,6 +86,7 @@ async def list_unanswered(
                 last_asked_at=g.terakhir_ditanyakan,
                 resolved=g.resolved,
                 unit=g.unit,
+                refusal_reason=g.alasan,
             )
             for g in kelompok[offset : offset + limit]
         ],

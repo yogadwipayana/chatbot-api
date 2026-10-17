@@ -52,9 +52,6 @@ _PESAN_SQL = text(
         coalesce(
             sum((m.meta->>'embed_cost_usd')::float) FILTER (WHERE m.role = 'assistant'), 0
         ) AS biaya_embed,
-        coalesce(
-            sum((m.meta->>'gate_cost_usd')::float) FILTER (WHERE m.role = 'assistant'), 0
-        ) AS biaya_gate,
         count(*) FILTER (
             WHERE m.role = 'assistant'
               AND m.meta->>'llm_called' = 'true'
@@ -308,10 +305,11 @@ async def compute_stats(
         "unanswered_ratio": ratio(tak_terjawab, pesan["pertanyaan"]),
         "daily_volume": [dict(r) for r in volume],
         "top_topics": [dict(r) for r in topik],
-        "running_cost_usd": round(
-            float(pesan["biaya"]) + float(pesan["biaya_embed"]) + float(pesan["biaya_gate"]),
-            6,
-        ),
+        # Sama dengan total di halaman Biaya (`compute_costs`): LLM chat +
+        # embedding. Gerbang JEV tidak dihitung karena berjalan di Laya yang
+        # di-host sendiri; `gate_cost_usd` hanya terisi pada baris lama (sebelum
+        # 2026-10-06) saat JEV masih memakai gateway.
+        "running_cost_usd": round(float(pesan["biaya"]) + float(pesan["biaya_embed"]), 6),
         "messages_without_cost_estimate": pesan["tanpa_biaya"] + pesan["embed_tanpa_biaya"],
         "latency_p95_ms": round(pesan["p95"]) if pesan["p95"] is not None else None,
         **rincian_profil(profil),

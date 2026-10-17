@@ -1,19 +1,22 @@
 """Halaman Log dashboard (`/api/admin/logs/*`) dan pencatatan giliran chat ke SQLite.
 
-Akses minimal admin (staf ditolak) sudah dibangkitkan otomatis dari api.yaml di
-`test_admin_roles.py`. Di sini: isi respons, dan bahwa log `app.audit` tidak
-pernah sampai ke role admin lewat jalur mana pun.
+Hanya superadmin (sejak 2026-10-17); staf dan admin yang ditolak 403 sudah
+dibangkitkan otomatis dari api.yaml di `test_admin_roles.py`. Di sini: isi
+respons, dan bahwa saringan log `app.audit` tetap memeriksa level akun.
 """
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app.admin.permissions import AdminRole, CurrentAdmin
 from app.config import get_settings
 from app.observability.logstore import waktu_iso
 from app.observability.rekaman import buka, kemas
+from app.routers.admin_logs import _boleh_audit
 from tests.api.conftest import ADMIN_BIASA_EMAIL, ADMIN_EMAIL, STAF_EMAIL
 
 BARU = waktu_iso(datetime.now(UTC) - timedelta(minutes=5))
@@ -77,36 +80,40 @@ def terisi(log_store):
 
 
 @pytest.fixture
-def admin(headers_for):
-    return headers_for(ADMIN_BIASA_EMAIL)
-
-
-@pytest.fixture
 def superadmin(headers_for):
     return headers_for(ADMIN_EMAIL)
 
 
 class TestAkses:
-    def test_staf_ditolak(self, client, headers_for):
-        r = client.get("/api/admin/logs/summary", headers=headers_for(STAF_EMAIL))
+    @pytest.mark.parametrize("email", [STAF_EMAIL, ADMIN_BIASA_EMAIL])
+    def test_di_bawah_superadmin_ditolak(self, client, headers_for, email):
+        r = client.get("/api/admin/logs/summary", headers=headers_for(email))
         assert r.status_code == 403
 
-    @pytest.mark.parametrize("email", [ADMIN_BIASA_EMAIL, ADMIN_EMAIL])
-    def test_admin_dan_superadmin_boleh(self, client, headers_for, email):
-        r = client.get("/api/admin/logs/summary", headers=headers_for(email))
-        assert r.status_code == 200
+    def test_superadmin_boleh(self, client, superadmin):
+        assert client.get("/api/admin/logs/summary", headers=superadmin).status_code == 200
+
+    @pytest.mark.parametrize(
+        "role,boleh",
+        [(AdminRole.STAF, False), (AdminRole.ADMIN, False), (AdminRole.SUPERADMIN, True)],
+    )
+    def test_saringan_audit_tetap_memeriksa_level(self, role, boleh):
+        """Bila level halaman Log kelak diturunkan, log audit tidak ikut terbuka."""
+        akun = CurrentAdmin(id=uuid.uuid4(), email="x@instiki.ac.id", role=role, unit="BAAK")
+        assert _boleh_audit(akun) is boleh
 
 
 class TestRingkasan:
-    def test_kosong_tetap_200(self, client, admin):
-        r = client.get("/api/admin/logs/summary?range=7d", headers=admin)
+    def test_kosong_tetap_200(self, client, superadmin):
+        r = client.get("/api/admin/logs/summary?range=7d", headers=superadmin)
         body = r.json()
         assert body["turn_count"] == 0
         assert len(body["per_hour"]) >= 7 * 24
 
-    def test_rentang_tidak_dikenal_422(self, client, admin):
+    def test_rentang_tidak_dikenal_422(self, client, superadmin):
         assert (
-            client.get("/api/admin/logs/summary?range=30d", headers=admin).status_code == 422
+            client.get("/api/admin/logs/summary?range=30d", headers=superadmin).status_code
+            == 422
         )
 
     def test_isi(self, client, terisi, superadmin):
@@ -116,14 +123,10 @@ class TestRingkasan:
         assert body["exit_points"] == [{"node": "generate", "count": 1}]
         assert body["error_log_count"] == 1
 
-    def test_error_audit_tidak_dihitung_untuk_admin(self, client, terisi, admin):
-        body = client.get("/api/admin/logs/summary", headers=admin).json()
-        assert body["error_log_count"] == 0
-
 
 class TestGiliran:
-    def test_daftar(self, client, terisi, admin):
-        body = client.get("/api/admin/logs/turns?status=ok", headers=admin).json()
+    def test_daftar(self, client, terisi, superadmin):
+        body = client.get("/api/admin/logs/turns?status=ok", headers=superadmin).json()
         assert body["total"] == 1
         assert body["items"][0]["message_id"] == "m1"
 
@@ -132,12 +135,8 @@ class TestGiliran:
         assert body["nodes"][0]["detail"] == {"document_count": 2}
         assert len(body["logs"]) == 2
 
-    def test_detail_tanpa_audit_untuk_admin(self, client, terisi, admin):
-        body = client.get("/api/admin/logs/turns/t1", headers=admin).json()
-        assert [x["logger"] for x in body["logs"]] == ["app.rag.gate"]
-
-    def test_tidak_ada_404(self, client, admin):
-        r = client.get("/api/admin/logs/turns/tidak-ada", headers=admin)
+    def test_tidak_ada_404(self, client, superadmin):
+        r = client.get("/api/admin/logs/turns/tidak-ada", headers=superadmin)
         assert r.status_code == 404
         assert "masa simpan" in r.json()["detail"]
 
@@ -148,24 +147,11 @@ class TestLogAplikasi:
         assert body["total"] == 2
         assert "app.audit" in body["loggers"]
 
-    @pytest.mark.parametrize(
-        "query",
-        ["", "?logger=app.audit", "?q=dihapus", "?level=ERROR", "?logger=app"],
-    )
-    def test_admin_tidak_pernah_menerima_audit(self, client, terisi, admin, query):
-        r = client.get(f"/api/admin/logs/app{query}", headers=admin)
-        assert r.status_code == 200
-        body = r.json()
-        assert all(i["logger"] != "app.audit" for i in body["items"])
-        assert "app.audit" not in body["loggers"]
-        assert "instiki.ac.id" not in r.text
-
-    def test_filter_audit_untuk_admin_kosong_bukan_403(self, client, terisi, admin):
-        body = client.get("/api/admin/logs/app?logger=app.audit", headers=admin).json()
-        assert body == {"total": 0, "items": [], "loggers": ["app.rag.gate"]}
-
-    def test_level_tidak_dikenal_422(self, client, admin):
-        assert client.get("/api/admin/logs/app?level=FATAL", headers=admin).status_code == 422
+    def test_level_tidak_dikenal_422(self, client, superadmin):
+        assert (
+            client.get("/api/admin/logs/app?level=FATAL", headers=superadmin).status_code
+            == 422
+        )
 
 
 class TestPencatatanGiliranChat:
@@ -222,7 +208,7 @@ class TestPencatatanGiliranChat:
 
 
 class TestRekamanDanGraf:
-    def test_rekaman_giliran(self, client, log_store, admin):
+    def test_rekaman_giliran(self, client, log_store, superadmin):
         isi = {
             "input": {"question": "kapan KRS?"},
             "output": None,
@@ -255,19 +241,19 @@ class TestRekamanDanGraf:
             ],
         }
         log_store.tulis([("trace", {"turn_id": "t9", "timestamp": BARU, "isi": isi})])
-        r = client.get("/api/admin/logs/turns/t9/trace", headers=admin)
+        r = client.get("/api/admin/logs/turns/t9/trace", headers=superadmin)
         assert r.status_code == 200
         body = r.json()
         assert body["turn_id"] == "t9"
         assert body["nodes"][0]["output"] == {"clean": "kapan KRS?"}
         assert body["calls"][0]["kind"] == "llm"
 
-    def test_tanpa_rekaman_404(self, client, terisi, admin):
-        r = client.get("/api/admin/logs/turns/t1/trace", headers=admin)
+    def test_tanpa_rekaman_404(self, client, terisi, superadmin):
+        r = client.get("/api/admin/logs/turns/t1/trace", headers=superadmin)
         assert r.status_code == 404
 
-    def test_graf_dari_langgraph(self, client, admin):
-        r = client.get("/api/admin/logs/graph", headers=admin)
+    def test_graf_dari_langgraph(self, client, superadmin):
+        r = client.get("/api/admin/logs/graph", headers=superadmin)
         assert r.status_code == 200
         body = r.json()
         nodes = {n["id"]: n["group"] for n in body["nodes"]}
@@ -298,7 +284,7 @@ class TestUjiCobaTercatat:
         assert r.json()["turn_id"] == turn["turn_id"]
         assert log_sink.of("trace")[0]["turn_id"] == turn["turn_id"]
 
-    def test_filter_jalur(self, client, log_store, admin):
+    def test_filter_jalur(self, client, log_store, superadmin):
         log_store.tulis(
             [
                 (
@@ -321,7 +307,7 @@ class TestUjiCobaTercatat:
                 ),
             ]
         )
-        r = client.get("/api/admin/logs/turns?endpoint=uji_coba", headers=admin)
+        r = client.get("/api/admin/logs/turns?endpoint=uji_coba", headers=superadmin)
         assert [i["turn_id"] for i in r.json()["items"]] == ["u1"]
-        ringkas = client.get("/api/admin/logs/summary", headers=admin).json()
+        ringkas = client.get("/api/admin/logs/summary", headers=superadmin).json()
         assert ringkas["turn_count"] == 1

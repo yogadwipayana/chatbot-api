@@ -1261,12 +1261,12 @@ paths:
       summary: Ringkasan performa pipeline chat
       operationId: log_summary
       x-status: implemented
-      x-min-role: admin
+      x-min-role: superadmin
       security: [{ bearerAuth: [] }]
       description: |
         Dibaca dari SQLite log (`LOG_DB_PATH`), bukan Postgres. KPI giliran, p50/p95
         durasi per node LangGraph, distribusi titik keluar, dan tren per jam (UTC).
-        Untuk role admin, log `app.audit` tidak ikut dihitung di `error_log_count`.
+        Hanya superadmin: isinya alat debug (langkah pipeline, system prompt, log server).
       parameters:
         - $ref: '#/components/parameters/LogRange'
       responses:
@@ -1289,7 +1289,7 @@ paths:
       summary: Daftar giliran chat
       operationId: list_turns
       x-status: implemented
-      x-min-role: admin
+      x-min-role: superadmin
       security: [{ bearerAuth: [] }]
       description: |
         Terbaru lebih dulu, termasuk giliran uji coba admin (`endpoint=uji_coba`). `question`
@@ -1329,7 +1329,7 @@ paths:
       summary: Detail satu giliran chat
       operationId: get_turn
       x-status: implemented
-      x-min-role: admin
+      x-min-role: superadmin
       security: [{ bearerAuth: [] }]
       description: Node yang berjalan beserta durasi dan detailnya, plus log selama giliran itu.
       parameters:
@@ -1350,7 +1350,7 @@ paths:
       summary: Rekaman input/output satu giliran (tab Graf)
       operationId: get_turn_trace
       x-status: implemented
-      x-min-role: admin
+      x-min-role: superadmin
       security: [{ bearerAuth: [] }]
       description: |
         State yang diterima dan dikembalikan setiap node, rute sesudahnya, dan pohon
@@ -1375,7 +1375,7 @@ paths:
       summary: Node dan sisi pipeline chat
       operationId: get_pipeline_graph
       x-status: implemented
-      x-min-role: admin
+      x-min-role: superadmin
       security: [{ bearerAuth: [] }]
       description: |
         Bentuk graf LangGraph (`get_graph(xray=True)`) untuk diagram tab Graf. Node di dalam
@@ -1395,11 +1395,12 @@ paths:
       summary: Log aplikasi
       operationId: list_app_logs
       x-status: implemented
-      x-min-role: admin
+      x-min-role: superadmin
       security: [{ bearerAuth: [] }]
       description: |
-        Log Python logger `app.*`. Log `app.audit` hanya untuk superadmin; role admin
-        yang memfilter `logger=app.audit` mendapat daftar kosong, bukan 403.
+        Log Python logger `app.*`. Log `app.audit` tetap disaring per level: bila level
+        halaman Log kelak diturunkan, level di bawah superadmin yang memfilter
+        `logger=app.audit` mendapat daftar kosong, bukan 403.
       parameters:
         - $ref: '#/components/parameters/LogRange'
         - name: level
@@ -2648,6 +2649,15 @@ components:
       properties:
         resolved: { type: boolean }
 
+    RefusalReason:
+      type: string
+      enum: [no_documents, below_threshold, llm]
+      description: |
+        Alasan penolakan untuk admin. `no_documents` = ambang menolak tanpa satu pun
+        potongan ditemukan (unit belum punya dokumen yang dapat dicari);
+        `below_threshold` = potongan ditemukan tetapi skornya di bawah ambang;
+        `llm` = potongan lolos ambang, tetapi model AI menilai isinya tidak menjawab.
+
     UnansweredGroup:
       type: object
       required: [ids, sample_question, count, last_asked_at, resolved]
@@ -2666,9 +2676,9 @@ components:
         avg_top_score:
           type: [number, 'null']
           description: |
-            Rata-rata skor tertinggi kelompok ini. Nilai yang mendekati ambang
-            menandakan dokumennya mungkin sudah ada tetapi retrieval-nya meleset;
-            nilai sangat rendah menandakan dokumennya memang belum ada.
+            Rata-rata skor tertinggi kelompok ini. Tidak lagi ditampilkan dashboard:
+            dengan model e5 skornya hampir selalu 0,77-0,93, jadi tidak membedakan
+            apa pun. Pakai `refusal_reason`.
         last_asked_at: { type: string, format: date-time }
         resolved: { type: boolean }
         unit:
@@ -2677,6 +2687,11 @@ components:
             Unit yang dipilih mahasiswa saat menanyakan `sample_question`. Chatbot
             hanya mencari di dokumen unit itu, jadi uji coba ulangnya juga harus
             memakai unit ini. Null bila pesan asalnya sudah terhapus dari log.
+        refusal_reason:
+          oneOf:
+            - $ref: '#/components/schemas/RefusalReason'
+            - type: 'null'
+          description: Alasan penolakan `sample_question` (pertanyaan terbaru di kelompok).
 
     UnansweredPage:
       type: object
@@ -2736,6 +2751,11 @@ components:
         unit:
           type: [string, 'null']
           description: Unit yang dipilih mahasiswa saat bertanya (`messages.meta.unit`).
+        refusal_reason:
+          oneOf:
+            - $ref: '#/components/schemas/RefusalReason'
+            - type: 'null'
+          description: Hanya untuk `kind = refusal`; null untuk jenis balasan lain.
 
     FeedbackPage:
       type: object
@@ -2997,7 +3017,10 @@ components:
           items: { $ref: '#/components/schemas/TopicCount' }
         running_cost_usd:
           type: number
-          description: Estimasi dari token terpakai, bukan dari API penagihan.
+          description: |
+            Estimasi dari token terpakai, bukan dari API penagihan. LLM chat + embedding,
+            sama dengan total `GET /api/admin/costs`. Gerbang JEV tidak dihitung: ia
+            berjalan di Laya yang di-host sendiri.
         messages_without_cost_estimate:
           type: integer
           minimum: 0

@@ -12,11 +12,14 @@ sebagai penanda tetap yang disimpan chatlog -- bukan curahan hati mahasiswa.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.admin.grouping import refusal_reason
 
 _PERTANYAAN_SUBQUERY = """
     LEFT JOIN LATERAL (
@@ -36,6 +39,16 @@ pasangannya dicari dari urutan waktu dalam percakapan yang sama. Inilah
 alasan `chatlog` memakai `clock_timestamp()`: dengan `now()` seluruh baris satu
 transaksi bercap waktu identik dan pasangan ini tidak dapat ditentukan.
 """
+
+
+def butir_umpan_balik(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Satu baris query menjadi `FeedbackItem`: asal penolakan mentah diganti
+    alasan yang dapat ditindaklanjuti admin (`refusal_reason`)."""
+    item = dict(row)
+    item["refusal_reason"] = refusal_reason(
+        item.pop("refusal_source", None), item.get("top_score")
+    )
+    return item
 
 
 def _kondisi(helpful: bool | None, sejak: date | None, timezone: str) -> tuple[str, dict]:
@@ -64,7 +77,8 @@ async def fetch_feedback(
         text(
             "SELECT f.id::text AS id, f.message_id::text AS message_id, f.helpful,"
             " f.comment, f.created_at, m.content AS answer, m.meta->>'kind' AS kind,"
-            " m.meta->>'unit' AS unit, m.top_score, q.content AS question"
+            " m.meta->>'unit' AS unit, m.top_score, q.content AS question,"
+            " m.meta->>'refusal_source' AS refusal_source"
             " FROM feedback f"
             " JOIN messages m ON m.id = f.message_id"
             f" {_PERTANYAAN_SUBQUERY} {where}"
@@ -97,7 +111,7 @@ async def fetch_feedback(
         total = positif if helpful else negatif
 
     return {
-        "items": [dict(row) for row in rows.mappings()],
+        "items": [butir_umpan_balik(row) for row in rows.mappings()],
         "total": total,
         "positive_count": positif,
         "negative_count": negatif,

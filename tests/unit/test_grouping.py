@@ -10,7 +10,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.admin.grouping import UnansweredItem, group_questions, jaccard, key_terms
+from app.admin.grouping import (
+    UnansweredItem,
+    group_questions,
+    jaccard,
+    key_terms,
+    refusal_reason,
+)
 
 T0 = datetime(2026, 9, 1, 8, 0, tzinfo=UTC)
 
@@ -149,3 +155,55 @@ class TestPengelompokan:
     def test_ambang_tidak_sah_ditolak(self, ambang):
         with pytest.raises(ValueError):
             group_questions([item("1", "x")], threshold=ambang)
+
+
+class TestAlasanPenolakan:
+    """Skor e5 hampir selalu 0,77-0,93, jadi admin diberi alasan, bukan skor."""
+
+    @pytest.mark.parametrize(
+        "sumber,skor,alasan",
+        [
+            ("llm", 0.86, "llm"),
+            ("llm", None, "llm"),
+            ("threshold", 0.0, "no_documents"),
+            ("threshold", None, "no_documents"),
+            ("threshold", 0.2, "below_threshold"),
+            (None, 0.86, None),
+            ("lainnya", 0.86, None),
+        ],
+    )
+    def test_pemetaan(self, sumber, skor, alasan):
+        assert refusal_reason(sumber, skor) == alasan
+
+    def test_kelompok_memakai_alasan_pertanyaan_terbaru(self):
+        lama = UnansweredItem(
+            "lama", "harga TOEIC", 0.0, T0, False, "UPS", refusal_source="threshold"
+        )
+        baru = UnansweredItem(
+            "baru",
+            "harga TOEIC berapa",
+            0.84,
+            T0 + timedelta(minutes=5),
+            False,
+            "UPS",
+            refusal_source="llm",
+        )
+        grup = group_questions([lama, baru])
+        assert len(grup) == 1
+        assert grup[0].alasan == "llm"
+
+    def test_tanpa_asal_penolakan(self):
+        assert group_questions([item("1", "jadwal KKN")])[0].alasan is None
+
+    def test_umpan_balik_membawa_alasan_bukan_asal_mentah(self):
+        from app.admin.feedback import butir_umpan_balik
+
+        tolak = butir_umpan_balik(
+            {"kind": "refusal", "top_score": 0.0, "refusal_source": "threshold"}
+        )
+        assert tolak["refusal_reason"] == "no_documents"
+        assert "refusal_source" not in tolak
+        jawab = butir_umpan_balik(
+            {"kind": "answer", "top_score": 0.86, "refusal_source": None}
+        )
+        assert jawab["refusal_reason"] is None

@@ -266,6 +266,28 @@ class TestTakTerjawab:
         assert data["question_count"] == 7
         assert data["max_count"] == 3
 
+    def test_alasan_penolakan_ikut_dikirim(self, client, admin_headers, monkeypatch):
+        t0 = datetime(2026, 10, 1, 8, 0, tzinfo=UTC)
+        data = [
+            UnansweredItem("a", "fakultas apa saja", 0.0, t0, False, "Fakultas", "threshold"),
+            UnansweredItem("b", "nama lengkap bu wiwik", 0.8, t0, False, "UPS", "llm"),
+            UnansweredItem("c", "jadwal krs", 0.2, t0, False, None, None),
+        ]
+
+        async def palsu(session, **_):
+            return data
+
+        monkeypatch.setattr("app.routers.admin_quality.fetch_items", palsu)
+        alasan = {
+            g["sample_question"]: g["refusal_reason"]
+            for g in self.ambil(client, admin_headers)["items"]
+        }
+        assert alasan == {
+            "fakultas apa saja": "no_documents",
+            "nama lengkap bu wiwik": "llm",
+            "jadwal krs": None,
+        }
+
     def test_kosong(self, client, admin_headers, monkeypatch):
         async def palsu(session, **_):
             return []

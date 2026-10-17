@@ -123,6 +123,27 @@ STOPWORDS = frozenset(
 _TOKEN_RE = re.compile(r"[^\W_]+")
 
 
+def refusal_reason(refusal_source: str | None, top_score: float | None) -> str | None:
+    """Alasan penolakan yang dapat ditindaklanjuti admin.
+
+    Skor kemiripan sendiri tidak membantu: dengan model e5 skornya hampir selalu
+    0,77-0,93, baik dokumennya menjawab maupun tidak. Yang membedakan tindakan
+    admin adalah siapa yang menolak:
+
+    - `no_documents`: ambang menolak tanpa satu pun potongan ditemukan, artinya
+      unit itu belum punya dokumen yang dapat dicari.
+    - `below_threshold`: ada potongan, tetapi skornya di bawah ambang.
+    - `llm`: potongan lolos ambang, tetapi model AI menilai isinya tidak menjawab.
+
+    None bila asal penolakan tidak tercatat (pesan asalnya terhapus dari log).
+    """
+    if refusal_source == "llm":
+        return "llm"
+    if refusal_source == "threshold":
+        return "below_threshold" if top_score else "no_documents"
+    return None
+
+
 @dataclass(frozen=True)
 class UnansweredItem:
     id: str
@@ -133,6 +154,13 @@ class UnansweredItem:
     unit: str | None = None
     """Unit yang dipilih mahasiswa di menu chatbot saat bertanya. None bila
     pesan asalnya sudah terhapus dari log."""
+    refusal_source: str | None = None
+    """`messages.meta->>'refusal_source'` jawaban penolakannya: `threshold`
+    atau `llm`. None bila pesan asalnya sudah terhapus dari log."""
+
+    @property
+    def alasan(self) -> str | None:
+        return refusal_reason(self.refusal_source, self.top_score)
 
 
 @dataclass
@@ -150,6 +178,11 @@ class QuestionGroup:
         """Unit pertanyaan wakil, supaya uji ulangnya mencari di dokumen yang
         sama dengan yang dicari chatbot saat menolak."""
         return self.representative.unit
+
+    @property
+    def alasan(self) -> str | None:
+        """Alasan penolakan pertanyaan wakil (yang terbaru)."""
+        return self.representative.alasan
 
     @property
     def ids(self) -> list[str]:

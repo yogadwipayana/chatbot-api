@@ -37,7 +37,8 @@ async def fetch_items(
     rows = await session.execute(
         text(
             "SELECT u.id::text AS id, u.question, u.top_score, u.created_at,"
-            " u.resolved, m.meta->>'unit' AS unit"
+            " u.resolved, m.meta->>'unit' AS unit,"
+            " m.meta->>'refusal_source' AS refusal_source"
             " FROM unanswered_questions u LEFT JOIN messages m ON m.id = u.message_id"
             f" {where} ORDER BY u.created_at DESC LIMIT :batas"
         ),
@@ -51,6 +52,7 @@ async def fetch_items(
             created_at=row["created_at"],
             resolved=row["resolved"],
             unit=row["unit"],
+            refusal_source=row["refusal_source"],
         )
         for row in rows.mappings()
     ]

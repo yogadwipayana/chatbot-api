@@ -181,6 +181,13 @@ class FaqEntryUpdate(BaseModel):
 # --- AD-4 -------------------------------------------------------------------
 
 
+RefusalReason = Literal["no_documents", "below_threshold", "llm"]
+"""Alasan penolakan untuk admin (`app.admin.grouping.refusal_reason`):
+`no_documents` = unit belum punya dokumen yang dapat dicari, `below_threshold` =
+potongan yang ditemukan di bawah ambang, `llm` = model AI menilai dokumen yang
+ditemukan tidak menjawab."""
+
+
 class UnansweredGroup(BaseModel):
     """AD-4: pertanyaan mirip dikelompokkan beserta frekuensinya."""
 
@@ -196,6 +203,8 @@ class UnansweredGroup(BaseModel):
     """Unit yang dipilih mahasiswa saat menanyakan `sample_question`. Chatbot
     hanya mencari di dokumen unit itu, jadi uji ulangnya juga harus begitu.
     None bila pesan asalnya sudah terhapus dari log."""
+    refusal_reason: RefusalReason | None = None
+    """Alasan penolakan `sample_question` (lihat `RefusalReason`)."""
 
 
 class UnansweredPage(BaseModel):
@@ -242,6 +251,8 @@ class FeedbackItem(BaseModel):
     top_score: float | None = None
     unit: str | None = None
     """`messages.meta->>'unit'`: unit yang dipilih mahasiswa saat bertanya."""
+    refusal_reason: RefusalReason | None = None
+    """Hanya untuk `kind = refusal`; None untuk jenis balasan lain."""
 
 
 class FeedbackPage(BaseModel):

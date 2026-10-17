@@ -1,9 +1,13 @@
 """Halaman Log dashboard: performa per node, giliran chat, graf, dan log aplikasi.
 
-Membaca SQLite log (`app/observability/logstore.py`), bukan Postgres. Minimal
-role admin. Log `app.audit` hanya untuk superadmin, disaring di query -- role
-admin yang meminta `logger=app.audit` mendapat daftar kosong, bukan 403, supaya
-keberadaan log yang disembunyikan tidak terbaca dari beda respons.
+Membaca SQLite log (`app/observability/logstore.py`), bukan Postgres. Hanya
+superadmin (sejak 2026-10-17): isinya alat debug developer -- nama langkah
+pipeline, system prompt lengkap, dan log server -- bukan bahan kerja staf unit.
+
+Log `app.audit` tetap disaring di query lewat `_boleh_audit`, supaya tidak ikut
+terbuka bila level halaman ini kelak diturunkan: level di bawah superadmin yang
+meminta `logger=app.audit` mendapat daftar kosong, bukan 403, supaya keberadaan
+log yang disembunyikan tidak terbaca dari beda respons.
 """
 
 from __future__ import annotations
@@ -38,7 +42,7 @@ router = APIRouter(
     responses={401: {"model": Error}, 403: {"model": Error}},
 )
 
-AdminDep = Annotated[CurrentAdmin, Depends(require_role(AdminRole.ADMIN))]
+AdminDep = Annotated[CurrentAdmin, Depends(require_role(AdminRole.SUPERADMIN))]
 LogStoreDep = Annotated[Any, Depends(get_log_store)]
 RentangQuery = Annotated[RentangLog, Query(alias="range", description="`24h` atau `7d`.")]
 
