@@ -5,6 +5,6 @@ uv pip install -e .
 .venv/bin/python -m app.db.migrasi
 
 pm2 start .venv/bin/uvicorn --name "api" --interpreter none -- \
-  app.main:app --host 0.0.0.0 --port 8000
+  app.main:app --host 0.0.0.0 --port 8000 --no-server-header
 
 pm2 save

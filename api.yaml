@@ -609,11 +609,16 @@ paths:
       operationId: admin_login
       x-status: implemented
       description: |
-        AD-1. Mengembalikan JWT berumur `ADMIN_TOKEN_TTL_MINUTES` (default 8 jam).
+        AD-1. Mengembalikan JWT berumur `ADMIN_IDLE_TIMEOUT_MINUTES` (default 30
+        menit). Dashboard memperpanjangnya lewat `POST /api/admin/token/refresh`
+        selama admin berinteraksi, sampai paling lama `ADMIN_TOKEN_TTL_MINUTES`
+        (default 8 jam) sejak login. Token membawa `iss`, `aud`, dan `auth_time`
+        (waktu login); token tanpa klaim itu ditolak.
 
         Balasan gagal sengaja tidak membedakan "email tidak terdaftar" dari
         "kata sandi salah", supaya tidak bisa dipakai memetakan siapa saja yang
-        punya akun admin.
+        punya akun admin. Setiap login berhasil, gagal, dan terkunci dicatat ke
+        log audit beserta IP-nya.
       requestBody:
         required: true
         content:
@@ -643,6 +648,30 @@ paths:
               example: { detail: Email atau kata sandi salah }
         '429':
           $ref: '#/components/responses/RateLimited'
+
+  /api/admin/token/refresh:
+    post:
+      tags: [admin-auth]
+      summary: Perpanjang token sesi dashboard
+      operationId: refresh_token
+      x-status: implemented
+      x-min-role: staf
+      security: [{ bearerAuth: [] }]
+      description: |
+        Token baru untuk sesi yang sama, berumur `ADMIN_IDLE_TIMEOUT_MINUTES`.
+        Dipanggil dashboard selama admin masih berinteraksi, sehingga sesi
+        yang ditinggal berakhir sendiri. `auth_time` login aslinya ikut
+        terbawa: sesi tidak pernah melewati `ADMIN_TOKEN_TTL_MINUTES` sejak
+        login, berapa kali pun diperpanjang. Akun nonaktif, token yang terbit
+        sebelum kata sandi diganti, dan sesi yang sudah melewati batas umurnya
+        ditolak 401.
+      responses:
+        '200':
+          description: Token baru
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/admin/documents:
     get:
@@ -1164,6 +1193,8 @@ paths:
         Tidak tunduk pada kill switch (admin perlu mendiagnosis justru saat
         layanan dimatikan) dan TIDAK dicatat ke log percakapan, supaya uji coba
         tidak mencemari AD-4 maupun AD-5. LLM tetap dipanggil bila lolos ambang.
+        Karena itu dibatasi per akun dashboard (`RATE_LIMIT_PER_ADMIN`, bawaan
+        20/menit).
       requestBody:
         required: true
         content:
@@ -1178,6 +1209,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '502':
           description: |
             Layanan AI gagal (LLM, gateway, atau embedding pertanyaan). `detail`
@@ -1609,7 +1641,11 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TokenResponse' }
         '400':
-          description: Kata sandi lama salah, atau kata sandi baru sama dengan yang lama
+          description: |
+            Kata sandi lama salah, kata sandi baru sama dengan yang lama, atau
+            kata sandi baru terlalu mudah ditebak (sandi umum, kata seperti
+            "instiki" atau "password" ditambah angka, urutan, pengulangan, atau
+            sebagian besar berisi email akun). `detail` menyebut alasannya.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

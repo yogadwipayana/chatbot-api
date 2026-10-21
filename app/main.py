@@ -30,8 +30,10 @@ from app.routers import (
     units,
 )
 from app.security.batas_body import BatasUkuranBody
+from app.security.header_keamanan import HeaderKeamanan
 from app.security.killswitch import KillSwitch, get_kill_switch, pulihkan
 from app.security.sanitize import InvalidQuestion
+from app.security.tangkap_galat import TangkapGalat
 
 logger = logging.getLogger(__name__)
 
@@ -111,15 +113,23 @@ async def invalid_question_handler(request: Request, exc: InvalidQuestion) -> JS
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    docs = settings.docs_terbuka()
     app = FastAPI(
         title="Chatbot Administrasi Mahasiswa",
         version="0.1.0",
         lifespan=lifespan,
-        docs_url="/docs" if settings.environment != "production" else None,
+        # Ketiganya, bukan hanya /docs: dulu /redoc dan /openapi.json tetap
+        # terbuka di produksi (H22). `app.openapi()` tetap dapat dipanggil kode.
+        docs_url="/docs" if docs else None,
+        redoc_url="/redoc" if docs else None,
+        openapi_url="/openapi.json" if docs else None,
     )
-    # Didaftarkan SEBELUM CORS: middleware terakhir menjadi lapisan terluar,
-    # jadi CORS tetap membungkus 413 dari sini dan dashboard membaca pesannya,
-    # bukan galat jaringan karena header CORS hilang.
+    # Middleware terakhir yang didaftarkan menjadi lapisan terluar. Urutan dari
+    # luar: header keamanan -> CORS -> batas body -> penangkap galat -> router.
+    # Batas body dan penangkap galat di dalam CORS, jadi 413 dan 500 dari
+    # keduanya tetap membawa header CORS dan dashboard membaca pesannya, bukan
+    # galat jaringan.
+    app.add_middleware(TangkapGalat)
     app.add_middleware(BatasUkuranBody, max_upload_mb=settings.max_upload_mb)
     app.add_middleware(
         CORSMiddleware,
@@ -129,6 +139,7 @@ def create_app() -> FastAPI:
         allow_headers=["Authorization", "Content-Type", "X-Session-Id", "X-Embed-Key"],
         expose_headers=["Retry-After"],
     )
+    app.add_middleware(HeaderKeamanan, hsts=settings.environment != "local")
     app.add_exception_handler(InvalidQuestion, invalid_question_handler)
     app.include_router(health.router)
     app.include_router(chat.router)

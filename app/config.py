@@ -56,7 +56,12 @@ class Settings(BaseSettings):
     )
 
     environment: Literal["local", "staging", "production"] = "local"
+    """Semua nilai selain `local` dijaga seketat produksi (H22): `staging` yang
+    lebih longgar berarti satu salah isi `.env` membuka server yang dapat
+    dijangkau orang lain, padahal salah isi seperti itulah yang ingin dicegah."""
     debug: bool = False
+    """Mencetak setiap SQL beserta parameternya -- termasuk hash kata sandi admin
+    dan NIM -- ke log konsol. Hanya untuk `ENVIRONMENT=local`."""
 
     # --- Database -----------------------------------------------------
     database_url: PostgresDsn = Field(
@@ -285,6 +290,11 @@ class Settings(BaseSettings):
     hilang setiap redeploy."""
     log_retention_days: int = Field(default=7, ge=1)
     """Baris log yang lebih tua dari ini dihapus saat start dan setiap jam."""
+    log_audit_retention_days: int = Field(default=365, ge=1)
+    """Masa simpan log `app.audit` (login, akun, kill switch, konfigurasi, akses
+    ditolak). Terpisah dari `log_retention_days`: jejak audit dibutuhkan untuk
+    menelusuri kejadian yang baru disadari berminggu-minggu kemudian, sedangkan
+    log debug 7 hari sudah cukup (H32). Tidak boleh lebih pendek dari itu."""
     log_node_io: bool = True
     """Simpan juga teks pertanyaan, jawaban, NIM, dan input/output setiap node
     serta panggilan LLM/tool di dalamnya (tab Graf halaman Log, `logs.md` tahap
@@ -293,7 +303,17 @@ class Settings(BaseSettings):
 
     # --- Keamanan (FR-9) ---------------------------------------------
     admin_jwt_secret: SecretStr = SecretStr(PLACEHOLDER_JWT_SECRET)
-    admin_token_ttl_minutes: int = 480
+    admin_token_ttl_minutes: int = Field(default=480, ge=5, le=1440)
+    """Umur maksimum satu sesi dashboard sejak login, berapa kali pun tokennya
+    diperpanjang. Lewat dari ini admin harus masuk lagi."""
+    admin_idle_timeout_minutes: int = Field(default=30, ge=5, le=480)
+    """Umur satu token admin. Dashboard memperpanjangnya selama admin masih
+    berinteraksi (`POST /api/admin/token/refresh`); tanpa interaksi selama ini
+    sesi berakhir sendiri -- juga token yang tersalin dari komputer bersama (H27)."""
+    rate_limit_per_admin: str = "20/minute"
+    """Uji coba jawaban (`POST /api/admin/test-query`) per akun dashboard. Setiap
+    uji coba memanggil LLM, embedding, JEV, dan SADS seperti pertanyaan mahasiswa
+    tetapi tidak terhitung batas harian. `0` = mati."""
     rate_limit_per_session: str = "20/minute"
     """Per `X-Session-Id` (satu tab). Bentuk `N/second|minute|hour|day`; `0` = mati."""
     rate_limit_per_ip: str = "60/minute"
@@ -556,7 +576,10 @@ class Settings(BaseSettings):
         return v
 
     @field_validator(
-        "rate_limit_per_session", "rate_limit_per_ip", "rate_limit_per_embed_site"
+        "rate_limit_per_session",
+        "rate_limit_per_ip",
+        "rate_limit_per_embed_site",
+        "rate_limit_per_admin",
     )
     @classmethod
     def _batas_laju_sah(cls, v: str) -> str:
@@ -565,11 +588,12 @@ class Settings(BaseSettings):
         return v
 
     def batas_laju(self) -> dict[str, BatasLaju | None]:
-        """Batas per sesi, IP, dan kunci sematan; None = tidak dibatasi."""
+        """Batas per sesi, IP, kunci sematan, dan akun admin; None = tidak dibatasi."""
         return {
             "sesi": parse_batas(self.rate_limit_per_session),
             "ip": parse_batas(self.rate_limit_per_ip),
             "kunci": parse_batas(self.rate_limit_per_embed_site),
+            "admin": parse_batas(self.rate_limit_per_admin),
         }
 
     @field_validator("admin_jwt_secret")
@@ -581,9 +605,40 @@ class Settings(BaseSettings):
                 "admin_jwt_secret minimal 32 byte (RFC 7518 §3.2). Bangkitkan dengan: "
                 'python -c "import secrets; print(secrets.token_urlsafe(48))"'
             )
-        if info.data.get("environment") == "production" and rahasia == PLACEHOLDER_JWT_SECRET:
-            raise ValueError("admin_jwt_secret masih memakai nilai placeholder")
+        # Placeholder tertulis di kode sumber ini: siapa pun yang membacanya dapat
+        # menandatangani token superadmin. Hanya mesin pengembang yang boleh
+        # memakainya -- `staging` juga dapat dijangkau orang lain (H22).
+        lokal = info.data.get("environment", "local") == "local"
+        if not lokal and rahasia == PLACEHOLDER_JWT_SECRET:
+            raise ValueError(
+                "admin_jwt_secret masih memakai nilai placeholder; placeholder hanya "
+                "boleh dipakai saat ENVIRONMENT=local"
+            )
         return v
+
+    @model_validator(mode="after")
+    def _keamanan_di_luar_lokal(self) -> Settings:
+        """Setelan yang hanya pantas di mesin pengembang ditolak di server (H22)."""
+        if self.debug and self.environment != "local":
+            raise ValueError(
+                f"DEBUG=true hanya boleh saat ENVIRONMENT=local (sekarang "
+                f"{self.environment}): DEBUG mencetak setiap SQL beserta parameternya, "
+                "termasuk hash kata sandi admin dan NIM, ke log server"
+            )
+        if self.log_audit_retention_days < self.log_retention_days:
+            raise ValueError(
+                f"LOG_AUDIT_RETENTION_DAYS ({self.log_audit_retention_days}) tidak boleh "
+                f"lebih pendek dari LOG_RETENTION_DAYS ({self.log_retention_days})"
+            )
+        return self
+
+    def docs_terbuka(self) -> bool:
+        """`/docs`, `/redoc`, dan `/openapi.json` hanya di mesin pengembang (H22).
+
+        Skema lengkap memetakan setiap endpoint admin beserta level aksesnya;
+        di server ia hanya memudahkan pemindaian. Kontrak tetap ada di `api.yaml`.
+        """
+        return self.environment == "local"
 
     @field_validator("chunk_overlap")
     @classmethod

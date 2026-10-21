@@ -53,12 +53,15 @@ class LogWriter:
         store: LogStore,
         *,
         retention_days: int,
+        audit_retention_days: int | None = None,
         max_antrean: int = 10_000,
         batch: int = 500,
         jeda_hapus_detik: float = 3600,
     ) -> None:
         self.store = store
         self.retention = timedelta(days=retention_days)
+        self.retention_audit = timedelta(days=audit_retention_days or retention_days)
+        """Log `app.audit` disimpan lebih lama (`LOG_AUDIT_RETENTION_DAYS`, H32)."""
         self.batch = batch
         self.jeda_hapus = jeda_hapus_detik
         self.dibuang = 0
@@ -125,8 +128,11 @@ class LogWriter:
             )
 
     def _hapus_lama(self) -> None:
+        sekarang = datetime.now(UTC)
         try:
-            self.store.hapus_lama(datetime.now(UTC) - self.retention)
+            self.store.hapus_lama(
+                sekarang - self.retention, batas_audit=sekarang - self.retention_audit
+            )
         except Exception:
             _internal.exception("Gagal menghapus log lama di %s", self.store.path)
 
@@ -200,7 +206,9 @@ def mulai_log(settings: Any) -> LogWriter:
     global _writer_aktif
     hentikan_log()
     writer = LogWriter(
-        LogStore(settings.log_db_path), retention_days=settings.log_retention_days
+        LogStore(settings.log_db_path),
+        retention_days=settings.log_retention_days,
+        audit_retention_days=settings.log_audit_retention_days,
     )
     writer.start()
     configure_logging(settings.log_level, writer)

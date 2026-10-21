@@ -19,6 +19,7 @@ from app.deps import (
     SessionDep,
     SettingsDep,
     UnitDirectoryDep,
+    batasi_uji_coba,
     build_gate_call,
     build_llm_call,
     build_retriever,
@@ -148,7 +149,8 @@ async def list_feedback(
 @router.post(
     "/test-query",
     response_model=TestQueryResponse,
-    responses={422: {"model": Error}, 502: {"model": Error}},
+    responses={422: {"model": Error}, 429: {"model": Error}, 502: {"model": Error}},
+    dependencies=[Depends(batasi_uji_coba)],
 )
 async def admin_test_query(
     payload: TestQueryRequest,
@@ -184,6 +186,9 @@ async def admin_test_query(
 
     Galat layanan AI (LLM, gateway, embedding pertanyaan) dibalas 502 berisi
     kalimat siap tampil; rinciannya masuk log server.
+
+    Dibatasi per akun dashboard (`RATE_LIMIT_PER_ADMIN`, bawaan 20/menit; H21):
+    tidak ada batas harian atau kill switch yang menahannya.
     """
     policy = ThresholdPolicy(
         vector_threshold=(

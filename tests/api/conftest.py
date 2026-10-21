@@ -74,6 +74,18 @@ EMAIL_PER_LEVEL = {
 }
 
 
+@pytest.fixture(autouse=True)
+def jatah_log_audit(monkeypatch) -> SlidingWindowLimiter:
+    """Pembatas log audit (`deps.catat_audit_terbatas`) baru per test.
+
+    Ia global di proses: tanpa ini, test token ngawur yang berjalan lebih dulu
+    menghabiskan jatah log IP `testclient`, dan test yang memeriksa log audit
+    berikutnya tidak melihat apa pun."""
+    baru = SlidingWindowLimiter()
+    monkeypatch.setattr("app.deps._jatah_log", baru)
+    return baru
+
+
 @pytest.fixture
 def kill_switch() -> KillSwitch:
     return KillSwitch()

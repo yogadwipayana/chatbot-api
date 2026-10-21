@@ -315,3 +315,75 @@ class TestCorsOrigin:
     def test_produksi_tidak_kebocoran_localhost(self):
         s = settings_produksi(cors_origins="https://admin.dwipa.my.id")
         assert all("localhost" not in a for a in s.cors_origin_list())
+
+
+class TestDiLuarLokal:
+    """H22: `staging` dijaga seketat produksi, karena juga dijangkau orang lain."""
+
+    def test_placeholder_ditolak_di_staging(self):
+        from app.config import PLACEHOLDER_JWT_SECRET
+
+        with pytest.raises(ValidationError, match="placeholder"):
+            settings(environment="staging", admin_jwt_secret=PLACEHOLDER_JWT_SECRET)
+
+    @pytest.mark.parametrize("environment", ["staging", "production"])
+    def test_debug_ditolak_di_server(self, environment):
+        """DEBUG mencetak SQL beserta parameternya: hash kata sandi dan NIM."""
+        with pytest.raises(ValidationError, match="DEBUG"):
+            settings(
+                environment=environment,
+                admin_jwt_secret="x" * 48,
+                api_key="sk-uji",
+                debug=True,
+            )
+
+    def test_debug_boleh_saat_lokal(self):
+        assert settings(environment="local", debug=True).debug is True
+
+    @pytest.mark.parametrize(
+        "environment,terbuka", [("local", True), ("staging", False), ("production", False)]
+    )
+    def test_docs_hanya_di_mesin_pengembang(self, environment, terbuka):
+        s = settings(environment=environment, admin_jwt_secret="x" * 48, api_key="sk-uji")
+        assert s.docs_terbuka() is terbuka
+
+
+class TestSesiAdmin:
+    def test_default_30_menit_idle_8_jam_maksimum(self):
+        s = settings()
+        assert s.admin_idle_timeout_minutes == 30
+        assert s.admin_token_ttl_minutes == 480
+
+    @pytest.mark.parametrize("nilai", [0, 4, 1441])
+    def test_umur_sesi_di_luar_batas_ditolak(self, nilai):
+        """Salah ketik `ADMIN_TOKEN_TTL_MINUTES=525600` tidak boleh menjadi sesi setahun."""
+        with pytest.raises(ValidationError):
+            settings(admin_token_ttl_minutes=nilai)
+
+    @pytest.mark.parametrize("nilai", [0, 481])
+    def test_idle_di_luar_batas_ditolak(self, nilai):
+        with pytest.raises(ValidationError):
+            settings(admin_idle_timeout_minutes=nilai)
+
+
+class TestMasaSimpanAudit:
+    def test_default_setahun(self):
+        assert settings().log_audit_retention_days == 365
+
+    def test_lebih_pendek_dari_log_biasa_ditolak(self):
+        with pytest.raises(ValidationError, match="LOG_AUDIT_RETENTION_DAYS"):
+            settings(log_retention_days=30, log_audit_retention_days=7)
+
+
+class TestBatasUjiCoba:
+    def test_default_20_per_menit(self):
+        from app.security.ratelimit import BatasLaju
+
+        assert settings().batas_laju()["admin"] == BatasLaju(20, 60.0)
+
+    def test_nol_mematikan(self):
+        assert settings(rate_limit_per_admin="0").batas_laju()["admin"] is None
+
+    def test_salah_ketik_ditolak(self):
+        with pytest.raises(ValidationError, match="tidak sah"):
+            settings(rate_limit_per_admin="20/menit")

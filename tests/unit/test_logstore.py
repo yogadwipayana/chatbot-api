@@ -119,6 +119,30 @@ class TestTulisDanHapus:
         total, items = store.daftar_giliran(SEKARANG - timedelta(days=30))
         assert [i["turn_id"] for i in items] == ["baru"]
 
+    def test_log_audit_disimpan_lebih_lama(self, store):
+        """H32: jejak login dan perubahan akun tidak ikut hilang bersama log debug 7 hari."""
+        delapan_hari = 60 * 24 * 8
+        setahun_lebih = 60 * 24 * 400
+        store.tulis(
+            [
+                log("app.rag", "debug lama", menit_lalu=delapan_hari),
+                log("app.audit", "audit 8 hari", menit_lalu=delapan_hari),
+                log("app.audit.sub", "audit turunan 8 hari", menit_lalu=delapan_hari),
+                log("app.audit", "audit 400 hari", menit_lalu=setahun_lebih),
+                log("app.auditor", "bukan audit", menit_lalu=delapan_hari),
+            ]
+        )
+        terhapus = store.hapus_lama(
+            SEKARANG - timedelta(days=7), batas_audit=SEKARANG - timedelta(days=365)
+        )
+        assert terhapus == 3
+        _, items = store.daftar_log(SEKARANG - timedelta(days=500), audit=True)
+        assert sorted(i["message"] for i in items) == ["audit 8 hari", "audit turunan 8 hari"]
+
+    def test_tanpa_batas_audit_sama_seperti_dulu(self, store):
+        store.tulis([log("app.audit", "audit lama", menit_lalu=60 * 24 * 8)])
+        assert store.hapus_lama(SEKARANG - timedelta(days=7)) == 1
+
 
 class TestVersiSkema:
     def test_berkas_berskema_lama_dibuat_ulang(self, tmp_path):

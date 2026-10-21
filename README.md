@@ -83,6 +83,13 @@ dari Postgres. Dibaca halaman Log dashboard lewat `/api/admin/logs/*`.
   lewat `message_id`.
 - **Masa simpan `LOG_RETENTION_DAYS`** (default 7 hari): baris lama dihapus saat
   start dan setiap jam. `LOG_LEVEL` (default `INFO`) berlaku untuk konsol dan SQLite.
+  Log `app.audit` (login berhasil/gagal/terkunci, ganti kata sandi, akun, unit,
+  kunci sematan, kill switch, konfigurasi, token palsu, akses ditolak) memakai
+  `LOG_AUDIT_RETENTION_DAYS` (default 365 hari). Berkasnya hanya ada di volume
+  server: untuk produksi, salin ke penyimpanan lain secara berkala.
+- **Galat tak tertangani** dicatat lengkap dengan traceback (logger
+  `app.security.tangkap_galat`) dan dijawab JSON 500 berkalimat umum yang tetap
+  membawa header CORS.
 - **Tidak memblokir permintaan:** baris masuk antrean dan ditulis satu thread
   latar belakang. Gagal menulis log tidak menggagalkan jawaban.
 - **Log `app.audit` hanya untuk superadmin**, disaring di query API.
@@ -194,7 +201,8 @@ benar** — perbarui YAML-nya.
 python -m scripts.export_openapi
 python -m scripts.export_openapi -o /tmp/live.yaml
 
-# Swagger UI interaktif ada di /docs saat server jalan (nonaktif di produksi)
+# Swagger UI interaktif ada di /docs saat server jalan. /docs, /redoc, dan
+# /openapi.json hanya ada saat ENVIRONMENT=local; staging dan produksi 404.
 ```
 
 ## Peta kode
