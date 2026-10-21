@@ -318,15 +318,26 @@ class LogStore:
         finally:
             conn.close()
 
-    def hapus_lama(self, batas: datetime) -> int:
-        """Hapus baris sebelum `batas`. Return: jumlah baris terhapus."""
+    def hapus_lama(self, batas: datetime, *, batas_audit: datetime | None = None) -> int:
+        """Hapus baris sebelum `batas`. Return: jumlah baris terhapus.
+
+        Log `app.audit` memakai `batas_audit` (`LOG_AUDIT_RETENTION_DAYS`, H32):
+        login, perubahan akun, dan kill switch perlu ditelusuri jauh lebih lama
+        daripada log debug. Kosong = sama dengan `batas`, seperti dulu.
+        """
         b = waktu_iso(batas)
+        ba = waktu_iso(batas_audit) if batas_audit is not None else b
         conn = self._connect()
         try:
             with conn:
                 n = conn.execute("DELETE FROM turns WHERE timestamp < ?", (b,)).rowcount
                 n += conn.execute("DELETE FROM node_runs WHERE started_at < ?", (b,)).rowcount
-                n += conn.execute("DELETE FROM app_logs WHERE timestamp < ?", (b,)).rowcount
+                n += conn.execute(
+                    f"DELETE FROM app_logs WHERE timestamp < ? AND {_TANPA_AUDIT}", (b,)
+                ).rowcount
+                n += conn.execute(
+                    f"DELETE FROM app_logs WHERE timestamp < ? AND NOT {_TANPA_AUDIT}", (ba,)
+                ).rowcount
                 n += conn.execute("DELETE FROM traces WHERE timestamp < ?", (b,)).rowcount
             return n
         finally:

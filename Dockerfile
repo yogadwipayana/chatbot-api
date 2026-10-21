@@ -52,4 +52,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 # Entrypoint: rapikan pemilik volume sebagai root, lepas hak root, migrasi
 # (RUN_MIGRATIONS=false untuk melewatinya), lalu jalankan CMD sebagai `app`.
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --no-server-header: tanpa `server: uvicorn`, versi server tidak diiklankan (H23).
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header"]

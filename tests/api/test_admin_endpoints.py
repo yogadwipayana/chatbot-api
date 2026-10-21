@@ -489,7 +489,17 @@ class TestUjiCobaSaatLayananAiGagal:
         assert r.status_code == 502
         assert r.headers["access-control-allow-origin"] == asal
 
-    def test_bug_tetap_500(self, make_client, strong_documents, admin_headers):
-        """Galat kode kita tidak boleh menyamar sebagai gangguan layanan AI."""
-        with pytest.raises(ZeroDivisionError):
-            self.uji(make_client, strong_documents, admin_headers, ZeroDivisionError())
+    def test_bug_tetap_500(self, make_client, strong_documents, admin_headers, caplog):
+        """Galat kode kita tidak boleh menyamar sebagai gangguan layanan AI.
+
+        Sejak H33 ia dijawab penangkap galat: tetap 500, dengan kalimat umum
+        tanpa rincian teknis, dan traceback-nya masuk log aplikasi."""
+        from app.security.tangkap_galat import GALAT_SERVER
+
+        r = self.uji(make_client, strong_documents, admin_headers, ZeroDivisionError())
+        assert r.status_code == 500
+        assert r.json()["detail"] == GALAT_SERVER
+        assert "ZeroDivisionError" not in r.text
+        assert any(
+            rec.name == "app.security.tangkap_galat" and rec.exc_info for rec in caplog.records
+        )

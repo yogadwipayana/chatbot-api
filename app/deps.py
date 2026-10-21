@@ -10,10 +10,12 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import AsyncIterator
-from datetime import date
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from typing import Annotated, Any
 
+import jwt
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,7 +25,7 @@ from app.config import Settings, get_settings
 from app.db.session import get_session
 from app.observability.tracing import id_run, konfigurasi_run
 from app.prodi import DAFTAR_PRODI, ProfilMahasiswa, cari_prodi, urai_nim
-from app.security.auth import decode_access_token
+from app.security.auth import decode_access_token, waktu_masuk
 from app.security.batas_harian import (
     OLEH_BATAS_HARIAN,
     PenghitungHarian,
@@ -41,6 +43,22 @@ from app.security.ratelimit import (
 )
 
 audit = logging.getLogger("app.audit")
+
+_jatah_log = SlidingWindowLimiter()
+_JATAH_LOG = BatasLaju(5, 60.0)
+
+
+def catat_audit_terbatas(kunci: str, pesan: str, *args: Any) -> None:
+    """Log audit untuk peristiwa yang dapat dipicu berulang dari luar.
+
+    Contohnya token palsu dan akses ditolak (H31). Paling banyak 5 baris per
+    kunci per menit, supaya pemindai tidak dapat membanjiri SQLite log yang
+    menyimpan `app.audit` setahun. Kunci memuat IP atau akun pelakunya, jadi
+    satu sumber yang ramai tidak menenggelamkan sumber lain.
+    """
+    if _jatah_log.coba([(kunci, _JATAH_LOG)]) is None:
+        audit.warning(pesan, *args)
+
 
 BaseSettingsDep = Annotated[Settings, Depends(get_settings)]
 """Isi `.env` apa adanya, tanpa penimpaan dari dashboard.
@@ -163,6 +181,14 @@ def pastikan_unit(admin: CurrentAdmin, unit: str | None, *, apa: str) -> None:
     supaya admin membaca penolakan yang menyebut hal yang benar-benar ia buka.
     """
     if not admin.can_manage_unit(unit):
+        catat_audit_terbatas(
+            f"unit:{admin.id}",
+            "Akses ditolak: %s (unit %s) mencoba mengelola %s unit %s",
+            admin.email,
+            admin.unit,
+            apa,
+            unit,
+        )
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             f"{apa.capitalize()} ini milik unit lain. Akun Anda hanya dapat "
@@ -221,6 +247,17 @@ TERLALU_BANYAK_PERTANYAAN = (
 TERLALU_BANYAK_PENILAIAN = (
     "Terlalu banyak penilaian dalam waktu singkat. Coba lagi sebentar lagi."
 )
+TERLALU_BANYAK_UJI_COBA = (
+    "Terlalu banyak uji coba dalam waktu singkat. Tunggu sebentar, lalu coba lagi."
+)
+
+
+def _terlalu_banyak(pesan: str, tunggu: float) -> HTTPException:
+    return HTTPException(
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        pesan,
+        headers={"Retry-After": str(max(1, math.ceil(tunggu)))},
+    )
 
 
 def _batasi(
@@ -248,11 +285,7 @@ def _batasi(
         kunci.append((f"{ruang}:kunci:{embed_key}", batas["kunci"]))
     tunggu = limiter.coba(kunci)
     if tunggu is not None:
-        raise HTTPException(
-            status.HTTP_429_TOO_MANY_REQUESTS,
-            pesan,
-            headers={"Retry-After": str(max(1, math.ceil(tunggu)))},
-        )
+        raise _terlalu_banyak(pesan, tunggu)
 
 
 def batasi_pertanyaan(
@@ -657,17 +690,36 @@ def get_account_store(session: SessionDep) -> Any:
 AccountStoreDep = Annotated[Any, Depends(get_account_store)]
 
 
-async def require_admin(
+SESI_BERAKHIR = "Sesi Anda sudah berakhir. Silakan masuk kembali."
+
+
+@dataclass(frozen=True)
+class SesiAdmin:
+    """Akun pemanggil, beserta saat ia terakhir memasukkan kata sandi."""
+
+    admin: CurrentAdmin
+    masuk: datetime
+    """`auth_time` token. Umur sesi (`ADMIN_TOKEN_TTL_MINUTES`) dihitung dari sini,
+    bukan dari `iat`: token perpanjangan terbit baru, tetapi sesinya tidak (H27)."""
+
+
+async def sesi_admin(
+    request: Request,
     settings: BaseSettingsDep,
     store: AccountStoreDep,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
-) -> CurrentAdmin:
+) -> SesiAdmin:
     """Verifikasi bearer token admin (AD-1) dan muat akunnya dari database.
 
     Level dan unit diambil dari database, bukan dari isi token: menurunkan
     level, memindah unit, atau menonaktifkan akun berlaku pada permintaan
     berikutnya. Token yang terbit sebelum kata sandi terakhir diganti ditolak,
-    sehingga mengatur ulang kata sandi juga mengeluarkan sesi yang bocor.
+    sehingga mengatur ulang kata sandi juga mengeluarkan sesi yang bocor. Sesi
+    yang lebih tua dari `ADMIN_TOKEN_TTL_MINUTES` sejak login juga ditolak,
+    berapa kali pun tokennya diperpanjang.
+
+    Token kedaluwarsa itu biasa dan tidak dicatat. Token yang tanda tangannya
+    salah, bentuknya rusak, atau milik akun nonaktif dicatat ke log audit (H31).
 
     Pesannya ditujukan ke admin non-teknis (PRD §9): dashboard menampilkannya
     apa adanya sebelum mengarahkan kembali ke halaman login.
@@ -678,21 +730,55 @@ async def require_admin(
         payload = decode_access_token(
             credentials.credentials, settings.admin_jwt_secret.get_secret_value()
         )
+    except jwt.ExpiredSignatureError as exc:
+        raise _tidak_berwenang(SESI_BERAKHIR) from exc
     except Exception as exc:  # jwt.PyJWTError dan turunannya
-        raise _tidak_berwenang("Sesi Anda sudah berakhir. Silakan masuk kembali.") from exc
+        ip = client_ip(request, settings.client_ip_header)
+        catat_audit_terbatas(
+            f"token:{ip}",
+            "Token admin tidak sah ditolak (%s) dari %s pada %s %s",
+            type(exc).__name__,
+            ip,
+            request.method,
+            request.url.path,
+        )
+        raise _tidak_berwenang(SESI_BERAKHIR) from exc
 
-    account = await store.find_by_email(str(payload.get("sub", "")))
+    email = str(payload["sub"])
+    account = await store.find_by_email(email)
     if account is None or not account.is_active:
+        catat_audit_terbatas(
+            f"akun:{email}",
+            "Token akun %s ditolak: akun %s",
+            email,
+            "sudah dihapus" if account is None else "nonaktif",
+        )
         raise _tidak_berwenang("Akun Anda sudah tidak aktif. Hubungi superadmin.")
 
     diganti = account.password_changed_at
     # `iat` dibulatkan ke detik; bandingkan dalam detik juga, supaya token yang
     # terbit pada detik yang sama dengan penggantian (mis. dari endpoint ganti
     # kata sandi itu sendiri) tidak langsung ditolak.
-    if diganti is not None and int(payload.get("iat", 0)) < int(diganti.timestamp()):
+    if diganti is not None and int(payload["iat"]) < int(diganti.timestamp()):
         raise _tidak_berwenang("Kata sandi akun ini sudah diganti. Silakan masuk kembali.")
 
-    return account.as_current()
+    masuk = waktu_masuk(payload)
+    if datetime.now(UTC) - masuk > timedelta(minutes=settings.admin_token_ttl_minutes):
+        raise _tidak_berwenang(SESI_BERAKHIR)
+
+    return SesiAdmin(admin=account.as_current(), masuk=masuk)
+
+
+SesiAdminDep = Annotated[SesiAdmin, Depends(sesi_admin)]
+
+
+async def require_admin(sesi: SesiAdminDep) -> CurrentAdmin:
+    """Akun admin yang sedang masuk; lihat `sesi_admin`.
+
+    Dependency terpisah supaya router cukup meminta akunnya. FastAPI menyimpan
+    hasil `sesi_admin` per permintaan, jadi token tidak diverifikasi dua kali.
+    """
+    return sesi.admin
 
 
 def _tidak_berwenang(pesan: str) -> HTTPException:
@@ -717,11 +803,38 @@ def require_role(minimum: AdminRole):
     `x-min-role`; `tests/api/test_admin_roles.py` memastikan kode menegakkannya.
     """
 
-    def check(admin: CurrentAdminDep) -> CurrentAdmin:
+    def check(admin: CurrentAdminDep, request: Request) -> CurrentAdmin:
         if not admin.at_least(minimum):
+            catat_audit_terbatas(
+                f"level:{admin.id}",
+                "Akses ditolak: %s (%s) ke %s %s, butuh level %s",
+                admin.email,
+                admin.role.value,
+                request.method,
+                request.url.path,
+                minimum.value,
+            )
             raise HTTPException(status.HTTP_403_FORBIDDEN, _PESAN_TERLARANG[minimum])
         return admin
 
     check.__name__ = f"require_{minimum.value}"
     check.__doc__ = f"Minimal {ROLE_LABELS[minimum]}."
     return check
+
+
+def batasi_uji_coba(
+    settings: BaseSettingsDep, limiter: ChatLimiterDep, admin: CurrentAdminDep
+) -> None:
+    """Batas laju `POST /api/admin/test-query` per akun dashboard (H21).
+
+    Uji coba memanggil LLM, embedding, JEV, dan SADS persis seperti pertanyaan
+    mahasiswa, tetapi tidak tunduk pada batas laju mahasiswa, batas harian,
+    maupun kill switch. Tanpa batas ini satu akun staf, atau tokennya yang
+    bocor, dapat menghabiskan kuota model tanpa terlihat di statistik.
+    """
+    batas = settings.batas_laju()["admin"]
+    if batas is None:
+        return
+    tunggu = limiter.coba([(f"uji-coba:admin:{admin.id}", batas)])
+    if tunggu is not None:
+        raise _terlalu_banyak(TERLALU_BANYAK_UJI_COBA, tunggu)

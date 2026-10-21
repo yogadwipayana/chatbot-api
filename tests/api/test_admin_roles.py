@@ -18,6 +18,7 @@ import yaml
 
 from app.admin.permissions import ROLE_LEVEL, AdminRole
 from app.config import get_settings
+from app.security.auth import AUDIENCE, ISSUER
 from tests.api.conftest import (
     ADMIN_BIASA_EMAIL,
     ADMIN_EMAIL,
@@ -69,7 +70,13 @@ def token_lama(email: str) -> dict[str, str]:
     """Token yang terbit satu menit lalu -- sebelum perubahan apa pun di test."""
     sekarang = int(time.time())
     token = jwt.encode(
-        {"sub": email, "iat": sekarang - 60, "exp": sekarang + 600},
+        {
+            "sub": email,
+            "iat": sekarang - 60,
+            "exp": sekarang + 600,
+            "iss": ISSUER,
+            "aud": AUDIENCE,
+        },
         get_settings().admin_jwt_secret.get_secret_value(),
         algorithm="HS256",
     )

@@ -205,3 +205,134 @@ class TestPembatasLogin:
     def test_parameter_tidak_sah(self, maks, jendela):
         with pytest.raises(ValueError):
             FailureLimiter(maks, jendela)
+
+
+class TestKlaimToken:
+    """H27/H30: `iss`, `aud`, `auth_time`, dan klaim wajib."""
+
+    def test_membawa_iss_aud_dan_waktu_masuk(self):
+        from app.security.auth import AUDIENCE, ISSUER
+
+        payload = decode_access_token(create_access_token("a@b.c", SECRET), SECRET)
+        assert payload["iss"] == ISSUER
+        assert payload["aud"] == AUDIENCE
+        assert abs(payload["auth_time"] - payload["iat"]) <= 1
+
+    @pytest.mark.parametrize("hilang", ["exp", "iat", "sub", "iss", "aud"])
+    def test_klaim_wajib_yang_hilang_ditolak(self, hilang):
+        """PyJWT hanya memeriksa `exp` bila ada: tanpa ini token tanpa exp abadi."""
+        from app.security.auth import AUDIENCE, ISSUER
+
+        sekarang = int(time.time())
+        klaim = {
+            "sub": "a@b.c",
+            "iat": sekarang,
+            "exp": sekarang + 600,
+            "iss": ISSUER,
+            "aud": AUDIENCE,
+        }
+        del klaim[hilang]
+        token = jwt.encode(klaim, SECRET, algorithm="HS256")
+        with pytest.raises(jwt.MissingRequiredClaimError):
+            decode_access_token(token, SECRET)
+
+    @pytest.mark.parametrize(
+        "klaim,galat",
+        [
+            ({"aud": "layanan-lain"}, jwt.InvalidAudienceError),
+            ({"iss": "penerbit-lain"}, jwt.InvalidIssuerError),
+        ],
+    )
+    def test_token_untuk_keperluan_lain_ditolak(self, klaim, galat):
+        """Rahasia yang sama kelak dipakai layanan lain: tokennya bukan sesi dashboard."""
+        from app.security.auth import AUDIENCE, ISSUER
+
+        sekarang = int(time.time())
+        isi = {"sub": "a@b.c", "iat": sekarang, "exp": sekarang + 600, "iss": ISSUER}
+        isi["aud"] = AUDIENCE
+        isi.update(klaim)
+        with pytest.raises(galat):
+            decode_access_token(jwt.encode(isi, SECRET, algorithm="HS256"), SECRET)
+
+    def test_algoritma_none_ditolak(self):
+        from app.security.auth import AUDIENCE, ISSUER
+
+        sekarang = int(time.time())
+        isi = {"sub": "a@b.c", "iat": sekarang, "exp": sekarang + 600}
+        token = jwt.encode({**isi, "iss": ISSUER, "aud": AUDIENCE}, None, algorithm="none")
+        with pytest.raises(jwt.InvalidAlgorithmError):
+            decode_access_token(token, SECRET)
+
+    def test_umur_maksimum_memotong_exp(self):
+        """Perpanjangan tidak boleh membuat sesi melewati auth_time + umur maksimum."""
+        from datetime import UTC, datetime, timedelta
+
+        masuk = datetime.now(UTC) - timedelta(minutes=470)
+        token = create_access_token(
+            "a@b.c", SECRET, ttl_minutes=30, auth_time=masuk, max_age_minutes=480
+        )
+        payload = decode_access_token(token, SECRET)
+        assert payload["auth_time"] == int(masuk.timestamp())
+        sisa = payload["exp"] - time.time()
+        assert 500 < sisa <= 600  # 10 menit tersisa, bukan 30
+
+    def test_waktu_masuk_token_lama_memakai_iat(self):
+        from app.security.auth import waktu_masuk
+
+        assert waktu_masuk({"iat": 1_700_000_000}).timestamp() == 1_700_000_000
+        assert waktu_masuk({"iat": 1, "auth_time": 5}).timestamp() == 5
+
+
+class TestKekuatanSandi:
+    """H28: sandi yang mudah ditebak ditolak saat diganti (NIST SP 800-63B)."""
+
+    @pytest.mark.parametrize(
+        "sandi",
+        [
+            "password1234",
+            "P@ssw0rd2026!",
+            "Instiki2026!!",
+            "instiki@12345",
+            "adminadmin12",
+            "SuperAdmin123",
+            "Bismillah123!",
+            "qwertyuiop12",
+            "123456789012",
+            "abcdefghijkl",
+            "aaaaaaaaaaaa",
+            "abcabcabcabc",
+            "202520252025",
+            "1qaz2wsx3edc",
+        ],
+    )
+    def test_sandi_umum_ditolak(self, sandi):
+        from app.security.auth import alasan_sandi_lemah
+
+        assert alasan_sandi_lemah(sandi)
+
+    @pytest.mark.parametrize(
+        "sandi",
+        [
+            "kopi-bali-pagi-hari",
+            "Bali2026Indah!",
+            "zebra lampu kursi 42",
+            "x7Kp2mQ9vL4r",
+            "kata-sandi-admin-yang-panjang",
+        ],
+    )
+    def test_frasa_dan_sandi_acak_diterima(self, sandi):
+        from app.security.auth import alasan_sandi_lemah
+
+        assert alasan_sandi_lemah(sandi, email="admin@instiki.ac.id") is None
+
+    def test_sandi_dari_email_ditolak(self):
+        from app.security.auth import alasan_sandi_lemah
+
+        alasan = alasan_sandi_lemah("Yoga.Dwipayana26", email="yoga.dwipayana@instiki.ac.id")
+        assert alasan and "email" in alasan
+
+    def test_sandi_sementara_buatan_server_selalu_lolos(self):
+        from app.routers.admin_users import temporary_password
+        from app.security.auth import alasan_sandi_lemah
+
+        assert all(alasan_sandi_lemah(temporary_password()) is None for _ in range(50))

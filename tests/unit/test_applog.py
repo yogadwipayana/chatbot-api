@@ -19,7 +19,7 @@ from app.observability.applog import (
     turn_id_var,
 )
 from app.observability.chatlog import SENSITIVE_PLACEHOLDER
-from app.observability.logstore import LogStore
+from app.observability.logstore import LogStore, waktu_iso
 from app.observability.rekaman import ACARA_PANGGILAN, buka, catat_panggilan, kemas
 from app.rag.chain import run_pipeline
 from app.rag.gate import GateLabel, GateVerdict
@@ -233,6 +233,28 @@ class TestLogWriter:
         writer.start()
         writer.stop()
         assert store.daftar_giliran(datetime(1999, 1, 1, tzinfo=UTC))[0] == 0
+
+    def test_masa_simpan_audit_diteruskan_ke_penghapusan(self, store):
+        """H32: LOG_AUDIT_RETENTION_DAYS sampai ke `hapus_lama`, bukan hanya tercatat."""
+        baris = {
+            "level": "WARNING",
+            "levelno": 30,
+            "location": "modul:1",
+            "traceback": None,
+            "turn_id": None,
+        }
+        waktu = waktu_iso(datetime.now(UTC) - timedelta(days=10))
+        store.tulis(
+            [
+                ("app", {**baris, "timestamp": waktu, "logger": logger, "message": pesan})
+                for logger, pesan in (("app.audit", "login"), ("app.rag", "debug"))
+            ]
+        )
+        writer = LogWriter(store, retention_days=7, audit_retention_days=365)
+        writer.start()
+        writer.stop()
+        _, items = store.daftar_log(datetime(2000, 1, 1, tzinfo=UTC), audit=True)
+        assert [i["message"] for i in items] == ["login"]
 
 
 class TestLogging:
