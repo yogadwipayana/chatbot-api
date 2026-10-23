@@ -36,8 +36,13 @@ class TestKataSandi:
         assert hash_password(SANDI) != hash_password(SANDI)
 
     def test_sandi_pendek_ditolak(self):
-        with pytest.raises(ValueError, match="minimal 12 karakter"):
+        with pytest.raises(ValueError, match="minimal 8 karakter"):
             hash_password("pendek")
+
+    def test_batas_minimal_8_karakter(self):
+        with pytest.raises(ValueError):
+            hash_password("x7Kp2mQ")
+        assert verify_password("x7Kp2mQ9", hash_password("x7Kp2mQ9"))
 
     def test_hash_rusak_tidak_melempar(self):
         """Baris DB yang korup harus jadi gagal login, bukan 500."""
@@ -303,6 +308,14 @@ class TestKekuatanSandi:
             "abcabcabcabc",
             "202520252025",
             "1qaz2wsx3edc",
+            "1q2w3e4r",
+            "1qaz2wsx",
+            "zaq12wsx",
+            "q1w2e3r4",
+            "qwer1234",
+            "1234qwer",
+            "12345678",
+            "admin123",
         ],
     )
     def test_sandi_umum_ditolak(self, sandi):
@@ -317,6 +330,7 @@ class TestKekuatanSandi:
             "Bali2026Indah!",
             "zebra lampu kursi 42",
             "x7Kp2mQ9vL4r",
+            "x7Kp2mQ9",
             "kata-sandi-admin-yang-panjang",
         ],
     )

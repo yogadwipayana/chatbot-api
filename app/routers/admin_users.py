@@ -61,7 +61,7 @@ def user_out(account: Account) -> AdminUser:
 
 
 def temporary_password() -> str:
-    """20 karakter acak; lolos syarat minimal 12 karakter `hash_password`."""
+    """20 karakter acak; lolos syarat panjang minimal `hash_password`."""
     return secrets.token_urlsafe(15)
 
 

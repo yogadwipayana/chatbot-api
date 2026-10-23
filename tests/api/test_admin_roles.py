@@ -209,7 +209,7 @@ class TestAkunSendiri:
         )
         assert r.status_code == 400
 
-    @pytest.mark.parametrize("sandi_baru", ["pendek", "ä" * 40])
+    @pytest.mark.parametrize("sandi_baru", ["pendek", "x7Kp2mQ", "ä" * 40])
     def test_sandi_baru_terlalu_pendek_atau_melebihi_batas_bcrypt_422(
         self, client, headers_for, sandi_baru
     ):

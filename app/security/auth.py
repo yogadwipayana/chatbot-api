@@ -41,9 +41,13 @@ def _pastikan_secret_kuat(secret: str) -> None:
         )
 
 
+MIN_PASSWORD_LENGTH = 8
+"""Panjang minimal kata sandi admin; juga dipakai skema `PasswordChange`."""
+
+
 def hash_password(password: str) -> str:
-    if len(password) < 12:
-        raise ValueError("kata sandi admin minimal 12 karakter")
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"kata sandi admin minimal {MIN_PASSWORD_LENGTH} karakter")
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
@@ -181,17 +185,24 @@ kebetulan memuat kata ini, mis. "kopi-bali-pagi-hari", tetap boleh."""
 
 _SANDI_UMUM = frozenset(
     {
+        "1234qwer",
+        "1q2w3e4r",
         "1q2w3e4r5t6y",
         "1q2w3e4r5t6y7u8i",
+        "1qaz2wsx",
         "1qaz2wsx3edc",
         "1qaz2wsx3edc4rfv",
         "a1b2c3d4e5f6",
+        "q1w2e3r4",
         "q1w2e3r4t5y6",
+        "qazwsxed",
+        "qwer1234",
+        "zaq12wsx",
         "zaq12wsxcde3",
         "zaq1xsw2cde3",
     }
 )
-"""Pola papan ketik 12 karakter ke atas yang tidak tertangkap aturan lain."""
+"""Pola papan ketik 8 karakter ke atas yang tidak tertangkap aturan lain."""
 
 _URUTAN = (
     "0123456789012345678901234567890123456789",
@@ -214,8 +225,8 @@ def alasan_sandi_lemah(sandi: str, *, email: str | None = None) -> str | None:
 
     NIST SP 800-63B §5.1.1.2: bukan aturan komposisi (wajib huruf besar, angka),
     melainkan menolak sandi yang ada di daftar sandi umum, berulang atau berurutan,
-    dan yang diturunkan dari nama layanan atau nama pengguna. Panjang minimal 12
-    tetap ditegakkan `hash_password`.
+    dan yang diturunkan dari nama layanan atau nama pengguna. Panjang minimal
+    (`MIN_PASSWORD_LENGTH`) tetap ditegakkan `hash_password`.
     """
     kecil = sandi.casefold()
     if len(set(kecil)) <= 3 or re.fullmatch(r"(.+?)\1+", kecil):

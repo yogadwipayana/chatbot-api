@@ -18,6 +18,7 @@ from app.embed_keys import rapikan_daftar_asal
 from app.rag.chain import OutcomeKind
 from app.rag.threshold import Decision, Reason
 from app.schemas.chat import AttachmentOut, ContactOut
+from app.security.auth import MIN_PASSWORD_LENGTH
 
 
 def _rapikan_unit(v: str | None) -> str | None:
@@ -658,7 +659,7 @@ class TemporaryPassword(BaseModel):
 
 class PasswordChange(BaseModel):
     current_password: str = Field(min_length=1, max_length=256)
-    new_password: str = Field(min_length=12, max_length=72)
+    new_password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=72)
 
     @field_validator("new_password")
     @classmethod
