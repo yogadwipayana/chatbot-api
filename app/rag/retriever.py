@@ -11,9 +11,6 @@ masing-masing di sesi database sendiri, digabung dengan RRF, dipotong menjadi
 top 5. Skor mentah tiap sumber ikut dibawa di `Document.metadata` agar tahap
 threshold dapat membacanya.
 
-Bila reranker dipasang, RRF dipotong menjadi `rerank_candidates` dulu, lalu
-reranker memilih top 5 dari situ (`app.rag.reranker`).
-
 Top 5 dibatasi paling banyak `max_per_document` potongan dari satu dokumen
 (T59), supaya ringkasan TRANSKRIP yang cocok dengan banyak kata tidak menutup
 dokumen lain yang memuat jawabannya.
@@ -62,7 +59,6 @@ from app.rag.filters import active_document_clause
 from app.rag.fts_query import fulltext_queries
 from app.rag.fusion import RankedHit, fuse_ranked_lists
 from app.rag.outline import susun_daftar_bab
-from app.rag.reranker import rerank_documents
 from app.rag.threshold import LEXICAL_SOURCE, VECTOR_SOURCE
 
 FTS_CONFIG = "indonesian"
@@ -322,9 +318,6 @@ class PostgresHybridRetriever(BaseRetriever):
     rrf_k: int = 60
     weight_vector: float = 1.0
     weight_fulltext: float = 1.0
-    reranker: Any = None
-    """`app.rag.reranker.Reranker`, atau None untuk memakai urutan RRF langsung."""
-    rerank_candidates: int = 20
     max_per_document: int = 0
     """Paling banyak berapa potongan satu dokumen di antara `top_n` hasil (T59,
     `_batasi_per_dokumen`). 0 = tanpa batas."""
@@ -392,11 +385,9 @@ class PostgresHybridRetriever(BaseRetriever):
                 LEXICAL_SOURCE: self.weight_fulltext,
             },
             k=self.rrf_k,
-            # Tanpa reranker seluruh hasil fusi dibawa: batas per dokumen bisa
-            # mengambil pengganti dari peringkat berapa pun.
-            top_n=(
-                max(self.rerank_candidates, self.top_n) if self.reranker is not None else None
-            ),
+            # Seluruh hasil fusi dibawa: batas per dokumen bisa mengambil
+            # pengganti dari peringkat berapa pun.
+            top_n=None,
         )
 
         by_id = {r["chunk_id"]: r for _, rows in daftar for r in rows}
@@ -420,9 +411,6 @@ class PostgresHybridRetriever(BaseRetriever):
             )
             for hit in fused
         ]
-        documents = await rerank_documents(
-            query, documents, self.reranker, top_n=len(documents)
-        )
         documents = _batasi_per_dokumen(documents, self.top_n, self.max_per_document)
         lengkap, daftar_bab = await asyncio.gather(
             self._with_neighbors(documents), self._daftar_bab(documents)

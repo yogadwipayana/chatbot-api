@@ -13,7 +13,7 @@ Dokumen → Parse → Chunking → Embedding (API / e5 lokal) ─┐
                                                           ▲
 User → FastAPI → LangGraph → FR-7 → Smalltalk → Saringan aturan → JEV → Rewrite
                                                           │
-                              Retrieval hibrida → RRF → Rerank → Context Check → LLM → Answer + Sources
+                                       Retrieval hibrida → RRF → Context Check → LLM → Answer + Sources
                                                           │                       ⇅
                                                           │        Tool SADS (bila tool-eligible)
                                                           └───────────────────→ Evaluasi (Recall@k + RAGAS)
@@ -34,7 +34,6 @@ Komponen utama:
 | Model embedding | Semantic embedding: API (`text-embedding-3-*`) atau lokal (`multilingual-e5-small`) | `app/rag/providers.py`, `app/rag/local_embeddings.py` |
 | pgvector (HNSW) | Vector similarity search | `app/rag/retriever.py` |
 | RRF | Menggabungkan peringkat keyword dan vector | `app/rag/fusion.py` |
-| Reranker | Memilih konteks terbaik dari hasil RRF | `app/rag/reranker.py` |
 | Threshold (FR-3) | Memutuskan apakah konteks cukup kuat untuk LLM | `app/rag/threshold.py` |
 | Risk (FR-6) | Topik berisiko → kontak unit resmi | `app/rag/risk.py` |
 | LLM | Menyusun jawaban akhir, selalu bersitasi | `app/rag/prompts.py`, `app/deps.py` |
@@ -225,13 +224,6 @@ Berjalan setiap kali mahasiswa mengirim pertanyaan (`POST /api/chat` atau `/api/
             └────────┬─────────┘
                      ▼
             ┌──────────────────┐
-            │ Reranking        │
-            │ 20 → top 5       │
-            │ gagal = urutan   │
-            │ RRF              │
-            └────────┬─────────┘
-                     ▼
-            ┌──────────────────┐
             │ Context Check    │
             │ (FR-3)           │
             │ + kelayakan tool │
@@ -280,7 +272,7 @@ Berjalan setiap kali mahasiswa mengirim pertanyaan (`POST /api/chat` atau `/api/
                    Mahasiswa
 ```
 
-`YES` pada Context Check berarti konteks lolos FR-3 **atau** pertanyaannya tool-eligible: memuat kata pemicu tool, baik di pertanyaan asli maupun di versi mandirinya hasil rewrite. `NO` berarti konteks lemah **dan** bukan tool-eligible. Dengan `TOOLS_ENABLED=false`, jalur tool tidak ada dan diagram ini berlaku seperti sebelum tool ada. Rinciannya di [§9](#9-llm-generation) dan `docs/tool-call.md`.
+`YES` pada Context Check berarti konteks lolos FR-3 **atau** pertanyaannya tool-eligible: memuat kata pemicu tool, baik di pertanyaan asli maupun di versi mandirinya hasil rewrite. `NO` berarti konteks lemah **dan** bukan tool-eligible. Dengan `TOOLS_ENABLED=false`, jalur tool tidak ada dan diagram ini berlaku seperti sebelum tool ada. Rinciannya di [§8](#8-llm-generation) dan `docs/tool-call.md`.
 
 ### Lima jenis balasan
 
@@ -322,7 +314,7 @@ jev_gate                       cari (subgraph)
   │                              rewrite   (FR-4, dilewati pada pesan pertama berbahasa Indonesia)
   │                                │
   │                                ▼
-  │                              retrieve  (FTS ∥ pgvector → RRF → rerank,
+  │                              retrieve  (FTS ∥ pgvector → RRF,
   │                                │        filter unit, potongan lanjutan,
   │                                │        maks. 4 potongan per dokumen,
   │                                │        daftar bab dokumen)
@@ -458,8 +450,7 @@ Biaya sekitar $0.000023 per pesan, latensi sekitar 1.1 detik. Label, keyakinan, 
           score = Σ weight / (60 + rank_sumber)
                            │
                            ▼
-                  20 kandidat (jika rerank)
-                   5 kandidat (tanpa rerank)
+                   5 kandidat teratas
 ```
 
 Kedua pencarian berjalan paralel, masing-masing di koneksi database sendiri.
@@ -497,33 +488,7 @@ Mahasiswa yang memilih unit di menu chatbot mempersempit **kedua** pencarian lew
 
 ---
 
-# 7. Reranking
-
-RRF hanya menggabungkan **peringkat**; ia tidak pernah membaca pertanyaan dan chunk bersamaan. Cross-encoder menilai setiap pasangan (pertanyaan, chunk) secara utuh (`app/rag/reranker.py`).
-
-```text
-RRF (20 kandidat):  A  B  C  D  E  F  ...
-                           │
-                           ▼
-       Reranker: skor 0..1 per (pertanyaan, chunk)
-                           │
-                           ▼
-Top 5:              B (0.94)  A (0.81)  E (0.62)  ...
-```
-
-Sakelarnya `RERANK_ENABLED` (bawaan `false`: urutan RRF langsung dipakai). Bentuk endpoint dipilih `RERANK_PROVIDER`; model diganti lewat `RERANK_BASE_URL`, `RERANK_API_KEY`, dan `RERANK_MODEL` (`docs/rerank.md`).
-
-| `RERANK_PROVIDER` | Implementasi |
-|---|---|
-| `tei` | `POST {RERANK_BASE_URL}/rerank` Text Embeddings Inference (bawaan) |
-| `api` | `POST {RERANK_BASE_URL}/rerank` gaya Cohere/Jina |
-| `local` | Cross-encoder sentence-transformers, mis. `BAAI/bge-reranker-v2-m3` |
-
-Reranker gagal (jaringan, timeout, bentuk respons salah) berarti urutan RRF yang dipakai. Reranker memperbaiki mutu; ia bukan syarat untuk menjawab.
-
----
-
-# 8. Context Validation (FR-3)
+# 7. Context Validation (FR-3)
 
 Dijalankan setelah retrieval dan **sebelum** LLM. Bila keputusannya REFUSE, LLM tidak dipanggil sama sekali.
 
@@ -531,26 +496,17 @@ Dijalankan setelah retrieval dan **sebelum** LLM. Bila keputusannya REFUSE, LLM 
 Retrieved Context
         │
         ▼
-RERANK_THRESHOLD diisi DAN ada skor reranker?
+skor vector mentah ≥ 0.35
+ATAU ts_rank ≥ 0.05
         │
-   ┌────┴─────────────────────────┐
-  YA                            TIDAK
-   │                              │
-   ▼                              ▼
-skor rerank terbaik       skor vector mentah ≥ 0.35
-≥ RERANK_THRESHOLD        ATAU ts_rank ≥ 0.05
-   │                              │
-   └──────────────┬───────────────┘
-            ┌─────┴─────┐
-           YES          NO
-            │           │
-            ▼           ▼
-           LLM       Fallback
+  ┌─────┴─────┐
+ YES          NO
+  │           │
+  ▼           ▼
+ LLM       Fallback
 ```
 
 Yang dinilai adalah skor **mentah**, bukan skor RRF. Chunk peringkat 1 selalu mendapat skor RRF maksimum, termasuk ketika seluruh kandidat tidak relevan.
-
-Skor reranker bersifat absolut. Bila ambangnya diisi, skor itu **menggantikan** kedua ambang lama, bukan digabung dengan ATAU. Kalau skor leksikal tetap bisa meloloskan chunk yang sudah dinilai tidak relevan oleh reranker, alasan memasang reranker jadi hilang.
 
 Fallback:
 
@@ -568,7 +524,7 @@ Semua ambang ditentukan empiris: `python -m eval.calibrate_threshold`.
 
 ---
 
-# 9. LLM Generation
+# 8. LLM Generation
 
 ```text
 System Prompt (jawab hanya dari konteks, wajib sitasi,
@@ -623,7 +579,7 @@ per giliran              memancarkan token)
 
 ---
 
-# 10. Evaluation Pipeline
+# 9. Evaluation Pipeline
 
 Tidak ada evaluasi yang berada di jalur chat production.
 
@@ -636,8 +592,7 @@ eval_set.jsonl (question + relevant_chunk_ids)
 python -m eval.run_eval
         │
         ├── vector-only
-        ├── hybrid + RRF
-        └── hybrid + RRF + rerank   (bila RERANK_ENABLED=true)
+        └── hybrid + RRF
         │
         ▼
 Recall@5, MRR   (target Recall@5 ≥ 0.85)
@@ -696,7 +651,6 @@ CHUNK_SIZE / CHUNK_OVERLAP        (dashboard)
 RETRIEVAL_CANDIDATES / TOP_N      (dashboard)
 RRF_WEIGHT_VECTOR / FULLTEXT      (dashboard)
 VECTOR_THRESHOLD / LEXICAL_THRESHOLD (dashboard)
-RERANK_ENABLED / MODEL / THRESHOLD
 EMBED_PROVIDER / EMBED_MODEL      (+ reindex)
 JEV_BLOCK_THRESHOLD / JEV_OUT_OF_SCOPE_THRESHOLD / JEV_NONSENSE_THRESHOLD
 prompt                            (app/rag/prompts.py)
@@ -704,7 +658,7 @@ prompt                            (app/rag/prompts.py)
 
 ---
 
-# 11. Tiga Pipeline Utama
+# 10. Tiga Pipeline Utama
 
 ## A. Indexing Pipeline
 
@@ -747,8 +701,6 @@ FTS ∥ Embedding → pgvector   (filter unit)
  ↓
 RRF (merge + dedup)
  ↓
-Rerank
- ↓
 Context Validation (FR-3 + kelayakan tool) ──→ refusal + kontak
  ↓
 Risk (FR-6) + LLM  ⇄  Tool SADS (bila tool-eligible)
@@ -774,7 +726,7 @@ Improve PANDU
 
 ---
 
-# 12. Deployment Concept
+# 11. Deployment Concept
 
 ```text
 SERVER PANDU
@@ -788,9 +740,6 @@ SERVER PANDU
 │   │   ├── API ────────────────→ BASE_URL
 │   │   └── lokal (opsional): sentence-transformers
 │   │       └── multilingual-e5-small
-│   ├── Reranker (opsional)
-│   │   ├── API ────────────────→ /rerank
-│   │   └── lokal: cross-encoder
 │   ├── LLM client ─────────────→ BASE_URL (OpenAI-compatible, termasuk tools)
 │   └── Tool client (opsional) ─→ SADS /service/tp/chatbot/* (header secret)
 │
@@ -806,13 +755,13 @@ SERVER PANDU
 └── LangSmith (tracing)
 ```
 
-Model lokal dipasang dengan `uv sync --extra local` dan membawa torch. Pasang hanya bila `EMBED_PROVIDER=local` atau `RERANK_PROVIDER=local`.
+Model lokal dipasang dengan `uv sync --extra local` dan membawa torch. Pasang hanya bila `EMBED_PROVIDER=local`.
 
 Tool-calling butuh `TOOLS_ENABLED=true`, `SADS_BASE_URL`, dan `SADS_API_SECRET` di env server. Aplikasi menolak start bila sakelarnya hidup tetapi kredensial SADS kosong. Bawaan kodenya mati, jadi server tanpa variabel ini berjalan persis seperti sebelum tool ada.
 
 ---
 
-# 13. Ringkasan Peran
+# 12. Ringkasan Peran
 
 ```text
 FastAPI              = menyediakan API + streaming
@@ -825,7 +774,6 @@ Full-Text Search     = mencari berdasarkan keyword
 Embedding (API / e5) = mengubah teks menjadi semantic vector
 pgvector             = mencari vector dokumen terdekat
 RRF                  = menggabungkan dua peringkat + dedup
-Reranker             = mengurutkan ulang dokumen berdasarkan relevansi
 Threshold            = menolak sebelum LLM bila konteks lemah (FR-3)
 Risk                 = menyertakan kontak unit pada topik berisiko (FR-6)
 LLM                  = menyusun jawaban bersitasi
@@ -835,7 +783,7 @@ RAGAS                = menilai kualitas generasi (offline)
 
 ---
 
-# 14. Final Flow
+# 13. Final Flow
 
 ```text
                               INDEXING
@@ -866,9 +814,6 @@ User → FastAPI → Validation → Sensitif (FR-7) → Smalltalk → JEV
                                         └──────────────┬───────────────┘
                                                        ▼
                                                  RRF (merge + dedup)
-                                                       │
-                                                       ▼
-                                                     Rerank
                                                        │
                                                        ▼
                                        Context Validation (FR-3 + kelayakan tool)

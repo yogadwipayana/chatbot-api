@@ -2,8 +2,11 @@
 
 API chat publik tanpa login, jadi apa pun yang dilakukan portal dapat ditiru
 Postman. Yang menahannya bukan kunci atau CORS, melainkan batas di sini:
-per IP untuk satu sumber, jatah harian untuk banjir dari banyak sumber, dan
-batas panjang supaya satu permintaan tidak dapat dibuat mahal.
+per NIM untuk satu mahasiswa, jatah harian untuk banjir dari banyak sumber, dan
+batas panjang supaya satu permintaan tidak dapat dibuat mahal. Per IP hanya
+penahan skrip yang sengaja longgar (IP kampus dipakai bersama); per sesi dan
+per kunci sematan mati secara bawaan, tetapi tetap diuji karena dapat
+dinyalakan dari `.env`.
 """
 
 from __future__ import annotations
@@ -15,34 +18,104 @@ from app.deps import TERLALU_BANYAK_PENILAIAN, TERLALU_BANYAK_PERTANYAAN
 from app.security.batas_harian import OLEH_BATAS_HARIAN
 
 
+def terapkan(client, **nilai):
+    """Setelan tertentu untuk test ini, apa pun isi .env mesin ini."""
+    dasar = {
+        "rate_limit_per_nim": "0",
+        "rate_limit_per_session": "0",
+        "rate_limit_per_ip": "0",
+        "rate_limit_per_embed_site": "0",
+        "client_ip_header": "X-Forwarded-For",
+        "chat_daily_limit": 0,
+    }
+    settings = get_settings().model_copy(update={**dasar, **nilai})
+    client.app.dependency_overrides[get_settings] = lambda: settings
+    return client
+
+
 @pytest.fixture
 def atur(client):
-    """Setelan tertentu untuk test ini, apa pun isi .env mesin ini."""
-
-    def terapkan(**nilai):
-        dasar = {
-            "rate_limit_per_session": "0",
-            "rate_limit_per_ip": "0",
-            "rate_limit_per_embed_site": "0",
-            "client_ip_header": "X-Forwarded-For",
-            "chat_daily_limit": 0,
-        }
-        settings = get_settings().model_copy(update={**dasar, **nilai})
-        client.app.dependency_overrides[get_settings] = lambda: settings
-        return client
-
-    return terapkan
+    return lambda **nilai: terapkan(client, **nilai)
 
 
-def tanya(client, payload, *, sesi="sesi-uji-12345", ip="203.0.113.1", **headers):
+def tanya(client, payload, *, sesi="sesi-uji-12345", ip="203.0.113.1", nim=None, **headers):
     return client.post(
         "/api/chat",
-        json={**payload, "session_id": sesi},
+        json={**payload, "session_id": sesi, **({"nim": nim} if nim else {})},
         headers={"X-Session-Id": sesi, "X-Forwarded-For": ip, **headers},
     )
 
 
+class _Hasil:
+    def __init__(self, baris):
+        self._baris = baris
+
+    def first(self):
+        return self._baris
+
+
+class SesiUmpanBalik:
+    """Pengganti AsyncSession untuk `/api/feedback`.
+
+    `pemilik` memetakan id pesan jawaban ke NIM penanyanya (`messages.meta`);
+    id yang tidak ada di sana dianggap tidak ditemukan.
+    """
+
+    def __init__(self, pemilik: dict[str, str | None]):
+        self.pemilik = pemilik
+        self.ditulis: list[str] = []
+
+    async def execute(self, perintah, parameter=None):
+        sql = str(perintah)
+        if sql.lstrip().upper().startswith("SELECT"):
+            kunci = str(parameter["id"])
+            return _Hasil((self.pemilik[kunci],) if kunci in self.pemilik else None)
+        self.ditulis.append(sql)
+        return _Hasil(None)
+
+    async def commit(self):
+        pass
+
+
+PESAN_A1 = "9c3e1a44-6b2d-4f51-8a70-2d9b5c1e7f01"
+PESAN_A2 = "9c3e1a44-6b2d-4f51-8a70-2d9b5c1e7f02"
+PESAN_B = "9c3e1a44-6b2d-4f51-8a70-2d9b5c1e7f03"
+PESAN_LAMA1 = "9c3e1a44-6b2d-4f51-8a70-2d9b5c1e7f04"
+PESAN_LAMA2 = "9c3e1a44-6b2d-4f51-8a70-2d9b5c1e7f05"
+PESAN_TIDAK_ADA = "9c3e1a44-6b2d-4f51-8a70-2d9b5c1e7f99"
+
+
+def nilai(pesan: str) -> dict:
+    return {"message_id": pesan, "helpful": True}
+
+
 class TestBatasLaju:
+    def test_per_nim_menahan_yang_berganti_sesi_dan_ip(self, atur, payload):
+        """Satu mahasiswa di tab, perangkat, atau jaringan mana pun: satu jatah."""
+        client = atur(rate_limit_per_nim="2/minute")
+        assert tanya(client, payload).status_code == 200
+        assert (
+            tanya(client, payload, sesi="sesi-hp-67890", ip="198.51.100.7").status_code == 200
+        )
+        r = tanya(client, payload, sesi="sesi-lab-24680", ip="192.0.2.44")
+        assert r.status_code == 429
+        assert r.json()["detail"] == TERLALU_BANYAK_PERTANYAAN
+        assert 1 <= int(r.headers["Retry-After"]) <= 60
+        assert tanya(client, payload, nim="2401010102").status_code == 200
+
+    def test_mahasiswa_satu_ip_kampus_tidak_saling_menahan(self, atur, payload):
+        """Batas bawaan hanya per NIM: satu IP kampus tidak berbagi satu jatah."""
+        client = atur(rate_limit_per_nim="1/minute")
+        for i in range(5):
+            r = tanya(client, payload, sesi=f"sesi-kampus-{i:05}", nim=f"2401010{100 + i}")
+            assert r.status_code == 200
+
+    def test_body_tidak_sah_tidak_menghabiskan_jatah(self, atur, payload):
+        client = atur(rate_limit_per_nim="1/minute")
+        r = client.post("/api/chat", json={**payload, "question": "x" * 501})
+        assert r.status_code == 422
+        assert tanya(client, payload).status_code == 200
+
     def test_per_sesi(self, atur, payload):
         client = atur(rate_limit_per_session="2/minute")
         assert tanya(client, payload).status_code == 200
@@ -84,7 +157,7 @@ class TestBatasLaju:
         assert tanya(client, payload, sesi="sesi-portal-1111").status_code == 200
 
     def test_streaming_ikut_dibatasi(self, atur, payload):
-        client = atur(rate_limit_per_session="1/minute")
+        client = atur(rate_limit_per_nim="1/minute")
         kirim = {
             "json": payload,
             "headers": {
@@ -98,7 +171,7 @@ class TestBatasLaju:
     def test_yang_ditolak_tidak_memanggil_llm_dan_tidak_dicatat(
         self, atur, payload, api_llm, chat_logger
     ):
-        client = atur(rate_limit_per_session="1/minute")
+        client = atur(rate_limit_per_nim="1/minute")
         tanya(client, payload)
         api_llm.calls.clear()
         jumlah_log = len(chat_logger.entries)
@@ -106,18 +179,49 @@ class TestBatasLaju:
         assert not api_llm.called
         assert len(chat_logger.entries) == jumlah_log
 
-    def test_menilai_punya_jatah_sendiri(self, atur, payload):
-        client = atur(rate_limit_per_session="1/minute")
+    def test_menilai_punya_jatah_sendiri_per_nim_penanya(
+        self, atur, payload, make_client, strong_documents
+    ):
+        client = atur(rate_limit_per_nim="1/minute")
         assert tanya(client, payload).status_code == 200
         assert tanya(client, payload).status_code == 429
 
-        headers = {"X-Session-Id": "sesi-uji-12345", "X-Forwarded-For": "203.0.113.1"}
-        # Body sengaja tidak sah: batas laju diperiksa lebih dulu, database tidak disentuh.
-        body = {"message_id": "bukan-uuid", "helpful": True}
-        assert client.post("/api/feedback", json=body, headers=headers).status_code == 422
-        r = client.post("/api/feedback", json=body, headers=headers)
+        # Jatah bertanya NIM ini sudah habis; jatah menilainya belum.
+        sesi = SesiUmpanBalik(
+            {PESAN_A1: "2401010101", PESAN_A2: "2401010101", PESAN_B: "2401010102"}
+        )
+        penilai = terapkan(
+            make_client(strong_documents, session=sesi), rate_limit_per_nim="1/minute"
+        )
+        assert penilai.post("/api/feedback", json=nilai(PESAN_A1)).status_code == 204
+        # Jawaban lain milik penanya yang sama: jatah yang sama.
+        r = penilai.post("/api/feedback", json=nilai(PESAN_A2))
         assert r.status_code == 429
         assert r.json()["detail"] == TERLALU_BANYAK_PENILAIAN
+        assert int(r.headers["Retry-After"]) >= 1
+        assert penilai.post("/api/feedback", json=nilai(PESAN_B)).status_code == 204
+        # DELETE + INSERT untuk dua penilaian yang lolos; yang ditolak tidak menulis.
+        assert len(sesi.ditulis) == 4
+
+    def test_jawaban_lama_tanpa_nim_dihitung_per_pesan(self, make_client, strong_documents):
+        sesi = SesiUmpanBalik({PESAN_LAMA1: None, PESAN_LAMA2: None})
+        penilai = terapkan(
+            make_client(strong_documents, session=sesi), rate_limit_per_nim="1/minute"
+        )
+        assert penilai.post("/api/feedback", json=nilai(PESAN_LAMA1)).status_code == 204
+        assert penilai.post("/api/feedback", json=nilai(PESAN_LAMA1)).status_code == 429
+        assert penilai.post("/api/feedback", json=nilai(PESAN_LAMA2)).status_code == 204
+
+    def test_menilai_pesan_tak_dikenal_404_bukan_429(self, make_client, strong_documents):
+        sesi = SesiUmpanBalik({})
+        penilai = terapkan(
+            make_client(strong_documents, session=sesi), rate_limit_per_nim="1/minute"
+        )
+        for _ in range(3):
+            assert (
+                penilai.post("/api/feedback", json=nilai(PESAN_TIDAK_ADA)).status_code == 404
+            )
+        assert sesi.ditulis == []
 
 
 class TestBatasHarian:
@@ -175,11 +279,11 @@ class TestBatasHarian:
     def test_yang_ditolak_batas_laju_tidak_menghabiskan_jatah_harian(
         self, atur, payload, kill_switch
     ):
-        client = atur(chat_daily_limit=2, rate_limit_per_session="1/minute")
+        client = atur(chat_daily_limit=2, rate_limit_per_nim="1/minute")
         assert tanya(client, payload).status_code == 200
         for _ in range(3):
             assert tanya(client, payload).status_code == 429
-        assert tanya(client, payload, sesi="sesi-lain-67890").status_code == 200
+        assert tanya(client, payload, nim="2401010102").status_code == 200
         assert not kill_switch.engaged
 
 

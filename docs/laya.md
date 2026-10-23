@@ -32,7 +32,7 @@ Tiga file di `embed@100.111.178.48:/laya` (root:root, LF): `docker-compose.yml`,
 - **Berdiri sendiri:** jaringan `laya-network`, volume `laya-data`. Tidak bergantung pada `/9router` maupun `/chatbot`. chatbot-api (`network_mode: host`) menjangkaunya lewat `127.0.0.1:8001`.
 - **Port `${LAYA_HOST_PORT:-8001}:8000` (semua antarmuka).** Host `:8000` dipakai uvicorn chatbot-api. Sampai 2026-10-04 port hanya loopback (`127.0.0.1:8001:8000`); 2026-10-05 dibuka seperti e5 di `/9router` atas permintaan user (cadangan: `/laya/docker-compose.yml.bak-20261005`). ufw tidak aktif, jadi port juga terbuka ke LAN 172.16.83.0/24; `LAYA_API_KEY` satu-satunya pelindung.
 - **Setelan model:** `LAYA_MODELS=multilingual`, `LAYA_PRELOAD=1`, `LAYA_MAX_LOADED=1`, dan `LAYA_CPU_AMP` kosong (float32; nilai yang diterima hanya `bf16`/`bfloat16`, dan bf16 di CPU tanpa AVX hanya emulasi).
-- **Batas sumber daya:** `cpus` 4, `LAYA_THREADS`/`OMP_NUM_THREADS` 4, `mem_limit` = `memswap_limit` = 3g, supaya OOM tidak menjalar seperti insiden bge-reranker (`reranker.md`).
+- **Batas sumber daya:** `cpus` 4, `LAYA_THREADS`/`OMP_NUM_THREADS` 4, `mem_limit` = `memswap_limit` = 3g, supaya OOM satu container tidak menjalar ke seluruh host.
 - **`LAYA_API_KEY` wajib** (`${LAYA_API_KEY:?…}`), karena port loopback tetap bisa diakses semua proses di host. `/laya/.env` masih `644`; seharusnya `sudo chmod 600 /laya/.env`.
 - **Healthcheck** `GET /health` (tanpa auth), dengan `start_period` 10m untuk unduhan pertama.
 
@@ -178,7 +178,7 @@ Bagian ini merangkum analisis hasil putaran 1, dari tiga sumber: `data/hasil_uji
 | A1 | `parse_response` mengutamakan `answer_confidence` bila ada. JEV tidak mengirim field ini, jadi perilaku JEV tidak berubah | Di luar topik terblokir 1/9 dengan `confidence`, 7/9 dengan `answer_confidence` (T35) | `app/rag/gate.py` |
 | A2 | Vonis `nonsense` dari Laya tidak lagi memblokir, atau diberi ambang sendiri ≥ 0,9 | p(nonsense) tertinggi pada pesan akademik 0,81 ("toeic brp"). Semua nonsense di set uji sudah ditangkap `rule_gate` | `GatePolicy.threshold_for`, `app/config.py` (env baru, mis. `JEV_NONSENSE_THRESHOLD`) |
 | A3 | Ambang `out_of_scope` dikalibrasi ulang ke skala `answer_confidence` | p untuk pesan di luar topik 0,75–0,98: terendah "kerjakan tugas kalkulus saya dong" 0,753, lalu "siapa presiden Indonesia sekarang?" 0,826. p(out_of_scope) tertinggi pada akademik hanya 0,33. Dengan ambang 0,9 yang sekarang: 7/9 | `JEV_OUT_OF_SCOPE_THRESHOLD` |
-| A4 | Saat start, tolak `JEV_URL` yang tidak diawali `http://`/`https://` | Pada 2026-10-02, `JEV_URL=100.111.178.48:8001/...` membuat setiap panggilan gagal diam-diam, sehingga gerbang fail-open tanpa ketahuan | `app/config.py` `_reranker_dan_jev_valid` |
+| A4 | Saat start, tolak `JEV_URL` yang tidak diawali `http://`/`https://` | Pada 2026-10-02, `JEV_URL=100.111.178.48:8001/...` membuat setiap panggilan gagal diam-diam, sehingga gerbang fail-open tanpa ketahuan | `app/config.py` `_tool_dan_jev_valid` |
 
 - **Simulasi pada 64 pesan** (A1 + A2 + ambang `out_of_scope` 0,75): akademik terblokir 0/38, di luar topik terblokir 9/9. **Tapi ambang itu dipilih dari set uji yang sama**, jadi belum sah sebagai bukti lulus. Ambang harus dipilih di set kalibrasi terpisah (C2).
 - **Ambang smalltalk/malicious 0,7 aman** pada set ini: p tertinggi pada pesan akademik hanya 0,03 dan 0,01.
@@ -188,7 +188,7 @@ Bagian ini merangkum analisis hasil putaran 1, dari tiga sumber: `data/hasil_uji
 - **A1:** `parse_response` sekarang membaca `answer_confidence` bila ada, dan kembali ke `confidence` bila tidak (JEV).
 - **A2:** `GatePolicy.nonsense_threshold` dan setelan `JEV_NONSENSE_THRESHOLD` (opsional). Kalau kosong, nilainya sama dengan `JEV_BLOCK_THRESHOLD`, jadi produksi dengan JEV tidak berubah. `.env.example` dan `docs/flow.md` sudah diperbarui.
 - **A4:** `JEV_URL` tanpa `http://`/`https://` sekarang gagal saat start, tidak lagi fail-open diam-diam.
-- **Test:** 11 test baru di `tests/unit/test_gate.py`. Seluruh suite: 1714 lolos dan 16 gagal, sama dengan baseline (12 `test_costs`, `test_applog`, `test_chatlog`, dan 2 `test_env_example` RERANK_*).
+- **Test:** 11 test baru di `tests/unit/test_gate.py`. Seluruh suite: 1714 lolos dan 16 gagal, sama dengan baseline (12 `test_costs`, `test_applog`, `test_chatlog`, dan 2 `test_env_example`).
 - **`api/.env` lokal:** ditambah `JEV_NONSENSE_THRESHOLD=0.95` **sementara**. Tanpa ini, A1 justru membuat "toeic brp" (nonsense 0,81) terblokir oleh ambang 0,7. Nilai akhirnya diambil dari set kalibrasi (A3). `JEV_OUT_OF_SCOPE_THRESHOLD` tetap 0,9.
 - **Verifikasi** dengan kode gerbang sungguhan (`build_gate` + `.env` lokal), Laya di server lewat tunnel, dan urutan pipeline (smalltalk → `rule_gate` → Laya), pada 64 pesan uji:
 

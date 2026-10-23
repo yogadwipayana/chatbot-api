@@ -36,9 +36,6 @@ class FusedHit:
     """Nama sumber -> peringkat 1-based di sumber itu. Absen bila tidak muncul."""
     raw_scores: dict[str, float] = field(default_factory=dict)
     """Nama sumber -> skor mentah. Dipakai FR-3, jangan dibuang."""
-    rerank_score: float | None = None
-    """Skor cross-encoder 0..1, bila reranker menilai chunk ini. Diisi setelah
-    fusi (`app.rag.reranker`), bukan oleh RRF."""
 
     @property
     def sources(self) -> set[str]:

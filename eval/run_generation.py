@@ -1,7 +1,7 @@
-"""Jalankan PANDU atas set evaluasi dan simpan hasilnya untuk RAGAS (flow.md §10).
+"""Jalankan PANDU atas set evaluasi dan simpan hasilnya untuk RAGAS (flow.md §9).
 
 Tahap pertama dari dua. Skrip ini memakai alur produksi apa adanya -- graf yang
-sama, retriever + reranker yang sama, prompt dan LLM yang sama -- lalu menulis
+sama, retriever yang sama, prompt dan LLM yang sama -- lalu menulis
 satu baris JSONL per pertanyaan: pertanyaan, jawaban rujukan, konteks yang
 terambil, dan jawaban yang dihasilkan. Tahap kedua (`eval/ragas/run_ragas.py`)
 menilai berkas itu di environment tersendiri, karena ragas belum cocok dengan
@@ -81,7 +81,6 @@ def build_record(case: GenerationCase, outcome: PipelineOutcome, latency_ms: int
             for d in outcome.documents
         ],
         "top_score": decision.top_score if decision else None,
-        "top_rerank_score": decision.top_rerank_score if decision else None,
         "gate_label": outcome.gate.label.value if outcome.gate else None,
         "latency_ms": latency_ms,
     }

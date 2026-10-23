@@ -25,6 +25,7 @@ from app.config import Settings, get_settings
 from app.db.session import get_session
 from app.observability.tracing import id_run, konfigurasi_run
 from app.prodi import DAFTAR_PRODI, ProfilMahasiswa, cari_prodi, urai_nim
+from app.schemas.chat import ChatRequest
 from app.security.auth import decode_access_token, waktu_masuk
 from app.security.batas_harian import (
     OLEH_BATAS_HARIAN,
@@ -268,13 +269,20 @@ def _batasi(
     *,
     ruang: str,
     pesan: str,
+    nim: str | None = None,
 ) -> None:
-    """429 + `Retry-After` bila salah satu batas (sesi, IP, kunci) sudah penuh.
+    """429 + `Retry-After` bila salah satu batas (NIM, sesi, IP, kunci) sudah penuh.
 
     `ruang` memisahkan jatah: menilai jawaban tidak boleh memakan jatah bertanya.
+    Bawaannya per NIM, ditambah per IP yang sengaja longgar (300/menit, penahan
+    skrip yang berganti NIM: IP kampus dipakai bersama banyak mahasiswa). Per
+    sesi dan per kunci sematan mati kecuali dinyalakan di `.env`
+    (`RATE_LIMIT_*`), karena SADS memakai satu kunci untuk semua mahasiswa.
     """
     batas = settings.batas_laju()
     kunci: list[tuple[str, BatasLaju]] = []
+    if nim and batas["nim"]:
+        kunci.append((f"{ruang}:nim:{nim}", batas["nim"]))
     if batas["ip"]:
         ip = client_ip(request, settings.client_ip_header)
         kunci.append((f"{ruang}:ip:{ip}", batas["ip"]))
@@ -290,13 +298,26 @@ def _batasi(
 
 def batasi_pertanyaan(
     request: Request,
+    payload: ChatRequest,
     settings: BaseSettingsDep,
     limiter: ChatLimiterDep,
     embed_key: EmbedKeyDep,
 ) -> None:
-    """Batas laju `/api/chat` dan `/api/chat/stream` (FR-9)."""
+    """Batas laju `/api/chat` dan `/api/chat/stream` (FR-9), per NIM penanya.
+
+    `payload` sengaja bernama sama dengan body endpoint-nya: FastAPI lalu
+    memperlakukan keduanya sebagai satu body, dibaca sekali, tanpa dibungkus.
+    Body yang tidak sah dijawab 422 tanpa memanggil fungsi ini, jadi tidak
+    menghabiskan jatah siapa pun.
+    """
     _batasi(
-        request, settings, limiter, embed_key, ruang="chat", pesan=TERLALU_BANYAK_PERTANYAAN
+        request,
+        settings,
+        limiter,
+        embed_key,
+        ruang="chat",
+        pesan=TERLALU_BANYAK_PERTANYAAN,
+        nim=payload.nim,
     )
 
 
@@ -306,7 +327,11 @@ def batasi_penilaian(
     limiter: ChatLimiterDep,
     embed_key: EmbedKeyDep,
 ) -> None:
-    """Batas laju `/api/feedback`, dengan jatah terpisah dari pertanyaan."""
+    """Batas laju `/api/feedback` per sesi/IP/kunci, bila dinyalakan.
+
+    Batas per NIM-nya diperiksa endpoint lewat `batasi_penilaian_per_nim`,
+    karena NIM itu baru diketahui setelah pesan yang dinilai ditemukan.
+    """
     _batasi(
         request,
         settings,
@@ -315,6 +340,23 @@ def batasi_penilaian(
         ruang="umpan-balik",
         pesan=TERLALU_BANYAK_PENILAIAN,
     )
+
+
+def batasi_penilaian_per_nim(
+    settings: Settings, limiter: SlidingWindowLimiter, nim: str | None, message_id: str
+) -> None:
+    """Jatah menilai per NIM penanya jawaban yang dinilai (`messages.meta`).
+
+    Terpisah dari jatah bertanya. Jawaban lama dari sebelum NIM wajib tidak
+    punya NIM; jatahnya dihitung per pesan.
+    """
+    batas = settings.batas_laju()["nim"]
+    if batas is None:
+        return
+    kunci = f"umpan-balik:nim:{nim}" if nim else f"umpan-balik:pesan:{message_id}"
+    tunggu = limiter.coba([(kunci, batas)])
+    if tunggu is not None:
+        raise _terlalu_banyak(TERLALU_BANYAK_PENILAIAN, tunggu)
 
 
 async def batas_harian(
@@ -455,7 +497,6 @@ def build_retriever(settings: SettingsDep) -> Any:
     """
     from app.db.session import SessionLocal
     from app.rag.providers import build_embeddings
-    from app.rag.reranker import build_reranker
     from app.rag.retriever import PostgresHybridRetriever
 
     embeddings = build_embeddings(settings)
@@ -468,8 +509,6 @@ def build_retriever(settings: SettingsDep) -> Any:
         rrf_k=settings.rrf_k,
         weight_vector=settings.rrf_weight_vector,
         weight_fulltext=settings.rrf_weight_fulltext,
-        reranker=build_reranker(settings),
-        rerank_candidates=settings.rerank_candidates,
         neighbors=settings.retrieval_neighbors,
         outline=settings.retrieval_outline,
     )

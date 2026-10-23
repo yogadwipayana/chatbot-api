@@ -117,6 +117,28 @@ class TestLogin:
         assert r.status_code == 429, "sandi benar pun ditolak selama terkunci"
         assert int(r.headers["retry-after"]) > 0
 
+    def test_terkunci_per_email_dari_ip_mana_pun(self, login_client):
+        """Berganti IP tidak membuka akun yang sedang ditebak."""
+        for i in range(LOGIN_MAX_FAILURES):
+            r = login_client.post(
+                "/api/admin/login",
+                json={"email": ADMIN_EMAIL, "password": "tebakan-salah"},
+                headers={"X-Forwarded-For": f"198.51.100.{i + 1}"},
+            )
+            assert r.status_code == 401
+        r = login_client.post(
+            "/api/admin/login",
+            json={"email": ADMIN_EMAIL, "password": SANDI},
+            headers={"X-Forwarded-For": "203.0.113.200"},
+        )
+        assert r.status_code == 429
+
+    def test_kegagalan_akun_lain_dari_ip_yang_sama_tidak_mengunci(self, login_client):
+        """IP kampus dipakai bersama: tebakan orang lain tidak mengunci admin."""
+        for _ in range(LOGIN_MAX_FAILURES * 2):
+            assert self.masuk(login_client, email="orang@lain.ac.id").status_code in (401, 429)
+        assert self.masuk(login_client).status_code == 200
+
     def test_berhasil_mengosongkan_hitungan_gagal(self, login_client):
         for _ in range(LOGIN_MAX_FAILURES - 1):
             self.masuk(login_client, password="salah-ketik")

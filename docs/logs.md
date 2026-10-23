@@ -100,7 +100,7 @@ Isi `detail` per node:
 | `jev_gate` | `disabled`, atau `label`, `confidence`, `blocked`, `cost_usd`, `error` fail-open |
 | `rewrite` | `query_rewritten` (false juga saat dilewati; durasi ≈0 menandakan dilewati) |
 | `retrieve` | `document_count` (unit filter ada di baris `turns`) |
-| `validate_context` | `decision`, `reason` (`ok`/`no_results`/`below_threshold`), `top_score`, `top_rerank_score` |
+| `validate_context` | `decision`, `reason` (`ok`/`no_results`/`below_threshold`), `top_score` |
 | `refuse` | `contact_count`: jumlah kontak yang disarankan |
 | `generate` | `model`, `input_tokens`/`output_tokens`, `cost_usd`, `tools` (nama tool yang dipanggil, tanpa argumen) |
 

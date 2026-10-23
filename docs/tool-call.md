@@ -70,7 +70,7 @@ di `validate_context` dan mengubah `generate` dari satu panggilan LLM menjadi
 **loop agentik** singkat.
 
 ```text
-   ... JEV academic → rewrite → retrieve → RRF → rerank ...
+   ... JEV academic → rewrite → retrieve → RRF ...
                             │
                             ▼
                   ┌────────────────────┐
@@ -495,7 +495,7 @@ Batasan:
 | Gateway menyisipkan `[Error]` | `GalatGateway` dilempar, giliran gagal dan tidak ada jawaban yang disimpan (seperti jalur biasa) |
 | Tool tak dapat dijalankan, konteks lemah | penolakan FR-3 tanpa LLM (`refusal_source = threshold`) |
 
-Prinsipnya sama seperti reranker dan JEV: **tool memperkaya, bukan syarat
+Prinsipnya sama seperti JEV: **tool memperkaya, bukan syarat
 menjawab.** Kegagalan tool tidak boleh memunculkan jawaban ngawur.
 
 ---
@@ -543,7 +543,7 @@ SADS_API_SECRET=<secret>       # header `secret`
 SADS_TIMEOUT_SECONDS=10
 ```
 
-Polanya mengikuti `RERANK_*`: fitur di belakang sakelar, bawaan mati, nilai di
+Polanya mengikuti `JEV_*`: fitur di belakang sakelar, bawaan mati, nilai di
 `config.py` dan `.env.example`.
 
 ---

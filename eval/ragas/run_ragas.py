@@ -1,4 +1,4 @@
-"""Nilai hasil `eval/run_generation.py` dengan RAGAS (flow.md §10).
+"""Nilai hasil `eval/run_generation.py` dengan RAGAS (flow.md §9).
 
 Tahap kedua dari dua, di environment uv tersendiri (lihat pyproject.toml di
 folder ini). Empat metrik:

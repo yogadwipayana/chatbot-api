@@ -42,7 +42,7 @@ dependencies = [
     "pyjwt>=2.13,<3",
     "slowapi>=0.1.10,<0.2",
 
-    # --- Layanan luar via HTTP (JEV, reranker API) -----------------------
+    # --- Layanan luar via HTTP (JEV, SADS) -------------------------------
     "httpx>=0.28,<0.29",
 ]
 
@@ -58,9 +58,8 @@ dev = [
     "ruff>=0.9",
     "mypy>=1.14",
 ]
-# Model lokal: embedding multilingual-e5 dan reranker cross-encoder. Membawa
-# torch (ratusan MB) -- pasang hanya bila EMBED_PROVIDER=local atau
-# RERANK_PROVIDER=local.
+# Model lokal: embedding multilingual-e5. Membawa torch (ratusan MB) -- pasang
+# hanya bila EMBED_PROVIDER=local.
 local = [
     "sentence-transformers>=5,<7",
 ]

@@ -211,7 +211,6 @@ python -m scripts.export_openapi -o /tmp/live.yaml
 |---|---|---|
 | `app/rag/fusion.py` | Reciprocal Rank Fusion | FR-2 |
 | `app/rag/retriever.py` | `PostgresHybridRetriever` — vector + FTS paralel | FR-2 |
-| `app/rag/reranker.py` | Reranker setelah RRF (API `/rerank` atau cross-encoder lokal) | FR-2 |
 | `app/rag/local_embeddings.py` | Embedding lokal multilingual-e5 (awalan + padding) | FR-1, FR-2 |
 | `app/rag/filters.py` | Predikat dokumen aktif, satu definisi untuk semua query | FR-2 |
 | `app/rag/threshold.py` | Ambang penolakan, dievaluasi sebelum LLM | FR-3 |
@@ -334,8 +333,7 @@ python -m eval.run_eval --dataset eval/data/eval_set.jsonl --k 5
 
 Membandingkan baseline vector-only melawan hybrid + RRF lewat jalur SQL yang
 sama persis (baseline = bobot fulltext nol), sehingga yang terukur benar-benar
-hanya efek fusi. Bila `RERANK_ENABLED=true`, baris ketiga hybrid + RRF +
-rerank ikut dihitung. Exit code 1 bila Recall@5 belum mencapai 0.85.
+hanya efek fusi. Exit code 1 bila Recall@5 belum mencapai 0.85.
 
 ## Evaluasi generasi — RAGAS
 
@@ -360,8 +358,6 @@ yang dinilai; tingkat dijawab dilaporkan terpisah.
 
 | Fitur | Setelan | Catatan |
 |---|---|---|
-| Reranker | `RERANK_ENABLED=true`, `RERANK_BASE_URL`, `RERANK_API_KEY`, `RERANK_MODEL` | Bawaan server TEI (`RERANK_PROVIDER=tei`); `local` butuh `uv sync --extra local` (torch). Lihat `docs/rerank.md` |
-| Ambang reranker | `RERANK_THRESHOLD` | Menggantikan ambang vector/leksikal bila skor reranker ada; kalibrasi dulu |
 | Gerbang JEV | `JEV_ENABLED=true` | Dikirim ke `<BASE_URL>/systemone` dengan `API_KEY`, model `openrouter/typesafe/jev-1.13` |
 | Embedding lokal | `EMBED_PROVIDER=local`, `EMBED_MODEL=intfloat/multilingual-e5-small` | Wajib re-index dan kalibrasi ulang ambang sesudahnya; panduan lengkap di [`docs/e5.md`](docs/e5.md) |
 
@@ -461,9 +457,16 @@ Beberapa hal yang tidak terlihat dari kontrak:
 - Endpoint mahasiswa publik tanpa login, jadi dapat dipanggil langsung lewat
   Postman atau skrip. Yang menahannya (`app/security/ratelimit.py`,
   `app/security/batas_harian.py`, `app/deps.py`):
-  - batas laju per IP, per `X-Session-Id`, dan per kunci sematan
-    (`RATE_LIMIT_*`), dijawab 429 + `Retry-After`. Permintaan yang ditolak
-    tidak menghabiskan jatah; umpan balik punya jatah terpisah dari pertanyaan.
+  - batas laju per NIM penanya (`RATE_LIMIT_PER_NIM`, bawaan 20/menit),
+    dijawab 429 + `Retry-After`. Permintaan yang ditolak tidak menghabiskan
+    jatah; umpan balik punya jatah terpisah, dihitung atas NIM penanya jawaban
+    yang dinilai.
+  - penahan per IP (`RATE_LIMIT_PER_IP`, bawaan 300/menit) untuk skrip yang
+    berganti-ganti NIM -- NIM tidak diverifikasi. Sengaja jauh di atas beban
+    kampus, karena mahasiswa di kampus keluar lewat satu IP.
+  - batas per `X-Session-Id` dan per kunci sematan masih ada tetapi mati
+    secara bawaan (sejak 2026-10-23): SADS memakai satu kunci untuk semua
+    mahasiswa.
   - batas pertanyaan harian dari semua sumber (`CHAT_DAILY_LIMIT`, dapat diubah
     dari halaman Konfigurasi): terlampaui = kill switch menyala otomatis. "Hari"
     dihitung Postgres dalam zona `TIMEZONE`.

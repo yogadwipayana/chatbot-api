@@ -105,7 +105,7 @@ class Settings(BaseSettings):
 
     # --- Tool-calling (data layanan akademik; docs/tool-call.md) ------
     tools_enabled: bool = False
-    """Sakelar utama tool-calling, seperti JEV_ENABLED/RERANK_ENABLED. Mati =
+    """Sakelar utama tool-calling, seperti JEV_ENABLED. Mati =
     LLM tidak pernah diberi tool dan jalur chat persis seperti sebelumnya."""
     tools_max_rounds: int = Field(default=2, ge=1, le=5)
     """Batas putaran loop agentik: berapa kali LLM boleh memanggil tool sebelum
@@ -115,35 +115,6 @@ class Settings(BaseSettings):
     sads_api_secret: SecretStr | None = None
     """Nilai header `secret` SADS. Hanya di env; tidak pernah dikirim ke LLM."""
     sads_timeout_seconds: float = Field(default=10.0, gt=0)
-
-    # --- Reranker (setelah RRF, sebelum threshold) -------------------
-    rerank_enabled: bool = False
-    """Sakelar reranker, seperti JEV_ENABLED. Mati = urutan RRF langsung dipakai
-    dan RERANK_* lainnya diabaikan. Mengganti model cukup dengan mengganti
-    RERANK_BASE_URL, RERANK_API_KEY, dan RERANK_MODEL."""
-    rerank_provider: Literal["tei", "api", "local"] = "tei"
-    """Bentuk endpoint, bukan modelnya. `tei` = Text Embeddings Inference
-    (`/rerank` dengan `texts`), `api` = gaya Cohere/Jina (`documents` ->
-    `results`), `local` = cross-encoder sentence-transformers di proses API.
-    Diganti hanya bila jenis servernya berganti."""
-    rerank_model: str = ""
-    """Mis. `Alibaba-NLP/gte-multilingual-reranker-base`. TEI mengabaikannya
-    (satu server satu model), jadi di sana nama ini hanya untuk log; `api` dan
-    `local` memakainya untuk memilih model."""
-    rerank_base_url: str | None = None
-    """Alamat server reranker, mis. `http://localhost:8081`; `/rerank`
-    ditambahkan di belakangnya. Wajib kecuali `local`. Tidak jatuh ke BASE_URL:
-    gateway tidak menyediakan `/rerank`."""
-    rerank_api_key: SecretStr | None = None
-    """Kosong = tanpa header Authorization. Tidak jatuh ke API_KEY, supaya kunci
-    gateway tidak terkirim ke server lain."""
-    rerank_candidates: int = 20
-    """Jumlah hasil RRF yang dinilai ulang; yang lolos tetap RETRIEVAL_TOP_N."""
-    rerank_threshold: float | None = None
-    """Skor reranker minimum (0..1). Terisi = FR-3 memakai skor reranker, yang
-    bersifat absolut, alih-alih skor mentah vector/fulltext. Kosong = ambang lama.
-    Kalibrasi dulu; skor tiap model reranker tersebar berbeda."""
-    rerank_timeout_seconds: float = 10.0
 
     # --- Gerbang JEV (Decisions API lewat gateway) ------------------
     jev_enabled: bool = False
@@ -314,13 +285,27 @@ class Settings(BaseSettings):
     """Uji coba jawaban (`POST /api/admin/test-query`) per akun dashboard. Setiap
     uji coba memanggil LLM, embedding, JEV, dan SADS seperti pertanyaan mahasiswa
     tetapi tidak terhitung batas harian. `0` = mati."""
-    rate_limit_per_session: str = "20/minute"
-    """Per `X-Session-Id` (satu tab). Bentuk `N/second|minute|hour|day`; `0` = mati."""
-    rate_limit_per_ip: str = "60/minute"
-    """Per IP -- yang menahan skrip dan Postman. IP kampus dipakai bersama
-    ratusan mahasiswa: naikkan bila mahasiswa di jaringan kampus kena 429."""
-    rate_limit_per_embed_site: str = "60/minute"
-    """Per kunci sematan: seluruh pengunjung satu situs penyemat bersama-sama."""
+    rate_limit_per_nim: str = "20/minute"
+    """Batas utama endpoint mahasiswa: per NIM penanya, di tab dan perangkat
+    mana pun. Bentuk `N/second|minute|hour|day`; `0` = mati.
+
+    Menggantikan batas per IP sebagai bawaan (2026-10-23): di kampus ratusan
+    mahasiswa keluar lewat satu IP, dan batas per IP menahan mereka semua
+    sekaligus. Menilai jawaban punya jatah sendiri, dihitung atas NIM penanya
+    jawaban itu. NIM tidak diverifikasi -- skrip dapat berganti NIM -- jadi
+    `CHAT_DAILY_LIMIT` tetap penahan terakhir."""
+    rate_limit_per_session: str = "0"
+    """Per `X-Session-Id` (satu tab). Mati secara bawaan: batas per NIM sudah
+    mencakup setiap tab mahasiswa itu, dan ID sesi dibuat peramban sendiri."""
+    rate_limit_per_ip: str = "300/minute"
+    """Per IP, sebagai penahan skrip yang berganti-ganti NIM -- bukan batas
+    harian mahasiswa. Sengaja jauh di atas beban kampus, karena IP kampus
+    dipakai bersama ratusan mahasiswa: puncak musim KRS di PRD §11 sekitar 500
+    pertanyaan per HARI, sedangkan ini 300 per MENIT dari satu IP. Naikkan bila
+    mahasiswa di jaringan kampus tetap kena 429; `0` = mati."""
+    rate_limit_per_embed_site: str = "0"
+    """Per kunci sematan: seluruh pengunjung satu situs penyemat berbagi satu
+    jatah. Mati secara bawaan: SADS memakai satu kunci untuk semua mahasiswa."""
     client_ip_header: str = "X-Forwarded-For"
     """Dari mana IP pengunjung dibaca untuk batas per IP (`ratelimit.client_ip`).
 
@@ -409,10 +394,6 @@ class Settings(BaseSettings):
         """SADS_API_SECRET, atau None bila kosong -- sengaja tidak jatuh ke API_KEY."""
         return _terisi(self.sads_api_secret)
 
-    def kunci_rerank(self) -> SecretStr | None:
-        """RERANK_API_KEY, atau None bila kosong -- sengaja tidak jatuh ke API_KEY."""
-        return _terisi(self.rerank_api_key)
-
     def kunci_jev(self) -> SecretStr | None:
         """JEV_API_KEY, atau API_KEY bila kosong."""
         return _terisi(self.jev_api_key) or self.kunci_api()
@@ -424,29 +405,8 @@ class Settings(BaseSettings):
         return f"{self.base_url.rstrip('/')}/systemone" if self.base_url else None
 
     @model_validator(mode="after")
-    def _reranker_dan_jev_valid(self) -> Settings:
+    def _tool_dan_jev_valid(self) -> Settings:
         """Setelan yang setengah terisi gagal saat start, bukan saat mahasiswa bertanya."""
-        if self.rerank_enabled:
-            if not self.rerank_model.strip():
-                raise ValueError("RERANK_ENABLED=true tetapi RERANK_MODEL kosong")
-            if self.rerank_provider != "local":
-                if not self.rerank_base_url:
-                    raise ValueError(
-                        f"RERANK_ENABLED=true dengan RERANK_PROVIDER={self.rerank_provider} "
-                        "butuh RERANK_BASE_URL"
-                    )
-                if not self.rerank_base_url.startswith(("http://", "https://")):
-                    raise ValueError(
-                        "RERANK_BASE_URL harus diawali http:// atau https://, "
-                        f"diberi {self.rerank_base_url!r}"
-                    )
-        # rerank_candidates < retrieval_top_n tidak ditolak di sini: RETRIEVAL_TOP_N
-        # dapat dinaikkan dari dashboard, dan retriever memakai yang lebih besar.
-        if self.rerank_candidates < 1:
-            raise ValueError(f"rerank_candidates harus >= 1, diberi {self.rerank_candidates}")
-        if self.rerank_threshold is not None and not 0.0 <= self.rerank_threshold <= 1.0:
-            raise ValueError(f"rerank_threshold di luar 0..1: {self.rerank_threshold}")
-
         if self.tools_enabled:
             if not self.sads_base_url:
                 raise ValueError("TOOLS_ENABLED=true butuh SADS_BASE_URL")
@@ -564,18 +524,8 @@ class Settings(BaseSettings):
     def _rapikan_base_url(cls, v: str | None) -> str | None:
         return v.rstrip("/") if v else v
 
-    @field_validator("rerank_provider", mode="before")
-    @classmethod
-    def _provider_none_sudah_diganti(cls, v):
-        """`.env` lama berisi RERANK_PROVIDER=none; arahkan ke sakelar yang baru."""
-        if isinstance(v, str) and v.strip().lower() == "none":
-            raise ValueError(
-                "RERANK_PROVIDER=none tidak dipakai lagi: matikan reranker dengan "
-                "RERANK_ENABLED=false, dan isi RERANK_PROVIDER dengan tei, api, atau local"
-            )
-        return v
-
     @field_validator(
+        "rate_limit_per_nim",
         "rate_limit_per_session",
         "rate_limit_per_ip",
         "rate_limit_per_embed_site",
@@ -588,8 +538,9 @@ class Settings(BaseSettings):
         return v
 
     def batas_laju(self) -> dict[str, BatasLaju | None]:
-        """Batas per sesi, IP, kunci sematan, dan akun admin; None = tidak dibatasi."""
+        """Batas per NIM, sesi, IP, kunci sematan, dan akun admin; None = tidak dibatasi."""
         return {
+            "nim": parse_batas(self.rate_limit_per_nim),
             "sesi": parse_batas(self.rate_limit_per_session),
             "ip": parse_batas(self.rate_limit_per_ip),
             "kunci": parse_batas(self.rate_limit_per_embed_site),

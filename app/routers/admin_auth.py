@@ -90,17 +90,20 @@ async def admin_login(
 
     Balasan gagal tidak membedakan email tak terdaftar dari kata sandi salah,
     dan waktunya pun disamakan lewat bcrypt pembanding. Kegagalan dihitung per
-    IP dan per email: per IP menahan penebakan massal, per email menahan
-    penebakan satu akun dari banyak IP.
+    email, dari IP mana pun, sehingga penebakan satu akun tetap tertahan.
+
+    Tidak per IP (sejak 2026-10-23): admin di jaringan kampus keluar lewat satu
+    IP bersama ribuan mahasiswa, dan satu orang yang menebak-nebak di sana akan
+    ikut mengunci semua admin kampus. IP tetap dicatat di log audit.
 
     Akun nonaktif baru diberi tahu SETELAH kata sandinya terbukti benar, jadi
     status itu tidak bocor ke orang yang sekadar menebak email.
     """
     email = payload.email.strip().lower()
     ip = client_ip(request, settings.client_ip_header)
-    kunci = (f"ip:{ip}", f"email:{email}")
+    kunci = f"email:{email}"
 
-    tunggu = max((limiter.retry_after(k) or 0.0) for k in kunci)
+    tunggu = limiter.retry_after(kunci) or 0.0
     if tunggu > 0:
         # Tidak dicatat per percobaan: selama terkunci, setiap percobaan ditolak
         # tanpa memeriksa kata sandi, dan saat mulai terkunci sudah tercatat.
@@ -118,15 +121,14 @@ async def admin_login(
     cocok = await anyio.to_thread.run_sync(verify_password, payload.password, pembanding)
 
     if account is None or not cocok:
-        for k in kunci:
-            limiter.record_failure(k)
+        limiter.record_failure(kunci)
         audit.warning(
             "Login gagal untuk %s dari %s (%s)",
             email,
             ip,
             "email tidak terdaftar" if account is None else "kata sandi salah",
         )
-        if any(limiter.retry_after(k) for k in kunci):
+        if limiter.retry_after(kunci):
             audit.warning(
                 "Login untuk %s dari %s dikunci sementara: terlalu banyak kegagalan",
                 email,
@@ -134,8 +136,7 @@ async def admin_login(
             )
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, LOGIN_GAGAL)
 
-    for k in kunci:
-        limiter.reset(k)
+    limiter.reset(kunci)
 
     if not account.is_active:
         audit.warning("Login ditolak untuk %s dari %s: akun nonaktif", email, ip)

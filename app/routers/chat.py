@@ -14,6 +14,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 
 from app.deps import (
+    BaseSettingsDep,
+    ChatLimiterDep,
     EmbedKeyDep,
     JawabanTerkirimDep,
     SessionDep,
@@ -21,6 +23,7 @@ from app.deps import (
     UnitDirectoryDep,
     batas_harian,
     batasi_penilaian,
+    batasi_penilaian_per_nim,
     batasi_pertanyaan,
     build_gate_call,
     build_llm_call,
@@ -287,7 +290,11 @@ async def chat_stream(
     dependencies=[Depends(batasi_penilaian)],
 )
 async def submit_feedback(
-    payload: FeedbackRequest, session: SessionDep, _embed_key: EmbedKeyDep
+    payload: FeedbackRequest,
+    session: SessionDep,
+    settings: BaseSettingsDep,
+    limiter: ChatLimiterDep,
+    _embed_key: EmbedKeyDep,
 ) -> Response:
     """FE-5: satu klik, tanpa modal.
 
@@ -295,15 +302,19 @@ async def submit_feedback(
     yang berubah pikiran dari 👍 ke 👎 tidak boleh terhitung dua kali pada rasio
     AD-5. Kunci sematan hanya diperiksa masih berlaku; situs yang sudah dicabut
     tidak lagi mengisi statistik.
+
+    Jatahnya dihitung atas NIM penanya jawaban itu, yang tercatat di
+    `messages.meta` -- body umpan balik sendiri tidak membawa NIM.
     """
-    ada = (
+    pesan = (
         await session.execute(
-            text("SELECT 1 FROM messages WHERE id = :id AND role = 'assistant'"),
+            text("SELECT meta->>'nim' FROM messages WHERE id = :id AND role = 'assistant'"),
             {"id": payload.message_id},
         )
-    ).scalar()
-    if not ada:
+    ).first()
+    if pesan is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Pesan tidak ditemukan.")
+    batasi_penilaian_per_nim(settings, limiter, pesan[0], str(payload.message_id))
 
     await session.execute(
         text("DELETE FROM feedback WHERE message_id = :id"), {"id": payload.message_id}
@@ -468,9 +479,6 @@ def policy_from(settings) -> ThresholdPolicy:
     return ThresholdPolicy(
         vector_threshold=settings.vector_threshold,
         lexical_threshold=settings.lexical_threshold,
-        # Hanya berarti bila reranker hidup; tanpa skor reranker, ambang lama
-        # yang berlaku (lihat `ThresholdPolicy.rerank_threshold`).
-        rerank_threshold=settings.rerank_threshold if settings.rerank_enabled else None,
     )
 
 

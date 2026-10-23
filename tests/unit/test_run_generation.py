@@ -58,7 +58,7 @@ class TestBuildRecord:
             kind=OutcomeKind.ANSWER,
             text="Cuti dapat diajukan ...",
             documents=docs,
-            decision=ThresholdDecision(Decision.PROCEED, Reason.OK, 0.8, None, 0.91),
+            decision=ThresholdDecision(Decision.PROCEED, Reason.OK, 0.8, None),
             gate=GateVerdict(GateLabel.ACADEMIC, 1.0, blocked=False),
             llm_called=True,
         )
@@ -68,7 +68,7 @@ class TestBuildRecord:
         assert rekaman["response"] == "Cuti dapat diajukan ..."
         assert rekaman["retrieved_contexts"] == ["Pasal 12 ..."]
         assert rekaman["kind"] == "answer"
-        assert rekaman["top_rerank_score"] == 0.91
+        assert rekaman["top_score"] == 0.8
         assert rekaman["gate_label"] == "academic"
         json.dumps(rekaman)
 

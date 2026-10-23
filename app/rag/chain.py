@@ -310,7 +310,6 @@ def _hits_from_documents(documents: Sequence[Any]):
                 rrf_score=float(meta.get("rrf_score", 0.0)),
                 ranks=dict(meta.get("ranks", {})),
                 raw_scores=dict(meta.get("raw_scores", {})),
-                rerank_score=meta.get("rerank_score"),
             )
         )
     return hits

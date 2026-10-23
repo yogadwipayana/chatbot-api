@@ -273,7 +273,6 @@ def ringkas_node(node: str, keluaran: Any) -> dict[str, Any]:
             "decision": _nilai(d.decision),
             "reason": _nilai(d.reason),
             "top_score": d.top_score,
-            "top_rerank_score": d.top_rerank_score,
         }
     if node == "refuse":
         o = out.get("outcome")

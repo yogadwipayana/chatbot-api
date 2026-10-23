@@ -15,7 +15,7 @@ WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:0.9.28 /uv /usr/local/bin/uv
 
 # true = ikut pasang extra `local` (sentence-transformers + torch, ratusan MB),
-# hanya perlu bila EMBED_PROVIDER=local atau RERANK_PROVIDER=local.
+# hanya perlu bila EMBED_PROVIDER=local.
 ARG INSTALL_LOCAL_MODELS=false
 
 # Dependensi dulu (layer ter-cache selama pyproject/uv.lock tidak berubah).

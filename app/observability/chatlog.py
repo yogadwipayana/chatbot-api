@@ -135,9 +135,6 @@ def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
         "gate_source": outcome.gate.source.value if outcome.gate else None,
         # `llm` = LLM penjawab membalas OFF_TOPIC_MARKER walau gerbang meloloskan.
         "rejection_source": rejection_source(outcome),
-        "top_rerank_score": (
-            outcome.decision.top_rerank_score if outcome.decision else None
-        ),
         # Jejak tool-calling: nama, argumen, ok, latency_ms per panggilan.
         # None bila tool tidak dipakai, sehingga baris lama tetap sebanding.
         "tool_calls": entry.tool_calls or None,

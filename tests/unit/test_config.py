@@ -375,6 +375,27 @@ class TestMasaSimpanAudit:
             settings(log_retention_days=30, log_audit_retention_days=7)
 
 
+class TestBatasLajuMahasiswa:
+    def test_bawaan_per_nim_dan_penahan_ip_longgar(self):
+        """IP kampus dan kunci SADS dipakai bersama banyak mahasiswa (2026-10-23)."""
+        from app.security.ratelimit import BatasLaju
+
+        batas = settings().batas_laju()
+        assert batas["nim"] == BatasLaju(20, 60.0)
+        # Penahan skrip, jauh di atas batas satu mahasiswa.
+        assert batas["ip"] == BatasLaju(300, 60.0)
+        assert batas["ip"].jumlah > 10 * batas["nim"].jumlah
+        assert batas["sesi"] is None
+        assert batas["kunci"] is None
+
+    def test_nim_nol_mematikan(self):
+        assert settings(rate_limit_per_nim="0").batas_laju()["nim"] is None
+
+    def test_nim_salah_ketik_ditolak(self):
+        with pytest.raises(ValidationError, match="tidak sah"):
+            settings(rate_limit_per_nim="20/menit")
+
+
 class TestBatasUjiCoba:
     def test_default_20_per_menit(self):
         from app.security.ratelimit import BatasLaju
