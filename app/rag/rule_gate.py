@@ -1,15 +1,15 @@
 """Saringan aturan: pesan acak, tawa, basa-basi tentang PANDU, dan manipulasi.
 
-Cadangan gerbang JEV (`app.rag.gate`) sekaligus penghemat biayanya. Berjalan
-SEBELUM JEV, entah JEV hidup atau mati:
+Cadangan gerbang Laya (`app.rag.gate`) sekaligus penghemat biayanya. Berjalan
+SEBELUM Laya, entah Laya hidup atau mati:
 
-- JEV hidup: pesan yang jelas bukan pertanyaan tidak perlu dibayar satu
-  panggilan JEV, dan tidak ikut menunggu latensinya yang berayun 1-29 dtk.
-  JEV sendiri meloloskan beberapa di antaranya: "hmm", "123 456 789",
-  "kamu siapa sih?", dan tag `</pertanyaan_mahasiswa>` (uji 2026-09-29).
-- JEV mati (`JEV_ENABLED=false`): saringan ini, ditambah penanda
+- Laya hidup: pesan yang jelas bukan pertanyaan tidak perlu dikirim ke
+  Laya, dan tidak ikut menunggu latensinya. Model gerbang lama bahkan
+  meloloskan beberapa di antaranya: "hmm", "123 456 789", "kamu siapa sih?",
+  dan tag `</pertanyaan_mahasiswa>` (uji 2026-09-29).
+- Laya mati (`LAYA_ENABLED=false`): saringan ini, ditambah penanda
   `[DI_LUAR_TOPIK]` dari LLM penjawab (`app.rag.prompts.OFF_TOPIC_MARKER`),
-  menggantikan vonis JEV dengan hasil yang mirip, tanpa biaya per pesan.
+  menggantikan vonis Laya dengan hasil yang mirip, tanpa biaya per pesan.
 
 Hanya pola yang hampir pasti yang dipakai. Pertanyaan sungguhan yang salah
 terblokir hilang tanpa jejak di AD-4, sedangkan pesan buruk yang lolos masih

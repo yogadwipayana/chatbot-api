@@ -239,11 +239,11 @@ def detect(text: str) -> SmallTalkAssessment:
 
 def reply_for(text: str) -> str | None:
     """Balasan basa-basi yang cocok untuk pesan yang SUDAH divonis smalltalk
-    (oleh gerbang JEV), atau None bila tidak ada kata yang dikenali.
+    (oleh gerbang Laya), atau None bila tidak ada kata yang dikenali.
 
     Longgar, berbeda dari `detect`: kata tak dikenal diabaikan, karena yang
     diputuskan di sini hanya nada balasannya, bukan apakah pesan itu pertanyaan.
-    Tanpa ini JEV membalas "sip, itu saja dulu" dengan sapaan pembuka.
+    Tanpa ini Laya membalas "sip, itu saja dulu" dengan sapaan pembuka.
     """
     dikenal = [k for k in _jenis_per_unit(_kata_inti(text)) if k is not None]
     return REPLIES[_utama(dikenal)] if dikenal else None

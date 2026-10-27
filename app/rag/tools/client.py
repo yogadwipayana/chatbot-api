@@ -15,7 +15,7 @@ from app.rag.providers import USER_AGENT
 
 class SadsClient:
     """GET berautentikasi ke SADS. Satu `AsyncClient` per panggilan, seperti
-    klien JEV (`app.rag.gate`); timeout tegas supaya giliran mahasiswa tidak
+    klien Laya (`app.rag.gate`); timeout tegas supaya giliran mahasiswa tidak
     tertahan oleh layanan yang lambat."""
 
     def __init__(

@@ -515,7 +515,7 @@ def build_retriever(settings: SettingsDep) -> Any:
 
 
 def build_gate_call(settings: SettingsDep) -> Any:
-    """Gerbang JEV, atau None bila JEV_ENABLED=false. Di-override di test."""
+    """Gerbang Laya, atau None bila LAYA_ENABLED=false. Di-override di test."""
     from app.rag.gate import build_gate
 
     return build_gate(settings)
@@ -866,7 +866,7 @@ def batasi_uji_coba(
 ) -> None:
     """Batas laju `POST /api/admin/test-query` per akun dashboard (H21).
 
-    Uji coba memanggil LLM, embedding, JEV, dan SADS persis seperti pertanyaan
+    Uji coba memanggil LLM, embedding, Laya, dan SADS persis seperti pertanyaan
     mahasiswa, tetapi tidak tunduk pada batas laju mahasiswa, batas harian,
     maupun kill switch. Tanpa batas ini satu akun staf, atau tokennya yang
     bocor, dapat menghabiskan kuota model tanpa terlihat di statistik.

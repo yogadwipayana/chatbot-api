@@ -1,8 +1,9 @@
 # Fine-tuning Laya untuk gerbang PANDU
 
-Pipeline untuk melatih `laya-multilingual` (mmBERT-base, 322M) menjadi pengganti lokal
-JEV di gerbang (`app/rag/gate.py`). Latar belakang, hasil uji, dan keputusan ada di
-`laya.md` (root proyek). Tanpa fine-tuning Laya hanya benar 9/64 pada set uji gerbang;
+Pipeline untuk melatih `laya-multilingual` (mmBERT-base, 322M) menjadi model gerbang
+PANDU (`app/rag/gate.py`), menggantikan JEV. Sejak 2026-10-27 JEV tidak dipakai lagi di
+gerbang; di pipeline ini JEV tetap tercatat sebagai guru pelabel (`label_jev.py`) dan
+pembanding. Latar belakang, hasil uji, dan keputusan ada di `docs/laya.md`. Tanpa fine-tuning Laya hanya benar 9/64 pada set uji gerbang;
 README Laya sendiri menyebut checkpoint dasarnya "near chance zero-shot".
 
 ```
@@ -109,7 +110,7 @@ dikalibrasi ulang.
 
 `laya-serve` hanya mengenal checkpoint bawaan. `sajikan_laya.py` menjalankan server yang
 sama (`laya.serve.main`), tapi nama `multilingual` diarahkan ke folder checkpoint. Gerbang
-tetap mengirim `JEV_MODEL=multilingual`. Kalau `LAYA_PANDU_PATH` kosong, yang disajikan
+tetap mengirim `LAYA_MODEL=multilingual`. Kalau `LAYA_PANDU_PATH` kosong, yang disajikan
 adalah checkpoint asli.
 
 **Anti-SIGILL.** Di CPU server, sekitar 13% proses torch mati pada prediksi pertamanya.
@@ -147,8 +148,8 @@ sudo install -m 644 sajikan_laya.py /laya/sajikan_laya.py
 ```
 
 Folder checkpoint harus bisa dibaca UID 10001. Setelah `sudo docker compose up -d`, uji
-dengan `evaluasi.py --url`. Cara menyambungkannya ke chatbot-api (`JEV_URL`, `JEV_MODEL`,
-`JEV_API_KEY`) ada di `laya.md`.
+dengan `evaluasi.py --url`. Cara menyambungkannya ke chatbot-api (`LAYA_URL`, `LAYA_MODEL`,
+`LAYA_API_KEY`) ada di `docs/laya.md`.
 
 ## Putaran 2 (lanjutan fine-tuning)
 
@@ -178,10 +179,10 @@ sudo cp -a /laya/models/laya-pandu-gerbang /laya/models/laya-pandu-gerbang-r1
 
 1. `gate.parse_response` mengambil keyakinan dari `answer_confidence`. Kalau field itu
    tidak ada (JEV), dipakai `confidence`.
-2. `GatePolicy.nonsense_threshold` dan `JEV_NONSENSE_THRESHOLD`. Kalau kosong, nilainya
-   sama dengan `JEV_BLOCK_THRESHOLD`, jadi JEV tidak berubah. Di `api/.env` lokal dipasang
+2. `GatePolicy.nonsense_threshold` dan `LAYA_NONSENSE_THRESHOLD` (waktu itu bernama
+   `JEV_NONSENSE_THRESHOLD`). Kalau kosong, nilainya sama dengan `LAYA_BLOCK_THRESHOLD`. Di `api/.env` lokal dipasang
    0,95 untuk sementara.
-3. `JEV_URL` tanpa `http://`/`https://` ditolak saat start.
+3. `LAYA_URL` (dulu `JEV_URL`) tanpa `http://`/`https://` ditolak saat start.
 4. Ditambah 11 test di `tests/unit/test_gate.py`; suite 1714 lolos, dan 16 kegagalannya
    sama dengan baseline. Langkah ini tidak mengubah `gerbang_sha256`, jadi checkpoint
    putaran 1 masih sah.
@@ -211,7 +212,7 @@ Setelah langkah ini, gerbang lokal sudah lebih baik walau model belum dilatih ul
 Mengukur checkpoint yang sedang disajikan pada kedua set (lewat tunnel, dari `api/`):
 
 ```bash
-export LAYA_API_KEY="$(grep '^JEV_API_KEY=' .env | cut -d= -f2-)"
+export LAYA_API_KEY="$(grep '^LAYA_API_KEY=' .env | cut -d= -f2-)"
 .venv/Scripts/python eval/laya/evaluasi.py --uji eval/laya/data/kalibrasi.jsonl \
   --url http://127.0.0.1:8001/v1/systemone --out eval/laya/data/hasil_kalibrasi_pandu_r1.jsonl
 ```
@@ -287,13 +288,13 @@ kembalikan folder dari `laya-pandu-gerbang-r1`, lalu jalankan
 ssh -N -L 8001:127.0.0.1:8001 embed@100.111.178.48   # biarkan terbuka
 ```
 
-`api/.env` lokal: `JEV_URL=http://127.0.0.1:8001/v1/systemone`, `JEV_MODEL=multilingual`,
-`JEV_API_KEY` = `LAYA_API_KEY` server. Setelah `.env` diubah, jalankan `touch app/config.py`.
+`api/.env` lokal: `LAYA_URL=http://127.0.0.1:8001/v1/systemone`, `LAYA_MODEL=multilingual`,
+`LAYA_API_KEY` = `LAYA_API_KEY` server. Setelah `.env` diubah, jalankan `touch app/config.py`.
 
 ### 7. Pilih ambang di set kalibrasi, lalu uji sekali
 
 ```bash
-# dari api/. LAYA_API_KEY = JEV_API_KEY di api/.env
+# dari api/. LAYA_API_KEY sama dengan di api/.env
 # (perlu dibuat) --pipeline: rule_gate + smalltalk dulu (C1); --ambang-nonsense
 .venv/Scripts/python eval/laya/evaluasi.py --uji eval/laya/data/kalibrasi.jsonl \
   --url http://127.0.0.1:8001/v1/systemone --pipeline
@@ -311,7 +312,7 @@ ssh -N -L 8001:127.0.0.1:8001 embed@100.111.178.48   # biarkan terbuka
   --out eval/laya/data/hasil_uji_pandu_r2.jsonl
 ```
 
-- Isi ambang yang sama ke `api/.env` (`JEV_OUT_OF_SCOPE_THRESHOLD`, `JEV_NONSENSE_THRESHOLD`).
+- Isi ambang yang sama ke `api/.env` (`LAYA_OUT_OF_SCOPE_THRESHOLD`, `LAYA_NONSENSE_THRESHOLD`).
 
 ### 8. Uji widget
 
@@ -321,7 +322,7 @@ Ikuti `browseract.md`: pakai `chrome-live` dengan tunnel aktif. Kasus yang diuji
 - pindah topik ke luar tema setelah percakapan akademik
 - pesan di luar topik yang mirip akademik ("kerjakan tugas kalkulus saya")
 
-Pesan di luar topik harus berhenti di node `jev_gate` (`outcome=rejected` tanpa node
+Pesan di luar topik harus berhenti di node `laya_gate` (`outcome=rejected` tanpa node
 `generate` di `log/app.db`). Setelah selesai, hapus datanya dengan `--awalan uji-`.
 
 ### 9. Catat dan putuskan

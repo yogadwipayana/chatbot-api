@@ -1,8 +1,8 @@
-"""Penanda `[DI_LUAR_TOPIK]` dari LLM penjawab dan parameter gerbang JEV (T18).
+"""Penanda `[DI_LUAR_TOPIK]` dari LLM penjawab dan parameter gerbang Laya (T18).
 
-Penanda ini cadangan gerbang JEV untuk pesan di luar urusan kampus: dengan
-`JEV_ENABLED=false`, atau saat JEV meloloskan pesan di bawah ambangnya, LLM
-penjawab yang memutuskan. Hasilnya harus sama dengan blokir JEV `out_of_scope`:
+Penanda ini cadangan gerbang Laya untuk pesan di luar urusan kampus: dengan
+`LAYA_ENABLED=false`, atau saat Laya meloloskan pesan di bawah ambangnya, LLM
+penjawab yang memutuskan. Hasilnya harus sama dengan blokir Laya `out_of_scope`:
 `rejected`, tanpa sitasi, dan TIDAK masuk AD-4.
 """
 
@@ -56,7 +56,7 @@ class TestDeteksi:
 
 
 class TestPipeline:
-    async def test_menjadi_rejected_seperti_blokir_jev(self, strong_retriever):
+    async def test_menjadi_rejected_seperti_blokir_laya(self, strong_retriever):
         hasil = await tanya(strong_retriever, OFF_TOPIC_MARKER)
         assert hasil.kind is OutcomeKind.REJECTED
         assert hasil.text == REPLIES[GateLabel.OUT_OF_SCOPE]
@@ -68,16 +68,16 @@ class TestPipeline:
         assert respons.citations == []
         assert respons.contacts == []
 
-    async def test_vonis_jev_yang_meloloskan_tetap_dibawa(self, strong_retriever):
-        """Pesan yang lolos JEV lalu ditolak LLM adalah bahan kalibrasi ambang JEV."""
+    async def test_vonis_laya_yang_meloloskan_tetap_dibawa(self, strong_retriever):
+        """Pesan yang lolos Laya lalu ditolak LLM adalah bahan kalibrasi ambang Laya."""
 
-        async def jev(question, history=(), unit=None):
+        async def laya(question, history=(), unit=None):
             return GateVerdict(GateLabel.OUT_OF_SCOPE, 0.6, blocked=False)
 
-        hasil = await tanya(strong_retriever, OFF_TOPIC_MARKER, gate_call=jev)
+        hasil = await tanya(strong_retriever, OFF_TOPIC_MARKER, gate_call=laya)
         assert hasil.gate is not None
         assert hasil.gate.confidence == 0.6
-        assert hasil.gate.source is GateSource.JEV
+        assert hasil.gate.source is GateSource.LAYA
 
     async def test_penanda_tidak_pernah_dialirkan(self, strong_retriever):
         potongan: list[str] = []
@@ -109,7 +109,7 @@ class TestLog:
         assert meta["gate_source"] is None
 
 
-class TestParameterJev:
+class TestParameterLaya:
     def test_topik_pilihan_ikut_dikirim(self):
         """T18: tanpa topik, "cara bayar VA BNI" dinilai urusan perbankan umum."""
         body = build_request("m", "cara bayar VA BNI lewat SMS?", (), "Keuangan")
@@ -127,7 +127,7 @@ class TestParameterJev:
     def test_ambang_bawaan_hasil_kalibrasi(self):
         policy = GatePolicy()
         assert policy.block_threshold == 0.7
-        assert policy.out_of_scope_threshold == 0.9
+        assert policy.out_of_scope_threshold == 0.7
 
 
 class TestBasaBasiAturan:

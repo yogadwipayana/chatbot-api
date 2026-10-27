@@ -3,7 +3,7 @@
 `laya-serve` hanya mengenal checkpoint bawaan. Skrip ini menjalankan server
 yang sama persis (`laya.serve.main`: auth, batas request, /health,
 /v1/systemone), hanya router-nya diganti supaya nama `multilingual` menunjuk ke
-folder checkpoint lokal. Gerbang chatbot tetap mengirim `JEV_MODEL=multilingual`.
+folder checkpoint lokal. Gerbang chatbot tetap mengirim `LAYA_MODEL=multilingual`.
 
 SIGILL di CPU server (QEMU tanpa AVX): sekitar 13% proses torch mati pada
 prediksi pertamanya karena MKL memilih kernel AVX-512

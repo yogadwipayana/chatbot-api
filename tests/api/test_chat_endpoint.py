@@ -513,7 +513,7 @@ class TestFeedback:
         assert r.status_code == 422
 
 
-class TestGerbangJev:
+class TestGerbangLaya:
     """`kind: rejected` -- tanpa sitasi, tanpa LLM penjawab, dan tidak masuk AD-4.
 
     Pencarian sempat berjalan paralel dengan gerbang; hasilnya dibuang."""

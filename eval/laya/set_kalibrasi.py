@@ -1,6 +1,6 @@
 """Set kalibrasi gerbang: 60 pesan berlabel tangan untuk memilih ambang (laya.md C2).
 
-Dipakai untuk memilih `JEV_OUT_OF_SCOPE_THRESHOLD` / `JEV_NONSENSE_THRESHOLD`
+Dipakai untuk memilih `LAYA_OUT_OF_SCOPE_THRESHOLD` / `LAYA_NONSENSE_THRESHOLD`
 dan memeriksa temperature, SEBELUM set uji (`set_uji.py`) dijalankan sekali di
 akhir. Memilih ambang di set uji membuat angka uji tidak sah lagi.
 

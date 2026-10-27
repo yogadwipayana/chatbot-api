@@ -165,9 +165,9 @@ async def admin_test_query(
 ) -> TestQueryResponse:
     """AD-6. Alur yang sama persis dengan `/api/chat`, ditambah rincian retrieval.
 
-    Termasuk gerbang JEV: tanpanya "yang dilihat mahasiswa" di halaman ini
+    Termasuk gerbang Laya: tanpanya "yang dilihat mahasiswa" di halaman ini
     keliru untuk pesan yang diblokir (admin melihat "tidak ditemukan",
-    mahasiswa melihat penolakan JEV). Uji coba tanpa riwayat, jadi penulisan
+    mahasiswa melihat penolakan Laya). Uji coba tanpa riwayat, jadi penulisan
     ulang query (FR-4) hanya berjalan untuk menerjemahkan pertanyaan berbahasa
     Inggris, persis seperti pesan pertama mahasiswa.
 

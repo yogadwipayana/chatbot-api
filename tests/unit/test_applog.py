@@ -50,7 +50,7 @@ class TestNodeRecorder:
             "sensitive",
             "smalltalk",
             "rule_gate",
-            "jev_gate",
+            "laya_gate",
             "rewrite",
             "retrieve",
             "validate_context",
@@ -77,7 +77,7 @@ class TestNodeRecorder:
         _, rec = await jalankan(pertanyaan, strong_retriever, llm)
         detail = {n["node"]: n["detail"] for n in rec.nodes}
         assert detail["sanitize"] == {"length": len(pertanyaan)}
-        assert detail["jev_gate"] == {"disabled": True}
+        assert detail["laya_gate"] == {"disabled": True}
         assert detail["rewrite"] == {"query_rewritten": False}
         assert detail["retrieve"] == {"document_count": 2}
         assert detail["validate_context"]["decision"] == "proceed"
@@ -88,7 +88,7 @@ class TestNodeRecorder:
         assert rec.node_terakhir == "sensitive"
         assert rec.nodes[-1]["detail"]["redirected"] is True
 
-    async def test_vonis_jev_tercatat(self, strong_retriever, llm):
+    async def test_vonis_laya_tercatat(self, strong_retriever, llm):
         async def gerbang(q, riwayat, unit=None):
             return GateVerdict(GateLabel.NONSENSE, 0.97, blocked=True, cost_usd=0.0002)
 
@@ -96,11 +96,11 @@ class TestNodeRecorder:
             "resep rendang padang", strong_retriever, llm, gate_call=gerbang
         )
         # Pencarian berjalan paralel dan validate_context tetap menjadi titik
-        # temu, tetapi alur berhenti karena vonis JEV.
-        assert rec.node_terakhir == "jev_gate"
+        # temu, tetapi alur berhenti karena vonis Laya.
+        assert rec.node_terakhir == "laya_gate"
         assert "generate" not in {n["node"] for n in rec.nodes}
         detail = {n["node"]: n["detail"] for n in rec.nodes}
-        assert detail["jev_gate"] == {
+        assert detail["laya_gate"] == {
             "label": "nonsense",
             "confidence": 0.97,
             "blocked": True,
@@ -357,7 +357,7 @@ class TestRekamanIO:
         assert per_node["sanitize"]["output"] == {"clean": "kapan pengisian KRS dibuka?"}
         assert per_node["generate"]["input"]["clean"] == "kapan pengisian KRS dibuka?"
         # Rute: keluaran router sesudah node; paralel = daftar nama node.
-        assert per_node["rule_gate"]["route"] == ["jev_gate", "cari"]
+        assert per_node["rule_gate"]["route"] == ["laya_gate", "cari"]
         assert per_node["validate_context"]["route"] == "generate"
         assert per_node["generate"]["route"] is None
         assert isi["output"].text.startswith("Jawaban")
@@ -388,14 +388,14 @@ class TestRekamanIO:
         assert not any(n.startswith("selesai_atau") for n in nama)
         assert "route_context" not in nama
 
-    async def test_panggilan_jev_lewat_custom_event(self, strong_retriever, llm):
+    async def test_panggilan_laya_lewat_custom_event(self, strong_retriever, llm):
         import time
 
         async def gerbang(q, riwayat, unit=None):
             mulai = time.perf_counter()
             await catat_panggilan(
-                jenis="jev",
-                nama="jev_classify",
+                jenis="laya",
+                nama="laya_classify",
                 masukan={"state": {"pesan_terbaru": q}},
                 keluaran={"label": "academic"},
                 mulai=mulai,
@@ -405,14 +405,14 @@ class TestRekamanIO:
         _, rec = await jalankan_rekam(
             "kapan pengisian KRS dibuka?", strong_retriever, llm, gate_call=gerbang
         )
-        [jev] = [c for c in rec.rekaman()["calls"] if c["kind"] == "jev"]
-        posisi_jev = next(n["position"] for n in rec.nodes if n["node"] == "jev_gate")
-        assert jev["position"] == posisi_jev
-        assert jev["input"] == {"state": {"pesan_terbaru": "kapan pengisian KRS dibuka?"}}
-        assert jev["status"] == "ok"
+        [laya] = [c for c in rec.rekaman()["calls"] if c["kind"] == "laya"]
+        posisi_laya = next(n["position"] for n in rec.nodes if n["node"] == "laya_gate")
+        assert laya["position"] == posisi_laya
+        assert laya["input"] == {"state": {"pesan_terbaru": "kapan pengisian KRS dibuka?"}}
+        assert laya["status"] == "ok"
 
     async def test_event_dengan_induk_asing_dicari_lewat_nama_node(self):
-        """Tracing menyala: `@traceable` di JEV membuat induk event menjadi run
+        """Tracing menyala: `@traceable` di Laya membuat induk event menjadi run
         LangSmith yang tidak dikenal perekam; node-nya dibaca dari metadata."""
         rec = NodeRecorder(rekam_io=True)
         node_run = uuid.uuid4()
@@ -421,23 +421,23 @@ class TestRekamanIO:
             {},
             {"clean": "q"},
             run_id=node_run,
-            metadata={"langgraph_node": "jev_gate"},
-            name="jev_gate",
+            metadata={"langgraph_node": "laya_gate"},
+            name="laya_gate",
         )
         await rec.on_custom_event(
             ACARA_PANGGILAN,
             {
-                "kind": "jev",
-                "name": "jev_classify",
+                "kind": "laya",
+                "name": "laya_classify",
                 "input": {},
                 "output": None,
                 "duration_ms": 5.0,
             },
             run_id=uuid.uuid4(),
-            metadata={"langgraph_node": "jev_gate"},
+            metadata={"langgraph_node": "laya_gate"},
         )
-        [jev] = rec.rekaman()["calls"]
-        assert jev["kind"] == "jev" and jev["position"] == 1 and jev["parent_id"] is None
+        [laya] = rec.rekaman()["calls"]
+        assert laya["kind"] == "laya" and laya["position"] == 1 and laya["parent_id"] is None
 
     async def test_node_gagal_tetap_terekam(self, llm):
         class RetrieverRusak:

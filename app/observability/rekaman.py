@@ -2,7 +2,7 @@
 
 Pengganti LangSmith di sisi aplikasi. Setiap node LangGraph mencatat state yang
 diterimanya, perubahan yang dikembalikannya, dan rute yang diambil sesudahnya;
-panggilan di dalam node (LLM, retriever, tool, JEV) dicatat sebagai pohon di
+panggilan di dalam node (LLM, retriever, tool, Laya) dicatat sebagai pohon di
 bawahnya. Dengan ini tracing LangSmith boleh dimatikan tanpa kehilangan
 kemampuan membaca prompt dan jawaban model saat menelusuri jawaban buruk.
 
@@ -18,7 +18,7 @@ Satu giliran disimpan sebagai SATU blob di tabel `traces`:
   yang panjang disimpan sekali dan dirujuk lewat `{"$ref": hash}`.
 - **Penyamaran** (`samarkan`): teks pertanyaan sensitif (FR-7) diganti penanda
   yang sama dengan di Postgres, di mana pun ia muncul -- state, prompt LLM,
-  permintaan JEV.
+  permintaan Laya.
 - **Kompresi**: zlib. Satu giliran ber-tool sekitar 60 KB JSON mentah.
 
 Semua langkah ini berjalan di thread penulis log (`LogStore.tulis`), bukan di
@@ -64,7 +64,7 @@ MIN_DEDUP = 300
 Di bawah itu rujukan `{"$ref": "<16 heks>"}` justru lebih panjang daripada isinya."""
 
 ACARA_PANGGILAN = "pandu_panggilan"
-"""Nama custom event LangChain untuk panggilan yang bukan runnable (JEV, tool)."""
+"""Nama custom event LangChain untuk panggilan yang bukan runnable (Laya, tool)."""
 
 
 def _potong(teks: str, batas: int = MAKS_TEKS) -> str:
@@ -239,7 +239,7 @@ async def catat_panggilan(
     mulai: float,
     galat: BaseException | str | None = None,
 ) -> None:
-    """Catat satu panggilan yang bukan runnable LangChain (JEV, handler tool).
+    """Catat satu panggilan yang bukan runnable LangChain (Laya, handler tool).
 
     Dikirim sebagai custom event: `NodeRecorder` menerimanya dengan `run_id`
     milik runnable yang sedang berjalan -- node, atau panggilan LLM di dalamnya

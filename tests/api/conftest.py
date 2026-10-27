@@ -200,7 +200,7 @@ def make_client(
 
     `retriever` boleh diisi untuk memeriksa apa yang diterima retriever (mis.
     unit pilihan mahasiswa); tanpa itu dibuat baru dari `documents`. `gate`
-    menggantikan gerbang JEV; default None berarti gerbang mati.
+    menggantikan gerbang Laya; default None berarti gerbang mati.
     """
 
     def factory(documents, *, session=None, retriever=None, gate=None) -> TestClient:
@@ -210,7 +210,7 @@ def make_client(
         )
         app.dependency_overrides[build_llm_call] = lambda: api_llm
         app.dependency_overrides[build_rewrite_call] = lambda: api_rewriter
-        # None = gerbang mati, apa pun isi JEV_ENABLED di .env mesin ini.
+        # None = gerbang mati, apa pun isi LAYA_ENABLED di .env mesin ini.
         app.dependency_overrides[build_gate_call] = lambda: gate
         app.dependency_overrides[get_kill_switch] = lambda: kill_switch
         app.dependency_overrides[get_kill_switch_store] = lambda: kill_switch_store

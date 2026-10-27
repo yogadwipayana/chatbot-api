@@ -25,9 +25,9 @@ Kalimat "tidak menemukan" versi LLM sendiri tidak memenuhi satu pun dari itu."""
 OFF_TOPIC_MARKER = "[DI_LUAR_TOPIK]"
 """Balasan LLM bila pertanyaannya sama sekali bukan urusan kampus (aturan 4).
 
-Cadangan gerbang JEV untuk pesan di luar topik ("resep rendang"): LLM toh
+Cadangan gerbang Laya untuk pesan di luar topik ("resep rendang"): LLM toh
 dipanggil untuk pertanyaan yang lolos threshold, jadi vonis ini tidak menambah
-biaya. Dibaca `app.rag.chain.is_off_topic` dan diperlakukan seperti blokir JEV
+biaya. Dibaca `app.rag.chain.is_off_topic` dan diperlakukan seperti blokir Laya
 `out_of_scope`: `rejected`, tanpa sitasi, dan TIDAK masuk AD-4 -- berbeda dari
 `NOT_FOUND_MARKER`, yang justru menandai celah dokumen untuk admin."""
 

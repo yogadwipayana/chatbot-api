@@ -105,7 +105,7 @@ class Settings(BaseSettings):
 
     # --- Tool-calling (data layanan akademik; docs/tool-call.md) ------
     tools_enabled: bool = False
-    """Sakelar utama tool-calling, seperti JEV_ENABLED. Mati =
+    """Sakelar utama tool-calling, seperti LAYA_ENABLED. Mati =
     LLM tidak pernah diberi tool dan jalur chat persis seperti sebelumnya."""
     tools_max_rounds: int = Field(default=2, ge=1, le=5)
     """Batas putaran loop agentik: berapa kali LLM boleh memanggil tool sebelum
@@ -116,43 +116,43 @@ class Settings(BaseSettings):
     """Nilai header `secret` SADS. Hanya di env; tidak pernah dikirim ke LLM."""
     sads_timeout_seconds: float = Field(default=10.0, gt=0)
 
-    # --- Gerbang JEV (Decisions API lewat gateway) ------------------
-    jev_enabled: bool = False
+    # --- Gerbang Laya (Decisions API di server Laya; docs/laya.md) ----
+    laya_enabled: bool = False
     """Klasifikasi pesan sebelum retrieval: academic / smalltalk / out_of_scope /
     nonsense / malicious. Gagal atau lewat batas waktu = pesan diteruskan.
     Mati pun aman: saringan aturan (`app.rag.rule_gate`) dan penanda
     `[DI_LUAR_TOPIK]` LLM penjawab menggantikannya tanpa biaya per pesan."""
-    jev_url: str | None = None
-    """Kosong = `<BASE_URL>/systemone`, endpoint gateway yang meneruskan JEV.
-    Diisi hanya bila JEV dilayani alamat lain dengan badan permintaan yang sama."""
-    jev_api_key: SecretStr | None = None
-    """Kosong = API_KEY, kunci yang sama dengan gateway."""
-    jev_model: str = "openrouter/typesafe/jev-1.13"
-    """Nama model JEV menurut gateway."""
-    jev_timeout_seconds: float = Field(default=10.0, gt=0)
-    """Batas keras satu panggilan JEV. Biasanya bukan ini yang memutusnya:
-    JEV berjalan paralel dengan pencarian dan diputus `jev_grace_seconds`
-    setelah pencarian selesai (`app.rag.graph.jev_gate`). Batas ini hanya
+    laya_url: str | None = None
+    """Endpoint `POST /v1/systemone` server Laya (`eval/laya/sajikan_laya.py`),
+    mis. `https://laya.dwipa.my.id/v1/systemone`. Wajib bila LAYA_ENABLED=true."""
+    laya_api_key: SecretStr | None = None
+    """Kunci server Laya. Wajib bila LAYA_ENABLED=true; sengaja tidak jatuh ke
+    API_KEY, supaya kunci gateway LLM tidak pernah dikirim ke server Laya."""
+    laya_model: str = "multilingual"
+    """Nama model yang dilayani server Laya (checkpoint hasil latih)."""
+    laya_timeout_seconds: float = Field(default=10.0, gt=0)
+    """Batas keras satu panggilan Laya. Biasanya bukan ini yang memutusnya:
+    Laya berjalan paralel dengan pencarian dan diputus `laya_grace_seconds`
+    setelah pencarian selesai (`app.rag.graph.laya_gate`). Batas ini hanya
     berlaku bila pencarian sendiri juga lambat."""
-    jev_grace_seconds: float = Field(default=1.5, ge=0)
-    """Waktu tambahan bagi JEV setelah pencarian paralel selesai -- satu-
-    satunya waktu tunggu yang dapat ditambahkan JEV ke giliran mahasiswa.
-    Latensi JEV berayun dari ~1 dtk sampai ~29 dtk (2026-09-28); batas tetap
-    3 dtk dulu memutusnya walau pencarian masih berjalan 5-10 dtk."""
-    jev_block_threshold: float = 0.7
-    """Keyakinan minimum untuk menghentikan pesan nonsense/malicious/smalltalk.
-    Kalibrasi 2026-09-29: pertanyaan akademik tidak pernah di atas 0,03 untuk
-    ketiga label ini (lihat `app.rag.gate.GatePolicy`)."""
-    jev_out_of_scope_threshold: float = 0.9
-    """Lebih ketat: pertanyaan di luar topik yang lolos gerbang masih ditandai
-    LLM penjawab (`[DI_LUAR_TOPIK]`), sedangkan salah blokir menelan pertanyaan
-    akademik tanpa jejak. Akademik paling tinggi 0,57, di luar topik sungguhan
-    paling rendah 0,94 (2026-09-29)."""
-    jev_nonsense_threshold: float | None = None
-    """Ambang khusus label nonsense; kosong = `jev_block_threshold` (JEV tidak
-    berubah). Untuk Laya hasil latih (laya.md): pertanyaan akademik yang sangat
-    pendek ("ukm", "toeic brp") mendapat nonsense sampai 0,81, sedangkan pesan
-    acak sungguhan sudah dihentikan `app.rag.rule_gate` lebih dulu."""
+    laya_grace_seconds: float = Field(default=1.5, ge=0)
+    """Waktu tambahan bagi Laya setelah pencarian paralel selesai -- satu-
+    satunya waktu tunggu yang dapat ditambahkan gerbang ke giliran mahasiswa.
+    Batas tetap 3 dtk dulu memutus gerbang walau pencarian masih berjalan
+    5-10 dtk (2026-09-28, model gerbang lama yang latensinya berayun 1-29 dtk)."""
+    laya_block_threshold: float = 0.7
+    """Keyakinan minimum untuk menghentikan pesan nonsense/malicious/smalltalk
+    (lihat `app.rag.gate.GatePolicy`)."""
+    laya_out_of_scope_threshold: float = 0.7
+    """Ambang `out_of_scope` pada skala `answer_confidence` Laya, dari set
+    kalibrasi (laya.md A3, 2026-10-08): p(out_of_scope) tertinggi pada pesan
+    akademik 0,49, jadi 0,7 masih memberi jarak ±0,2. Pertanyaan di luar topik
+    yang lolos gerbang masih ditandai LLM penjawab (`[DI_LUAR_TOPIK]`)."""
+    laya_nonsense_threshold: float | None = None
+    """Ambang khusus label nonsense; kosong = `laya_block_threshold`. Laya
+    memberi nonsense sampai 0,81 pada pertanyaan akademik yang sangat pendek
+    ("ukm", "toeic brp"), sedangkan pesan acak sungguhan sudah dihentikan
+    `app.rag.rule_gate` lebih dulu. Set kalibrasi memberi 0,95 (laya.md A3)."""
 
     # --- Retrieval (FR-2, FR-3) --------------------------------------
     retrieval_candidates: int = 20
@@ -283,7 +283,7 @@ class Settings(BaseSettings):
     sesi berakhir sendiri -- juga token yang tersalin dari komputer bersama (H27)."""
     rate_limit_per_admin: str = "20/minute"
     """Uji coba jawaban (`POST /api/admin/test-query`) per akun dashboard. Setiap
-    uji coba memanggil LLM, embedding, JEV, dan SADS seperti pertanyaan mahasiswa
+    uji coba memanggil LLM, embedding, Laya, dan SADS seperti pertanyaan mahasiswa
     tetapi tidak terhitung batas harian. `0` = mati."""
     rate_limit_per_nim: str = "20/minute"
     """Batas utama endpoint mahasiswa: per NIM penanya, di tab dan perangkat
@@ -394,18 +394,16 @@ class Settings(BaseSettings):
         """SADS_API_SECRET, atau None bila kosong -- sengaja tidak jatuh ke API_KEY."""
         return _terisi(self.sads_api_secret)
 
-    def kunci_jev(self) -> SecretStr | None:
-        """JEV_API_KEY, atau API_KEY bila kosong."""
-        return _terisi(self.jev_api_key) or self.kunci_api()
+    def kunci_laya(self) -> SecretStr | None:
+        """LAYA_API_KEY, atau None bila kosong -- sengaja tidak jatuh ke API_KEY."""
+        return _terisi(self.laya_api_key)
 
-    def url_jev(self) -> str | None:
-        """JEV_URL, atau `<BASE_URL>/systemone` bila kosong."""
-        if self.jev_url:
-            return self.jev_url
-        return f"{self.base_url.rstrip('/')}/systemone" if self.base_url else None
+    def url_laya(self) -> str | None:
+        """LAYA_URL, atau None bila kosong."""
+        return self.laya_url or None
 
     @model_validator(mode="after")
-    def _tool_dan_jev_valid(self) -> Settings:
+    def _tool_dan_laya_valid(self) -> Settings:
         """Setelan yang setengah terisi gagal saat start, bukan saat mahasiswa bertanya."""
         if self.tools_enabled:
             if not self.sads_base_url:
@@ -418,23 +416,21 @@ class Settings(BaseSettings):
             if self.kunci_sads() is None:
                 raise ValueError("TOOLS_ENABLED=true butuh SADS_API_SECRET")
 
-        if self.jev_enabled:
-            if self.kunci_jev() is None:
-                raise ValueError(
-                    "JEV_ENABLED=true tetapi JEV_API_KEY maupun API_KEY belum diisi"
-                )
-            if not self.url_jev():
-                raise ValueError("JEV_ENABLED=true butuh BASE_URL (atau JEV_URL)")
+        if self.laya_enabled:
+            if not self.laya_url:
+                raise ValueError("LAYA_ENABLED=true butuh LAYA_URL")
+            if self.kunci_laya() is None:
+                raise ValueError("LAYA_ENABLED=true butuh LAYA_API_KEY")
             # Tanpa skema, httpx menolak setiap panggilan dan gerbang diam-diam
             # fail-open: semua pesan lolos tanpa diperiksa (2026-10-02, laya.md).
-            if self.jev_url and not self.jev_url.startswith(("http://", "https://")):
+            if not self.laya_url.startswith(("http://", "https://")):
                 raise ValueError(
-                    f"JEV_URL harus diawali http:// atau https://, diberi {self.jev_url!r}"
+                    f"LAYA_URL harus diawali http:// atau https://, diberi {self.laya_url!r}"
                 )
         for nama in (
-            "jev_block_threshold",
-            "jev_out_of_scope_threshold",
-            "jev_nonsense_threshold",
+            "laya_block_threshold",
+            "laya_out_of_scope_threshold",
+            "laya_nonsense_threshold",
         ):
             nilai = getattr(self, nama)
             if nilai is not None and not 0.0 < nilai <= 1.0:

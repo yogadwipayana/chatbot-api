@@ -42,7 +42,7 @@ NODE_ORDER = (
     "sensitive",
     "smalltalk",
     "rule_gate",
-    "jev_gate",
+    "laya_gate",
     "rewrite",
     "retrieve",
     "validate_context",
@@ -378,7 +378,7 @@ class LogStore:
         # yang menghentikan jawaban sering kali sudah kehilangan kesabaran, jadi
         # jumlahnya perlu terlihat di ringkasan, bukan hanya di filter tab Giliran.
         dibatalkan = sum(1 for r in turns if r["status"] == "dibatalkan")
-        diblokir_jev = sum(1 for r in turns if r["last_node"] == "jev_gate")
+        diblokir_laya = sum(1 for r in turns if r["last_node"] == "laya_gate")
 
         durasi: dict[str, list[float]] = defaultdict(list)
         error_node: Counter[str] = Counter()
@@ -441,8 +441,8 @@ class LogStore:
             "error_turn_count": gagal,
             "error_ratio": round(gagal / jumlah, 4) if jumlah else 0.0,
             "cancelled_turn_count": dibatalkan,
-            "jev_blocked_count": diblokir_jev,
-            "jev_blocked_ratio": round(diblokir_jev / jumlah, 4) if jumlah else 0.0,
+            "laya_blocked_count": diblokir_laya,
+            "laya_blocked_ratio": round(diblokir_laya / jumlah, 4) if jumlah else 0.0,
             "error_log_count": sum(per_jam_log.values()),
             "per_node": per_node,
             "exit_points": titik_keluar,

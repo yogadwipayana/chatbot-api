@@ -250,7 +250,7 @@ def ringkas_node(node: str, keluaran: Any) -> dict[str, Any]:
     if node == "rule_gate":
         g = out.get("gate")
         return {"blocked": False} if g is None else {"blocked": True, "label": _nilai(g.label)}
-    if node == "jev_gate":
+    if node == "laya_gate":
         g = out.get("gate")
         if g is None:
             return {"disabled": True}
@@ -290,7 +290,7 @@ class _NodeBerjalan:
 
 @dataclass
 class _Panggilan:
-    """Satu panggilan di dalam node: LLM, retriever, rantai, tool, atau JEV."""
+    """Satu panggilan di dalam node: LLM, retriever, rantai, tool, atau Laya."""
 
     id: str
     induk: str | None
@@ -352,7 +352,7 @@ class NodeRecorder(AsyncCallbackHandler):
     Dengan `rekam_io` (LOG_NODE_IO) perekam juga menyimpan bahan tab Graf
     (`rekaman.py`): state yang diterima dan dikembalikan setiap node, keluaran
     router (rute yang diambil), dan pohon panggilan di dalam node. Panggilan
-    LLM dan retriever datang dari callback LangChain; JEV dan tool datang lewat
+    LLM dan retriever datang dari callback LangChain; Laya dan tool datang lewat
     custom event (`rekaman.catat_panggilan`). Template prompt dilewati: isinya
     sama dengan pesan yang diterima LLM.
     """
@@ -556,11 +556,11 @@ class NodeRecorder(AsyncCallbackHandler):
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        """Panggilan JEV dan tool (`rekaman.catat_panggilan`): sudah selesai saat tiba.
+        """Panggilan Laya dan tool (`rekaman.catat_panggilan`): sudah selesai saat tiba.
 
         Induknya dicari lewat `run_id`, lalu lewat `metadata.langgraph_node`. Yang
-        kedua dibutuhkan JEV saat tracing menyala: `JevGate.__call__` dibungkus
-        `@traceable`, dan langchain-core lalu memakai run LangSmith `jev_classify`
+        kedua dibutuhkan Laya saat tracing menyala: `LayaGate.__call__` dibungkus
+        `@traceable`, dan langchain-core lalu memakai run LangSmith `laya_classify`
         sebagai induk event -- ID yang tidak pernah lewat callback ini.
         """
         if not self.rekam_io or name != ACARA_PANGGILAN or not isinstance(data, dict):
@@ -644,7 +644,7 @@ class NodeRecorder(AsyncCallbackHandler):
     def node_terakhir(self) -> str | None:
         """Tempat alur berhenti: node yang mengisi `outcome`.
 
-        Bukan sekadar node yang paling akhir dimulai: gerbang JEV berjalan
+        Bukan sekadar node yang paling akhir dimulai: gerbang Laya berjalan
         paralel dengan pencarian, dan pesan yang diblokirnya tetap melewati
         `validate_context` sebagai titik temu. Tanpa `outcome` (galat atau
         dibatalkan), node terakhir yang dimulai yang dilaporkan.
@@ -838,7 +838,7 @@ class Giliran:
 
         Postgres menyamarkan pertanyaan sensitif saat menyimpannya, tetapi
         widget tetap mengirim teks aslinya sebagai riwayat di giliran
-        berikutnya -- ke rewrite, ke JEV, dan ke state setiap node."""
+        berikutnya -- ke rewrite, ke Laya, dan ke state setiap node."""
         from app.rag import sensitive as sensitive_module
 
         teks: list[str] = []

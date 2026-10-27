@@ -50,8 +50,8 @@ class LogSummary(BaseModel):
     cancelled_turn_count: int
     """Giliran `dibatalkan`: mahasiswa menghentikan jawaban atau menutup panel.
     Tidak ikut `error_turn_count` -- pembatalan bukan galat server."""
-    jev_blocked_count: int
-    jev_blocked_ratio: float
+    laya_blocked_count: int
+    laya_blocked_ratio: float
     error_log_count: int
     """Log ERROR ke atas di rentang ini. Untuk role admin, log audit tidak dihitung."""
     per_node: list[NodeStat]
@@ -138,7 +138,7 @@ class CallTrace(BaseModel):
     position: int
     """Posisi node pemiliknya."""
     name: str
-    kind: Literal["llm", "retriever", "tool", "jev", "chain"]
+    kind: Literal["llm", "retriever", "tool", "laya", "chain"]
     started_at: str
     duration_ms: float | None
     status: Literal["ok", "error", "berjalan"]

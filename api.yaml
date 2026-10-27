@@ -42,7 +42,7 @@ info:
     | `refusal` | Dokumen resmi tidak menjawab: retrieval terlalu lemah sehingga LLM tidak dipanggil (FR-3), atau LLM menilai konteksnya tidak menjawab | Visual berbeda + kontak (FE-4) |
     | `support` | Pertanyaan bernuansa tekanan mental (FR-7) | Nada empatik + kontak konseling |
     | `smalltalk` | Sapaan atau basa-basi; retrieval dan LLM dilewati | Bubble biasa, tanpa sitasi dan tanpa tombol umpan balik |
-    | `rejected` | Bukan pertanyaan administrasi: nonsense, upaya manipulasi, atau di luar topik kampus. Dihentikan saringan aturan, gerbang JEV, atau LLM penjawab | Bubble biasa, tanpa sitasi dan tanpa tombol umpan balik |
+    | `rejected` | Bukan pertanyaan administrasi: nonsense, upaya manipulasi, atau di luar topik kampus. Dihentikan saringan aturan, gerbang Laya, atau LLM penjawab | Bubble biasa, tanpa sitasi dan tanpa tombol umpan balik |
 
     Hanya `answer` yang membawa sitasi. Menampilkan kartu sitasi di layar
     penolakan memberi kesan keliru bahwa jawabannya bersumber; menampilkannya
@@ -52,9 +52,9 @@ info:
     penolakan berisi alamat loket biro, dan supaya sapaan tidak masuk daftar
     pertanyaan tak terjawab (AD-4).
 
-    `rejected` muncul entah gerbang JEV dinyalakan atau tidak: saringan aturan
+    `rejected` muncul entah gerbang Laya dinyalakan atau tidak: saringan aturan
     dan LLM penjawab (penanda `[DI_LUAR_TOPIK]`) menjadi cadangannya saat
-    `JEV_ENABLED=false`. Sama seperti `smalltalk`, ia tidak masuk AD-4: pesan
+    `LAYA_ENABLED=false`. Sama seperti `smalltalk`, ia tidak masuk AD-4: pesan
     acak, upaya injeksi, atau pertanyaan di luar kampus bukan celah dokumen yang
     perlu ditambal admin.
 
@@ -1391,7 +1391,7 @@ paths:
       security: [{ bearerAuth: [] }]
       description: |
         State yang diterima dan dikembalikan setiap node, rute sesudahnya, dan pohon
-        panggilan di dalam node (LLM, retriever, tool, JEV) -- pengganti trace LangSmith.
+        panggilan di dalam node (LLM, retriever, tool, Laya) -- pengganti trace LangSmith.
         404 bila giliran tidak ada, sudah lewat masa simpan, atau berjalan saat
         LOG_NODE_IO mati. Waktu dan status node ada di `GET /api/admin/logs/turns/{turn_id}`.
       parameters:
@@ -2864,7 +2864,7 @@ components:
     GateVerdictOut:
       type: object
       required: [label, confidence, blocked]
-      description: Vonis gerbang (JEV atau saringan aturan) pada uji coba ini.
+      description: Vonis gerbang (Laya atau saringan aturan) pada uji coba ini.
       properties:
         label: { type: string, enum: [academic, smalltalk, nonsense, malicious, out_of_scope] }
         confidence: { type: number }
@@ -2874,8 +2874,8 @@ components:
           description: Galat atau lewat tenggat; saat itu pesan diteruskan (fail-open).
         source:
           type: string
-          enum: [jev, rules]
-          default: jev
+          enum: [laya, rules]
+          default: laya
           description: >-
             `rules` = saringan aturan tanpa model (pesan acak, tawa, basa-basi tentang
             PANDU, upaya manipulasi); keyakinannya selalu 1.
@@ -2918,13 +2918,13 @@ components:
           type: array
           description: >-
             Tetap terisi saat ditolak ambang atau LLM -- justru itu yang perlu dilihat
-            saat diagnosa. Kosong bila diblokir gerbang JEV: pencariannya dihentikan.
+            saat diagnosa. Kosong bila diblokir gerbang Laya: pencariannya dihentikan.
           items: { $ref: '#/components/schemas/RetrievedChunk' }
         decision:
           type: [object, 'null']
           description: >-
             null bila alur berhenti sebelum ambang dinilai: konseling (FR-7),
-            sapaan, atau diblokir gerbang JEV.
+            sapaan, atau diblokir gerbang Laya.
           required: [decision, reason]
           properties:
             decision: { type: string, enum: [proceed, refuse] }
@@ -2941,13 +2941,13 @@ components:
             dipanggil; `llm` = lolos ambang, tetapi LLM menilai isinya tidak menjawab.
         rejection_source:
           type: [string, 'null']
-          enum: [jev, rules, llm, null]
+          enum: [laya, rules, llm, null]
           description: >-
-            Hanya untuk `rejected`: gerbang JEV, saringan aturan, atau LLM penjawab
+            Hanya untuk `rejected`: gerbang Laya, saringan aturan, atau LLM penjawab
             yang membalas `[DI_LUAR_TOPIK]` (pertanyaan di luar urusan kampus).
         gate:
           description: >-
-            Vonis gerbang JEV atau saringan aturan; null bila JEV mati dan aturan
+            Vonis gerbang Laya atau saringan aturan; null bila Laya mati dan aturan
             meloloskan pesan, atau alur berhenti sebelumnya.
           oneOf:
             - $ref: '#/components/schemas/GateVerdictOut'
@@ -3010,7 +3010,7 @@ components:
         rejected:
           type: integer
           minimum: 0
-          description: Dihentikan gerbang JEV (nonsense, manipulasi, di luar topik).
+          description: Dihentikan gerbang Laya (nonsense, manipulasi, di luar topik).
 
     Stats:
       type: object
@@ -3066,7 +3066,7 @@ components:
           type: number
           description: |
             Estimasi dari token terpakai, bukan dari API penagihan. LLM chat + embedding,
-            sama dengan total `GET /api/admin/costs`. Gerbang JEV tidak dihitung: ia
+            sama dengan total `GET /api/admin/costs`. Gerbang Laya tidak dihitung: ia
             berjalan di Laya yang di-host sendiri.
         messages_without_cost_estimate:
           type: integer
@@ -3176,7 +3176,7 @@ components:
 
     LogSummary:
       type: object
-      required: [since, until, turn_count, p50_total_ms, p95_total_ms, error_turn_count, error_ratio, cancelled_turn_count, jev_blocked_count, jev_blocked_ratio, error_log_count, per_node, exit_points, per_hour]
+      required: [since, until, turn_count, p50_total_ms, p95_total_ms, error_turn_count, error_ratio, cancelled_turn_count, laya_blocked_count, laya_blocked_ratio, error_log_count, per_node, exit_points, per_hour]
       properties:
         since: { type: string }
         until: { type: string }
@@ -3186,8 +3186,8 @@ components:
         error_turn_count: { type: integer, minimum: 0 }
         error_ratio: { type: number, minimum: 0 }
         cancelled_turn_count: { type: integer, minimum: 0, description: 'Giliran `dibatalkan` (mahasiswa menghentikan jawaban atau menutup panel). Tidak termasuk `error_turn_count`.' }
-        jev_blocked_count: { type: integer, minimum: 0 }
-        jev_blocked_ratio: { type: number, minimum: 0 }
+        laya_blocked_count: { type: integer, minimum: 0 }
+        laya_blocked_ratio: { type: number, minimum: 0 }
         error_log_count: { type: integer, minimum: 0, description: 'Log ERROR ke atas. Untuk role admin, log audit tidak dihitung.' }
         per_node:
           type: array
@@ -3330,7 +3330,7 @@ components:
         parent_id: { type: [string, 'null'], description: Panggilan induk; null bila langsung di bawah node. }
         position: { type: integer, description: Posisi node pemiliknya. }
         name: { type: string }
-        kind: { type: string, enum: [llm, retriever, tool, jev, chain] }
+        kind: { type: string, enum: [llm, retriever, tool, laya, chain] }
         started_at: { type: string }
         duration_ms: { type: [number, 'null'] }
         status: { type: string, enum: [ok, error, berjalan] }

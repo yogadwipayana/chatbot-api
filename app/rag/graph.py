@@ -7,25 +7,25 @@ tidak berubah; yang berubah hanya siapa yang memegang urutan:
     START -> sanitize -> sensitive ─┬─> END                        (FR-7)
                                     └─> smalltalk ─┬─> END
                                                    └─> rule_gate ─┬─> END  (acak, manipulasi)
-                                                                  ├─> jev_gate ─────────┐
+                                                                  ├─> laya_gate ─────────┐
                                                                   └─> cari: rewrite     │
                                                                        -> retrieve ─────┤
       validate_context (FR-3) <── menunggu keduanya ────────────────────────────────────┘
-           ├─> END                  (JEV memblokir: hasil pencarian dibuang)
+           ├─> END                  (Laya memblokir: hasil pencarian dibuang)
            ├─> refuse   -> END      (LLM tidak dipanggil)
            └─> generate -> END      (FR-6 + FR-5; penolakan bila LLM membalas
                                      NOT_FOUND_MARKER, `rejected` bila
                                      OFF_TOPIC_MARKER)
 
-`rule_gate` dan `OFF_TOPIC_MARKER` adalah cadangan JEV: dengan
-`JEV_ENABLED=false` keduanya menghasilkan vonis yang mirip tanpa biaya per
+`rule_gate` dan `OFF_TOPIC_MARKER` adalah cadangan Laya: dengan
+`LAYA_ENABLED=false` keduanya menghasilkan vonis yang mirip tanpa biaya per
 pesan (`app.rag.rule_gate`).
 
-Gerbang JEV dan pencarian berjalan paralel: keduanya hanya butuh pertanyaan
-yang sudah bersih, dan menunggu JEV dulu menambah ~3 detik ke setiap giliran
+Gerbang Laya dan pencarian berjalan paralel: keduanya hanya butuh pertanyaan
+yang sudah bersih, dan menunggu Laya dulu menambah ~3 detik ke setiap giliran
 demi menghemat pencarian pada ~5% pesan yang diblokir. `rewrite -> retrieve`
 dibungkus subgraph (`cari`) karena LangGraph berjalan per superstep: sebagai
-dua node terpisah, `retrieve` baru dapat mulai setelah JEV selesai.
+dua node terpisah, `retrieve` baru dapat mulai setelah Laya selesai.
 
 Ketergantungan per permintaan (retriever, LLM, callback streaming) masuk
 lewat `context` LangGraph, bukan lewat state: state hanya berisi data yang
@@ -80,7 +80,7 @@ from app.security.sanitize import sanitize_question, wrap_user_input
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_JEV_GRACE_SECONDS = 1.5
+DEFAULT_LAYA_GRACE_SECONDS = 1.5
 """Dipakai bila `gate_call` tidak membawa `grace_seconds` (pengganti di test)."""
 
 
@@ -96,10 +96,10 @@ class PipelineDeps:
     on_token: Callable[[str], Awaitable[None]] | None = None
     on_stage: Callable[[str], Awaitable[None]] | None = None
     search_done: asyncio.Event = field(default_factory=asyncio.Event)
-    """Dinyalakan `retrieve`; tenggat gerbang JEV dihitung darinya. Satu per
+    """Dinyalakan `retrieve`; tenggat gerbang Laya dihitung darinya. Satu per
     giliran -- `PipelineDeps` dibuat baru di setiap `run_pipeline`."""
     gate_blocked: asyncio.Event = field(default_factory=asyncio.Event)
-    """Dinyalakan `jev_gate` saat memblokir; `rewrite` dan `retrieve` berhenti
+    """Dinyalakan `laya_gate` saat memblokir; `rewrite` dan `retrieve` berhenti
     begitu melihatnya. Tanpa ini pesan yang sudah diblokir tetap menunggu --
     dan ikut gagal bersama -- cabang pencarian yang hasilnya akan dibuang."""
     tool_registry: Any = None
@@ -172,16 +172,16 @@ async def smalltalk(state: PipelineState) -> dict:
 
 async def rule_gate(state: PipelineState) -> dict:
     """Saringan aturan (`app.rag.rule_gate`): pesan acak, tawa, basa-basi tentang
-    PANDU, dan upaya manipulasi. Selalu berjalan, JEV hidup atau mati -- pesan
-    yang jelas bukan pertanyaan tidak perlu dibayar satu panggilan JEV."""
+    PANDU, dan upaya manipulasi. Selalu berjalan, Laya hidup atau mati -- pesan
+    yang jelas bukan pertanyaan tidak perlu dibayar satu panggilan Laya."""
     verdict = rule_gate_module.detect(state["clean"])
     if verdict is None:
         return {}
     return {"gate": verdict, "outcome": _hasil_blokir(state, verdict)}
 
 
-async def jev_gate(state: PipelineState, runtime: Rt) -> dict:
-    """Gerbang semantik JEV (`app.rag.gate`). Dilewati bila JEV_ENABLED=false."""
+async def laya_gate(state: PipelineState, runtime: Rt) -> dict:
+    """Gerbang semantik Laya (`app.rag.gate`). Dilewati bila LAYA_ENABLED=false."""
     gate_call = runtime.context.gate_call
     if gate_call is None:
         return {"gate": None}
@@ -190,7 +190,7 @@ async def jev_gate(state: PipelineState, runtime: Rt) -> dict:
     verdict = await _vonis_sebelum_tenggat(
         gate_call(state["clean"], riwayat, unit=state.get("unit")),
         runtime.context.search_done,
-        grace=getattr(gate_call, "grace_seconds", DEFAULT_JEV_GRACE_SECONDS),
+        grace=getattr(gate_call, "grace_seconds", DEFAULT_LAYA_GRACE_SECONDS),
     )
     if not verdict.blocked:
         return {"gate": verdict}
@@ -199,7 +199,7 @@ async def jev_gate(state: PipelineState, runtime: Rt) -> dict:
 
 
 def _hasil_blokir(state: PipelineState, verdict: GateVerdict) -> PipelineOutcome:
-    """Balasan untuk pesan yang dihentikan gerbang, JEV maupun aturan."""
+    """Balasan untuk pesan yang dihentikan gerbang, Laya maupun aturan."""
     kind = (
         OutcomeKind.SMALLTALK if verdict.label is GateLabel.SMALLTALK else OutcomeKind.REJECTED
     )
@@ -220,13 +220,13 @@ def _hasil_blokir(state: PipelineState, verdict: GateVerdict) -> PipelineOutcome
 async def _vonis_sebelum_tenggat(
     panggilan: Awaitable[GateVerdict], pencarian_selesai: asyncio.Event, *, grace: float
 ) -> GateVerdict:
-    """Tunggu vonis JEV selama pencarian paralel masih berjalan, plus `grace`.
+    """Tunggu vonis Laya selama pencarian paralel masih berjalan, plus `grace`.
 
     `validate_context` menunggu kedua cabang, jadi selama pencarian belum
-    selesai menunggu JEV tidak menambah waktu apa pun. Batas tetap (dulu 3 dtk)
-    justru memutus JEV di tengah pencarian 5-10 dtk -- perlindungan hilang
+    selesai menunggu Laya tidak menambah waktu apa pun. Batas tetap (dulu 3 dtk)
+    justru memutus gerbang di tengah pencarian 5-10 dtk -- perlindungan hilang
     tanpa ada waktu yang dihemat. Lewat tenggat, pesan diteruskan (fail-open)
-    seperti galat JEV lainnya, dan panggilannya dibatalkan.
+    seperti galat Laya lainnya, dan panggilannya dibatalkan.
     """
     tugas = asyncio.ensure_future(panggilan)
     tunggu_cari = asyncio.ensure_future(pencarian_selesai.wait())
@@ -240,7 +240,7 @@ async def _vonis_sebelum_tenggat(
             return tugas.result()
         tugas.cancel()
         logger.warning(
-            "Gerbang JEV melewati tenggat (pencarian selesai + %.1f dtk), pesan diteruskan",
+            "Gerbang Laya melewati tenggat (pencarian selesai + %.1f dtk), pesan diteruskan",
             grace,
         )
         return lolos(f"Tenggat: pencarian selesai lebih dulu (+{grace:g} dtk)")
@@ -251,7 +251,7 @@ async def _vonis_sebelum_tenggat(
 async def _kecuali_diblokir(
     kerja: Callable[[], Awaitable[Any]], diblokir: asyncio.Event
 ) -> tuple[bool, Any]:
-    """Jalankan `kerja`, tetapi hentikan begitu gerbang JEV memblokir pesan.
+    """Jalankan `kerja`, tetapi hentikan begitu gerbang Laya memblokir pesan.
 
     Kembali `(True, hasil)` bila selesai, `(False, None)` bila dihentikan.
     Galat `kerja` tetap diteruskan selama pesan tidak diblokir.
@@ -273,7 +273,7 @@ async def _kecuali_diblokir(
 
 
 async def rewrite(state: PipelineState, runtime: Rt) -> dict:
-    """FR-4 -- dilewati bila pesan pertama berbahasa Indonesia, atau JEV sudah memblokir."""
+    """FR-4 -- dilewati bila pesan pertama berbahasa Indonesia, atau Laya sudah memblokir."""
     clean = state["clean"]
     rewrite_call = runtime.context.rewrite_call
     if rewrite_call is None or not needs_rewrite(state["history"], clean):
@@ -294,7 +294,7 @@ async def retrieve(state: PipelineState, runtime: Rt) -> dict:
     dikirim, jadi retriever tanpa dukungan multi-query tetap berjalan untuk
     pesan pertama.
 
-    Dihentikan bila JEV memblokir: hasilnya toh dibuang di `validate_context`."""
+    Dihentikan bila Laya memblokir: hasilnya toh dibuang di `validate_context`."""
     opsi: dict[str, Any] = {"unit": state.get("unit")}
     if state.get("rewritten"):
         opsi["original_query"] = state["clean"]
@@ -304,7 +304,7 @@ async def retrieve(state: PipelineState, runtime: Rt) -> dict:
             runtime.context.gate_blocked,
         )
     finally:
-        # Juga saat gagal: gerbang JEV tidak perlu menunggu pencarian yang sudah berhenti.
+        # Juga saat gagal: gerbang Laya tidak perlu menunggu pencarian yang sudah berhenti.
         runtime.context.search_done.set()
     return {"documents": list(documents) if jalan else []}
 
@@ -312,7 +312,7 @@ async def retrieve(state: PipelineState, runtime: Rt) -> dict:
 async def validate_context(state: PipelineState, runtime: Rt) -> dict:
     """FR-3 -- memutuskan apakah LLM boleh dipanggil.
 
-    Juga titik temu gerbang JEV dan pencarian yang berjalan paralel. Bila JEV
+    Juga titik temu gerbang Laya dan pencarian yang berjalan paralel. Bila Laya
     sudah mengisi `outcome`, hasil pencarian tidak dinilai sama sekali.
     """
     if "outcome" in state:
@@ -450,8 +450,8 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
         for doc in documents
         if doc.metadata.get("jenis") == DocumentType.TANYA_JAWAB
     }
-    # Pertanyaan di luar urusan kampus yang lolos gerbang (atau JEV mati):
-    # dibalas dan dicatat seperti blokir JEV `out_of_scope` -- bukan celah
+    # Pertanyaan di luar urusan kampus yang lolos gerbang (atau Laya mati):
+    # dibalas dan dicatat seperti blokir Laya `out_of_scope` -- bukan celah
     # dokumen, jadi tidak masuk AD-4.
     if is_off_topic(answer, tanpa_hal):
         return {
@@ -525,7 +525,7 @@ def route_context(state: PipelineState) -> str:
 
 
 SEARCH_NODE = "cari"
-"""Subgraph `rewrite -> retrieve` yang berjalan sejajar dengan `jev_gate`.
+"""Subgraph `rewrite -> retrieve` yang berjalan sejajar dengan `laya_gate`.
 
 Hanya pembungkus: perekam durasi melewatinya (`applog.WRAPPER_NODES`) dan
 mencatat `rewrite` serta `retrieve` di dalamnya sebagai langkah biasa."""
@@ -550,7 +550,7 @@ def build_graph() -> Any:
         sensitive,
         smalltalk,
         rule_gate,
-        jev_gate,
+        laya_gate,
         validate_context,
         refuse,
         generate,
@@ -568,11 +568,11 @@ def build_graph() -> Any:
     )
     g.add_conditional_edges(
         "rule_gate",
-        _selesai_atau("jev_gate", SEARCH_NODE),
-        {"selesai": END, "jev_gate": "jev_gate", SEARCH_NODE: SEARCH_NODE},
+        _selesai_atau("laya_gate", SEARCH_NODE),
+        {"selesai": END, "laya_gate": "laya_gate", SEARCH_NODE: SEARCH_NODE},
     )
     # Titik temu: validate_context baru berjalan setelah KEDUA cabang selesai.
-    g.add_edge(["jev_gate", SEARCH_NODE], "validate_context")
+    g.add_edge(["laya_gate", SEARCH_NODE], "validate_context")
     g.add_conditional_edges(
         "validate_context",
         route_context,

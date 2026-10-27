@@ -1,7 +1,7 @@
 """Orkestrasi alur tanya-jawab (PRD §7 'Struktur Chain').
 
 Alurnya punya beberapa jalan keluar lebih awal (sensitif, sapaan, gerbang
-JEV, penolakan) yang harus dapat dibuktikan lewat test -- terutama invarian
+Laya, penolakan) yang harus dapat dibuktikan lewat test -- terutama invarian
 "LLM tidak dipanggil saat ditolak". Urutannya dipegang graf LangGraph di
 `app/rag/graph.py`; modul ini menyimpan bentuk hasilnya dan titik masuknya,
 sementara LangChain tetap memegang bagian prompt + pemanggilan model.
@@ -43,7 +43,7 @@ class OutcomeKind(StrEnum):
     tidak pernah membawa sitasi -- tidak ada dokumen yang menjawab "hai"."""
     REJECTED = "rejected"
     """Bukan pertanyaan administrasi: nonsense, upaya manipulasi, atau di luar
-    topik kampus. Dihentikan gerbang JEV atau saringan aturan sebelum LLM, atau
+    topik kampus. Dihentikan gerbang Laya atau saringan aturan sebelum LLM, atau
     oleh LLM penjawab sendiri lewat `OFF_TOPIC_MARKER` (`rejection_source`).
     Tanpa sitasi dan tidak masuk AD-4 -- pesan seperti ini bukan celah dokumen
     yang perlu ditambal admin. Pencarian yang berjalan paralel dengan gerbang
@@ -59,7 +59,7 @@ class PipelineOutcome:
     risk: risk_module.RiskAssessment | None = None
     sensitivity: sensitive_module.SensitivityAssessment | None = None
     gate: GateVerdict | None = None
-    """Vonis gerbang JEV; None bila gerbang mati atau tidak sempat berjalan."""
+    """Vonis gerbang Laya; None bila gerbang mati atau tidak sempat berjalan."""
     rewritten_query: str | None = None
     llm_called: bool = False
     contacts: tuple[Any, ...] = field(default_factory=tuple)
@@ -135,7 +135,7 @@ def is_off_topic(answer: str, tanpa_halaman: dict[str, int] | None = None) -> bo
 
 
 def rejection_source(outcome: PipelineOutcome) -> str | None:
-    """Siapa yang menghentikan pesan `rejected`: `jev`, `rules`, atau `llm`.
+    """Siapa yang menghentikan pesan `rejected`: `laya`, `rules`, atau `llm`.
     None bila bukan `rejected`. Satu sumber untuk log dan uji coba admin."""
     if outcome.kind is not OutcomeKind.REJECTED:
         return None
@@ -194,7 +194,7 @@ async def run_pipeline(
         llm_call: (pertanyaan_terbungkus, dokumen) -> teks jawaban.
         history: riwayat percakapan; kosong berarti pesan pertama (FR-4).
         rewrite_call: (pertanyaan, riwayat_terformat) -> pertanyaan mandiri.
-        gate_call: (pertanyaan, [(peran, isi)]) -> vonis gerbang JEV. None
+        gate_call: (pertanyaan, [(peran, isi)]) -> vonis gerbang Laya. None
             berarti gerbang mati dan setiap pesan diteruskan ke retrieval.
         policy: ambang penolakan FR-3.
         on_token: dipanggil untuk setiap potongan jawaban LLM (FE-1). Tanpa ini

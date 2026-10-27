@@ -295,7 +295,7 @@ class RetrievedChunk(BaseModel):
 
 
 class GateVerdictOut(BaseModel):
-    """Vonis gerbang pada uji coba ini; None bila JEV mati dan saringan aturan
+    """Vonis gerbang pada uji coba ini; None bila Laya mati dan saringan aturan
     meloloskan pesannya, atau alur berhenti sebelum gerbang."""
 
     label: str
@@ -303,7 +303,7 @@ class GateVerdictOut(BaseModel):
     blocked: bool
     error: str | None = None
     """Galat atau lewat tenggat; saat itu pesan diteruskan (fail-open)."""
-    source: Literal["jev", "rules"] = "jev"
+    source: Literal["laya", "rules"] = "laya"
     """`rules` = saringan aturan, tanpa model; keyakinannya selalu 1."""
 
 
@@ -328,13 +328,13 @@ class TestQueryResponse(BaseModel):
     retrieved: list[RetrievedChunk]
     decision: ThresholdDecisionOut | None
     """None bila alur berhenti sebelum ambang dinilai: konseling (FR-7), sapaan,
-    atau diblokir gerbang JEV."""
+    atau diblokir gerbang Laya."""
     llm_called: bool = False
     refusal_source: Literal["threshold", "llm"] | None = None
     """Hanya untuk `refusal`: `threshold` = ambang FR-3 menolak dan LLM tidak
     dipanggil; `llm` = lolos ambang, tetapi LLM menilai isinya tidak menjawab."""
-    rejection_source: Literal["jev", "rules", "llm"] | None = None
-    """Hanya untuk `rejected`: gerbang JEV, saringan aturan, atau LLM penjawab
+    rejection_source: Literal["laya", "rules", "llm"] | None = None
+    """Hanya untuk `rejected`: gerbang Laya, saringan aturan, atau LLM penjawab
     yang membalas `[DI_LUAR_TOPIK]`."""
     gate: GateVerdictOut | None = None
     thresholds: ThresholdValues
@@ -370,7 +370,7 @@ class KindBreakdown(BaseModel):
     """Sapaan dan basa-basi. Bukan pertanyaan administrasi, jadi jangan
     dibandingkan dengan `answer` seolah keduanya setara."""
     rejected: int
-    """Dihentikan gerbang JEV (nonsense, manipulasi, di luar topik)."""
+    """Dihentikan gerbang Laya (nonsense, manipulasi, di luar topik)."""
 
 
 class ProgramStat(BaseModel):

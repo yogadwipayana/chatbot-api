@@ -2,10 +2,12 @@
 
 Catatan kerja untuk Laya, model keputusan *open-weight* yang dicoba sebagai pengganti lokal JEV di gerbang (`app/rag/gate.py`). Semua informasi terkait Laya ditulis di sini. Evaluasi JEV sendiri ada di `jev.md`.
 
+> **2026-10-27: JEV tidak dipakai lagi; Laya satu-satunya model gerbang.** Di kode, setelannya kini `LAYA_*` (dulu `JEV_*`): `LAYA_ENABLED`, `LAYA_URL`, `LAYA_API_KEY`, `LAYA_MODEL`, `LAYA_*_THRESHOLD`, dan seterusnya. Node graf menjadi `laya_gate`, run LangSmith menjadi `laya_classify`, dan nilai log `gate_source`/`rejection_source`/`calls[].kind` menjadi `laya`. `LAYA_URL` dan `LAYA_API_KEY` wajib saat gerbang hidup; keduanya tidak lagi jatuh ke `<BASE_URL>/systemone`/`API_KEY`, bawaan `LAYA_MODEL` adalah `multilingual`, dan bawaan `LAYA_OUT_OF_SCOPE_THRESHOLD` menjadi 0,7 (hasil A3; dulu 0,9 dari kalibrasi JEV). Baris lama di DB dan log aplikasi **tidak dimigrasi** dan tetap `jev`/`jev_gate`: sebelum 2026-10-05 nilainya berasal dari JEV sungguhan (produksi) dan sejak 2026-10-02/05 dari Laya (lokal/produksi). Nama `JEV_*` di catatan bertanggal di bawah adalah riwayat. JEV masih tercatat sebagai guru pelabel data latih (`eval/laya/label_jev.py`) dan sebagai pembanding.
+
 ## Status (per 2026-10-02)
 
 - **Hasil latih sudah disajikan di server.** User melatih di Kaggle (2026-10-01, 7 menit) dan memasangnya di `/laya` pada 2026-10-02 05:21 UTC. Di sana sudah ada `sajikan_laya.py`, `LAYA_PANDU_PATH`, dan `MKL_CBWR=COMPATIBLE`, dan pemanasan lolos. Hasilnya **57/64 (89%)**, naik dari zero-shot 9/64, **tapi syarat lulus belum terpenuhi** (lihat *Hasil fine-tuning*).
-- **Lokal (`api/.env`) sudah memakai Laya** sejak 2026-10-02, atas pilihan user. Sejak 2026-10-05 port server dibuka (lihat D1), jadi tunnel tidak perlu lagi; lokal memakai domain publik `JEV_URL=https://laya.dwipa.my.id/v1/systemone` (API key sama; tanpa key 401), cadangan `http://100.111.178.48:8001/v1/systemone`. Hasil 7 pesan identik di kedua jalur. Bila Laya tidak terjangkau, gerbang fail-open. `/chatbot/api/.env` produksi tidak disentuh Claude.
+- **Lokal (`api/.env`) sudah memakai Laya** sejak 2026-10-02, atas pilihan user. Sejak 2026-10-05 port server dibuka (lihat D1), jadi tunnel tidak perlu lagi; lokal memakai domain publik `LAYA_URL=https://laya.dwipa.my.id/v1/systemone` (dulu `JEV_URL`) (API key sama; tanpa key 401), cadangan `http://100.111.178.48:8001/v1/systemone`. Hasil 7 pesan identik di kedua jalur. Bila Laya tidak terjangkau, gerbang fail-open. `/chatbot/api/.env` produksi tidak disentuh Claude.
 - **Zero-shot tidak layak.** Pada 64 pesan berlabel, hanya 9 yang benar (14%). 3 dari 38 pertanyaan akademik akan terblokir, dan 0 dari 9 pesan di luar topik tertangkap (lihat *Hasil uji*). README Laya sendiri mengakui hal ini: checkpoint dasarnya "score near chance zero-shot … Treat Laya as a fast base to specialise, not as a zero-shot decision engine."
 - **Lanjutan: putaran 2.** Daftar perbaikan dan buktinya ada di *Putaran 2: yang perlu diperbaiki*. A1, A2, dan A4 (kode gerbang) selesai 2026-10-02: di luar topik terblokir naik dari 1/9 ke 7/9, dengan 0/38 akademik terblokir. Panduan langkahnya ada di `api/eval/laya/README.md` → *Putaran 2*. Cadangan tanpa JEV (`rule_gate` + `[DI_LUAR_TOPIK]`, `jev.md` §8) sudah memberi hasil hampir sama, jadi kalau tujuannya hanya menghemat biaya, mematikan JEV lebih murah daripada fine-tuning.
 
@@ -126,7 +128,7 @@ Checkpoint menyimpan `gerbang_sha256` dan sha256 data di `rl_agent_config.json` 
 - **Menyajikan checkpoint sendiri.** `Router(models={"multilingual": <path>})` dan `laya.serve.create_app(router)` sudah cukup, lewat wrapper `sajikan_laya.py` yang menjalankan `laya.serve.main`.
 - **Uji asap di server (container sekali-pakai).** Latih CPU dengan encoder beku, 32 baris, 1 epoch, selesai 1,5 menit. Checkpoint tersimpan dan termuat (`/health` via `sajikan_laya.py`). Uji pertama kena OOM saat menyimpan bobot terbaik fp32 dalam batas 3,5 GB, lalu diperbaiki dengan menyimpannya fp16. Jalur CUDA/AMP dan training encoder penuh belum pernah dijalankan.
 
-**Syarat lulus** (`evaluasi.py`, 64 pesan): 0/38 akademik terblokir dan ≥8/9 di luar topik terblokir, pada ukuran `answer_confidence`. Setelah itu kalibrasi ulang `JEV_BLOCK_THRESHOLD`/`JEV_OUT_OF_SCOPE_THRESHOLD`.
+**Syarat lulus** (`evaluasi.py`, 64 pesan): 0/38 akademik terblokir dan ≥8/9 di luar topik terblokir, pada ukuran `answer_confidence`. Setelah itu kalibrasi ulang `LAYA_BLOCK_THRESHOLD`/`LAYA_OUT_OF_SCOPE_THRESHOLD`.
 
 ### Hasil fine-tuning (2026-10-01/02)
 
@@ -295,7 +297,7 @@ Bagian ini merangkum analisis hasil putaran 1, dari tiga sumber: `data/hasil_uji
 - **D1. Akses dari laptop. Selesai 2026-10-05:** user memilih membuka port seperti e5 (`0.0.0.0:8001`). Container dibuat ulang (`docker compose up -d --no-build`, sehat dalam 32 dtk); dari laptop, gerbang sungguhan lewat Tailscale memblokir "resep rendang"/"cuaca" (`out_of_scope` 0,96) dan meloloskan pertanyaan akademik.
 - **D2.** `sudo chmod 600 /laya/.env` (izinnya masih 644).
 - **D3.** Sebelum checkpoint baru menimpa yang lama, salin yang lama sebagai `/laya/models/laya-pandu-gerbang-r1`, supaya bisa rollback.
-- **D4. Latensi.** Node `jev_gate` butuh 2,2–4,5 dtk lewat tunnel, sedangkan panggilan langsung 1,1 dtk. Tanpa tunnel (2026-10-05, lewat Tailscale): 1,7–2,9 dtk per panggilan dari laptop; ukur ulang dengan riwayat panjang. Riwayat menambah token, dan server hanya punya satu worker.
+- **D4. Latensi.** Node `laya_gate` (dulu `jev_gate`) butuh 2,2–4,5 dtk lewat tunnel, sedangkan panggilan langsung 1,1 dtk. Tanpa tunnel (2026-10-05, lewat Tailscale): 1,7–2,9 dtk per panggilan dari laptop; ukur ulang dengan riwayat panjang. Riwayat menambah token, dan server hanya punya satu worker.
 
 ### Syarat lulus putaran 2
 
@@ -311,12 +313,13 @@ Setelah lulus, baru ikuti *Menyambungkan ke chatbot-api*.
 
 **Status 2026-10-05: produksi sudah memakai Laya atas keputusan user**, walaupun syarat lulus putaran 2 belum terpenuhi. `/chatbot/api/.env` disamakan dengan lokal (cadangan `.env.bak-20261005`) dengan `JEV_URL=http://127.0.0.1:8001/v1/systemone`; api di-`git pull` ke `261f076` (berisi perbaikan `answer_confidence`) dan dibangun ulang. Uji di produksi: "resep rendang" diblokir (`out_of_scope` 0,967), "SKP wajib" lolos (academic 0,997), ±1,1 dtk per panggilan. Untuk kembali ke JEV gateway: pulihkan kelompok `JEV_*` dari cadangan lalu `docker compose up -d --force-recreate api`.
 
-Tidak perlu mengubah kode. `gate.py` membaca `JEV_URL`, `JEV_MODEL`, dan `JEV_API_KEY` (`app/config.py`: `url_jev()`, `kunci_jev()`). Di `/chatbot/api/.env`:
+`gate.py` membaca `LAYA_URL`, `LAYA_MODEL`, dan `LAYA_API_KEY` (`app/config.py`: `url_laya()`, `kunci_laya()`). Sejak penggantian nama 2026-10-27 kode tidak lagi membaca `JEV_*`, jadi saat api versi ini dideploy, `/chatbot/api/.env` harus memakai nama baru (`JEV_*` → `LAYA_*`, termasuk ambang). Tanpa itu `LAYA_ENABLED` kosong dan gerbang mati tanpa galat. Di `/chatbot/api/.env`:
 
 ```
-JEV_URL=http://127.0.0.1:8001/v1/systemone
-JEV_MODEL=multilingual
-JEV_API_KEY=<sama dengan LAYA_API_KEY>
+LAYA_ENABLED=true
+LAYA_URL=http://127.0.0.1:8001/v1/systemone
+LAYA_MODEL=multilingual
+LAYA_API_KEY=<sama dengan LAYA_API_KEY server /laya>
 ```
 
-Lalu jalankan `cd /chatbot && sudo docker compose up -d api` (buat ulang container; restart saja tidak membaca ulang `env_file`). Untuk kembali ke JEV, hapus tiga baris itu dan buat ulang container api lagi. Perhatikan antrean satu-per-satu: chat bersamaan bisa melewati tenggat JEV (`JEV_GRACE_SECONDS`, batas 10 dtk), dan gate akan *fail-open*.
+Lalu jalankan `cd /chatbot && sudo docker compose up -d api` (buat ulang container; restart saja tidak membaca ulang `env_file`). Perhatikan antrean satu-per-satu: chat bersamaan bisa melewati tenggat gerbang (`LAYA_GRACE_SECONDS`, batas 10 dtk), dan gate akan *fail-open*.

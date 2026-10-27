@@ -39,9 +39,9 @@ import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
-from app.config import get_settings
 from app.rag import gate as G
 from eval.laya import set_kalibrasi, set_uji
+from eval.laya.label_jev import MODEL_JEV
 
 LABEL = [str(k) for k in G.CRITERIA]
 MODEL_LAYA = "multilingual"
@@ -213,7 +213,7 @@ def utama(
     pertanyaan = G.build_request(MODEL_LAYA, "x", (), None)["questions"]
     manifest = {
         "dibuat": datetime.now(UTC).isoformat(timespec="seconds"),
-        "guru": get_settings().jev_model,
+        "guru": MODEL_JEV,
         "label": LABEL,
         "gerbang_sha256": hashlib.sha256(
             json.dumps(pertanyaan, sort_keys=True).encode()

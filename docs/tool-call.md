@@ -9,7 +9,7 @@ boleh **meminta data terstruktur yang segar** lewat API yang terdaftar.
 > Bawaan kodenya tetap mati. Modulnya di `app/rag/tools/`, terintegrasi di
 > `app/rag/graph.py` (`validate_context`, `route_context`, `generate`). Diuji
 > `tests/unit/test_tools.py` dan diverifikasi live lewat `POST /api/chat` dengan
-> seluruh komponen asli: retriever (dev DB), JEV, rewrite, LLM, dan SADS (§18).
+> seluruh komponen asli: retriever (dev DB), Laya, rewrite, LLM, dan SADS (§18).
 > Untuk produksi, set `TOOLS_ENABLED=true`, `SADS_BASE_URL`, dan
 > `SADS_API_SECRET` di env server.
 
@@ -70,7 +70,7 @@ di `validate_context` dan mengubah `generate` dari satu panggilan LLM menjadi
 **loop agentik** singkat.
 
 ```text
-   ... JEV academic → rewrite → retrieve → RRF ...
+   ... Laya academic → rewrite → retrieve → RRF ...
                             │
                             ▼
                   ┌────────────────────┐
@@ -100,8 +100,8 @@ di `validate_context` dan mengubah `generate` dari satu panggilan LLM menjadi
 
 Gerbang lain tidak berubah:
 
-- **FR-7 / smalltalk / rule_gate / JEV** tetap di depan. Pertanyaan tool yang sah
-  dilabeli `academic` oleh JEV, jadi lolos seperti biasa (§18 mencatat
+- **FR-7 / smalltalk / rule_gate / Laya** tetap di depan. Pertanyaan tool yang sah
+  dilabeli `academic` oleh Laya, jadi lolos seperti biasa (§18 mencatat
   keyakinannya).
 - **FR-3** tetap menjaga jalur RAG murni. Yang berubah hanya satu: pertanyaan
   **tool-eligible** boleh maju ke `generate` walau konteks retrieval lemah (§8).
@@ -347,7 +347,7 @@ Routing (`route_context`, `generate`):
 
 Jaminan FR-3 tetap utuh untuk semua pertanyaan non-tool. Alternatif yang lebih
 akurat, yaitu klasifikasi intent oleh model, ditunda. Pemicu dikalibrasi dari
-log `meta.tool_calls`, seperti ambang JEV.
+log `meta.tool_calls`, seperti ambang Laya.
 
 ---
 
@@ -495,7 +495,7 @@ Batasan:
 | Gateway menyisipkan `[Error]` | `GalatGateway` dilempar, giliran gagal dan tidak ada jawaban yang disimpan (seperti jalur biasa) |
 | Tool tak dapat dijalankan, konteks lemah | penolakan FR-3 tanpa LLM (`refusal_source = threshold`) |
 
-Prinsipnya sama seperti JEV: **tool memperkaya, bukan syarat
+Prinsipnya sama seperti gerbang Laya: **tool memperkaya, bukan syarat
 menjawab.** Kegagalan tool tidak boleh memunculkan jawaban ngawur.
 
 ---
@@ -543,7 +543,7 @@ SADS_API_SECRET=<secret>       # header `secret`
 SADS_TIMEOUT_SECONDS=10
 ```
 
-Polanya mengikuti `JEV_*`: fitur di belakang sakelar, bawaan mati, nilai di
+Polanya mengikuti `LAYA_*`: fitur di belakang sakelar, bawaan mati, nilai di
 `config.py` dan `.env.example`.
 
 ---
@@ -664,10 +664,10 @@ Semua fase sudah dijalankan (2026-10-07):
 
 ### Terverifikasi live (2026-10-07)
 
-`POST /api/chat` dengan retriever (dev DB), JEV, rewrite, LLM, dan SADS asli.
+`POST /api/chat` dengan retriever (dev DB), Laya, rewrite, LLM, dan SADS asli.
 Hanya pencatat percakapan yang diganti, supaya statistik tidak tercemar.
 
-| Pertanyaan | JEV | Retrieval | Hasil |
+| Pertanyaan | Laya | Retrieval | Hasil |
 |---|---|---|---|
 | siapa dosen pengampu mata kuliah Web Programming? | academic 0,97 | top 0,83 (lolos FR-3) | `answer`, `get_mk_diampu_dosen("Web Programming")` |
 | kalau Basis Data? (lanjutan) | academic 0,97 | top 0,85 | rewrite → "Siapa dosen pengampu mata kuliah Basis Data?" → `answer` |
@@ -731,7 +731,7 @@ T49: daftar `get_mk_diampu_dosen` disalin model dan kehilangan nama. T41:
 catatan "pencarian hanya mencakup topik X … ganti topik" juga menempel di
 jawaban SADS. Perbaikannya ada di §7 (per mata kuliah), §10a (`pilih_lampiran`,
 `CATATAN_SEBUT`), dan aturan T7 (§8). Ablasi langsung ke pipeline (retriever,
-JEV, rewrite, LLM, dan SADS asli; topik Prodi, profil TI 2024; handler lama vs
+Laya, rewrite, LLM, dan SADS asli; topik Prodi, profil TI 2024; handler lama vs
 baru):
 
 | Pertanyaan | Handler lama | Handler baru |
@@ -762,10 +762,10 @@ sehingga kelima kotak tampil lewat jalur "tidak ada yang tertulis".
    retrieval lemah. Akibatnya `messages.top_score` rendah untuk jawaban yang
    benar, dan `applog` mencatat `decision=refuse` di `validate_context` untuk
    giliran yang berakhir `answer`.
-4. **Kriteria `academic` JEV tidak menyebut dosen atau mata kuliah**, sementara
+4. **Kriteria `academic` Laya tidak menyebut dosen atau mata kuliah**, sementara
    `out_of_scope` menyebut "general coding or technology help". Keempat uji live
    lolos, tetapi "who teaches Web Programming?" hanya mendapat 0,49. Mengubah
-   kriterianya berarti mengkalibrasi ulang JEV (`jev.md`).
+   kriterianya berarti membangun ulang data dan melatih ulang Laya (`laya.md`).
 5. **Hasil SADS tidak di-cache.** Setiap pertanyaan ber-tool memanggil SADS, dan
    `get_daftar_dosen` membawa sekitar 220 nama ke prompt. Datanya berubah per
    semester, jadi cache singkat (TTL) aman bila beban atau biaya menjadi masalah.

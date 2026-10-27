@@ -1,4 +1,4 @@
-"""Gerbang JEV: bentuk permintaan, keputusan per ambang, fail-open, dan posisinya di alur."""
+"""Gerbang Laya: bentuk permintaan, keputusan per ambang, fail-open, dan posisinya di alur."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from app.rag.gate import (
     GateLabel,
     GatePolicy,
     GateVerdict,
-    JevGate,
+    LayaGate,
     build_gate,
     build_request,
     lolos,
@@ -27,13 +27,13 @@ from app.rag.threshold import ThresholdPolicy
 from tests.fixtures.fakes import FakeRetriever, make_document
 
 POLICY = ThresholdPolicy(vector_threshold=0.35, lexical_threshold=0.05)
+URL_LAYA = "https://laya.test/v1/systemone"
 
 
 def respons(label: str, confidence: float, cost: float | None = 0.00002) -> dict:
     data = {
         "id": "dec_1",
-        "model": "typesafe/jev-1.13-20260801",
-        "provider": "TypeSafe",
+        "model": "multilingual",
         "answers": {
             QUESTION_KEY: {
                 "type": "choice",
@@ -78,8 +78,8 @@ def vonis(label: GateLabel, blocked: bool, confidence: float = 0.95) -> GateVerd
 
 class TestBuildRequest:
     def test_bentuk_decisions_api(self):
-        body = build_request("typesafe/jev-1.13", "kapan KRS?")
-        assert body["model"] == "typesafe/jev-1.13"
+        body = build_request("multilingual", "kapan KRS?")
+        assert body["model"] == "multilingual"
         assert body["state"] == {"pesan_terbaru": "kapan KRS?"}
         pertanyaan = body["questions"][QUESTION_KEY]
         assert pertanyaan["type"] == "choice"
@@ -155,7 +155,7 @@ class TestAmbangNonsense:
         assert parse_response(respons_laya("smalltalk", 0.6, 0.81), policy).blocked
 
 
-class TestJevGate:
+class TestLayaGate:
     async def panggil(self, handler, **kw) -> tuple[GateVerdict, list[httpx.Request]]:
         diterima: list[httpx.Request] = []
 
@@ -164,10 +164,10 @@ class TestJevGate:
             return handler(request)
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(rekam)) as client:
-            gate = JevGate(
-                url="https://openrouter.test/api/alpha/decisions",
-                api_key="or-key",
-                model="typesafe/jev-1.13",
+            gate = LayaGate(
+                url="https://laya.test/v1/systemone",
+                api_key="laya-key",
+                model="multilingual",
                 policy=GatePolicy(),
                 client=client,
             )
@@ -178,7 +178,7 @@ class TestJevGate:
             lambda r: httpx.Response(200, json=respons("nonsense", 0.97))
         )
         assert v.blocked and v.label is GateLabel.NONSENSE
-        assert req[0].headers["Authorization"] == "Bearer or-key"
+        assert req[0].headers["Authorization"] == "Bearer laya-key"
         assert json.loads(req[0].content)["state"]["pesan_terbaru"] == "asdfgh"
 
     @pytest.mark.parametrize(
@@ -192,7 +192,7 @@ class TestJevGate:
         ids=["500", "402", "bentuk-salah", "timeout"],
     )
     async def test_galat_apa_pun_berarti_diteruskan(self, handler):
-        """Fail-open: JEV yang mati tidak boleh mematikan chatbot."""
+        """Fail-open: Laya yang mati tidak boleh mematikan chatbot."""
         v, _ = await self.panggil(handler)
         assert not v.blocked
         assert v.error
@@ -202,70 +202,65 @@ class TestJevGate:
         titik dua tanpa sebab."""
         with caplog.at_level(logging.WARNING, logger="app.rag.gate"):
             await self.panggil(lambda r: (_ for _ in ()).throw(httpx.ReadTimeout("")))
-        assert "Gerbang JEV gagal, pesan diteruskan: ReadTimeout" in caplog.text
+        assert "Gerbang Laya gagal, pesan diteruskan: ReadTimeout" in caplog.text
 
 
 class TestBuildGate:
     def test_mati_secara_bawaan(self):
         assert build_gate(Settings(_env_file=None)) is None
 
-    def test_hidup_tanpa_kunci_ditolak_saat_start(self, monkeypatch):
-        monkeypatch.delenv("API_KEY", raising=False)
-        with pytest.raises(ValueError, match="JEV_API_KEY"):
-            Settings(_env_file=None, jev_enabled=True)
+    def test_hidup_tanpa_kunci_ditolak_saat_start(self):
+        with pytest.raises(ValueError, match="LAYA_API_KEY"):
+            Settings(_env_file=None, laya_enabled=True, laya_url=URL_LAYA)
 
-    def test_bawaan_gateway_base_url(self):
-        """Tanpa JEV_URL, JEV lewat gateway BASE_URL -- bukan OpenRouter langsung."""
-        s = Settings(
-            _env_file=None, jev_enabled=True, api_key="kunci-gateway", base_url="https://gw.test/v1/"
-        )
+    def test_api_key_gateway_tidak_dipakai_untuk_laya(self):
+        """Kunci gateway LLM tidak boleh ikut terkirim ke server Laya."""
+        with pytest.raises(ValueError, match="LAYA_API_KEY"):
+            Settings(
+                _env_file=None, laya_enabled=True, laya_url=URL_LAYA, api_key="kunci-gateway"
+            )
+
+    def test_hidup_tanpa_url_ditolak_saat_start(self):
+        """Tidak ada lagi bawaan `<BASE_URL>/systemone`: endpoint itu bukan Laya."""
+        with pytest.raises(ValueError, match="LAYA_URL"):
+            Settings(
+                _env_file=None, laya_enabled=True, laya_api_key="k", base_url="https://gw.test/v1"
+            )
+
+    def test_url_kunci_dan_model(self):
+        s = Settings(_env_file=None, laya_enabled=True, laya_url=URL_LAYA, laya_api_key="k")
         gate = build_gate(s)
-        assert gate._api_key == "kunci-gateway"
-        assert gate.url == "https://gw.test/v1/systemone"
-        assert gate.model == "openrouter/typesafe/jev-1.13"
-
-    def test_jev_url_eksplisit_menang(self):
-        s = Settings(
-            _env_file=None,
-            jev_enabled=True,
-            api_key="k",
-            base_url="https://gw.test/v1",
-            jev_url="https://lain.test/systemone",
-        )
-        assert build_gate(s).url == "https://lain.test/systemone"
-
-    def test_hidup_tanpa_base_url_ditolak_saat_start(self, monkeypatch):
-        monkeypatch.delenv("BASE_URL", raising=False)
-        with pytest.raises(ValueError, match="BASE_URL"):
-            Settings(_env_file=None, jev_enabled=True, api_key="k")
+        assert gate.url == URL_LAYA
+        assert gate._api_key == "k"
+        assert gate.model == "multilingual"
 
     def test_hidup(self):
         s = Settings(
             _env_file=None,
-            jev_enabled=True,
-            jev_api_key="k",
-            base_url="https://gw.test/v1",
-            jev_out_of_scope_threshold=0.95,
+            laya_enabled=True,
+            laya_api_key="k",
+            laya_url=URL_LAYA,
+            laya_out_of_scope_threshold=0.95,
         )
         gate = build_gate(s)
-        assert isinstance(gate, JevGate)
+        assert isinstance(gate, LayaGate)
         assert gate.policy.out_of_scope_threshold == 0.95
         assert gate.policy.nonsense_threshold is None
 
     def test_ambang_nonsense_diteruskan_ke_policy(self):
         s = Settings(
             _env_file=None,
-            jev_enabled=True,
-            jev_api_key="k",
-            base_url="https://gw.test/v1",
-            jev_nonsense_threshold=0.95,
+            laya_enabled=True,
+            laya_api_key="k",
+            laya_url=URL_LAYA,
+            laya_nonsense_threshold=0.95,
         )
         assert build_gate(s).policy.threshold_for(GateLabel.NONSENSE) == 0.95
 
     @pytest.mark.parametrize("nilai", [0.0, 1.5])
     def test_ambang_nonsense_di_luar_rentang_ditolak(self, nilai):
-        with pytest.raises(ValueError, match="jev_nonsense_threshold"):
-            Settings(_env_file=None, jev_nonsense_threshold=nilai)
+        with pytest.raises(ValueError, match="laya_nonsense_threshold"):
+            Settings(_env_file=None, laya_nonsense_threshold=nilai)
 
     @pytest.mark.parametrize(
         "url",
@@ -275,17 +270,17 @@ class TestBuildGate:
             "ftp://laya.test/v1/systemone",
         ],
     )
-    def test_jev_url_tanpa_skema_ditolak_saat_start(self, url):
+    def test_laya_url_tanpa_skema_ditolak_saat_start(self, url):
         """Bukan fail-open diam-diam saat mahasiswa bertanya."""
-        with pytest.raises(ValueError, match="JEV_URL harus diawali"):
-            Settings(_env_file=None, jev_enabled=True, api_key="k", jev_url=url)
+        with pytest.raises(ValueError, match="LAYA_URL harus diawali"):
+            Settings(_env_file=None, laya_enabled=True, laya_api_key="k", laya_url=url)
 
-    def test_jev_url_lokal_diterima(self):
+    def test_laya_url_lokal_diterima(self):
         s = Settings(
             _env_file=None,
-            jev_enabled=True,
-            api_key="k",
-            jev_url="http://127.0.0.1:8001/v1/systemone",
+            laya_enabled=True,
+            laya_api_key="k",
+            laya_url="http://127.0.0.1:8001/v1/systemone",
         )
         assert build_gate(s).url == "http://127.0.0.1:8001/v1/systemone"
 
@@ -312,7 +307,7 @@ class TestGerbangDiAlur:
         assert hasil.decision is None
         assert hasil.gate.label is label
 
-    async def test_smalltalk_dari_jev_menjadi_smalltalk(self, strong_retriever, llm):
+    async def test_smalltalk_dari_laya_menjadi_smalltalk(self, strong_retriever, llm):
         hasil = await run_pipeline(
             "apa kabar bot?",
             retriever=strong_retriever,
@@ -324,8 +319,8 @@ class TestGerbangDiAlur:
         assert not llm.called
         assert hasil.documents == ()
 
-    async def test_smalltalk_pamit_dari_jev_dibalas_penutup(self, strong_retriever, llm):
-        """Balasan JEV bawaan untuk smalltalk adalah sapaan pembuka; pesan pamit
+    async def test_smalltalk_pamit_dari_laya_dibalas_penutup(self, strong_retriever, llm):
+        """Balasan Laya bawaan untuk smalltalk adalah sapaan pembuka; pesan pamit
         yang lolos aturan sapaan tidak boleh disapa "Halo!" (T12)."""
         from app.rag.smalltalk import REPLIES, SmallTalkKind
 
@@ -362,7 +357,7 @@ class TestGerbangDiAlur:
         )
         assert hasil.kind is OutcomeKind.ANSWER
 
-    async def test_jev_gagal_tetap_menjawab(self, strong_retriever, llm):
+    async def test_laya_gagal_tetap_menjawab(self, strong_retriever, llm):
         gerbang = GerbangPalsu(lolos("ReadTimeout: lambat"))
         hasil = await run_pipeline(
             "kapan KRS?",
@@ -387,7 +382,7 @@ class TestGerbangDiAlur:
         assert hasil.kind is OutcomeKind.SUPPORT
         assert not gerbang.called
 
-    async def test_sapaan_aturan_tidak_membayar_jev(self, strong_retriever, llm):
+    async def test_sapaan_aturan_tidak_membayar_laya(self, strong_retriever, llm):
         gerbang = GerbangPalsu(vonis(GateLabel.ACADEMIC, blocked=False))
         hasil = await run_pipeline(
             "halo min",
@@ -463,9 +458,9 @@ class TestGerbangDiAlur:
 
 
 class TestTenggatMengikutiPencarian:
-    """JEV ditunggu selama pencarian paralel berjalan, plus `grace_seconds` (T13).
+    """Laya ditunggu selama pencarian paralel berjalan, plus `grace_seconds` (T13).
 
-    Batas tetap 3 dtk dulu memutus JEV di tengah pencarian 5-10 dtk: pesan
+    Batas tetap 3 dtk dulu memutus gerbang di tengah pencarian 5-10 dtk: pesan
     diteruskan tanpa diperiksa padahal menunggunya tidak menambah waktu.
     Waktu di sini diperkecil (detik -> ratusan milidetik).
     """
@@ -492,7 +487,7 @@ class TestTenggatMengikutiPencarian:
 
         return Lambat([make_document("c1", vector_score=0.8)])
 
-    async def test_jev_lambat_tetap_dipakai_selama_pencarian_berjalan(self, llm):
+    async def test_laya_lambat_tetap_dipakai_selama_pencarian_berjalan(self, llm):
         dibatalkan: list = []
         hasil = await run_pipeline(
             "resep rendang padang",
@@ -504,7 +499,7 @@ class TestTenggatMengikutiPencarian:
         assert hasil.kind is OutcomeKind.REJECTED
         assert not dibatalkan
 
-    async def test_jev_masih_ditunggu_sebentar_setelah_pencarian(self, llm):
+    async def test_laya_masih_ditunggu_sebentar_setelah_pencarian(self, llm):
         dibatalkan: list = []
         hasil = await run_pipeline(
             "resep rendang padang",
@@ -529,7 +524,7 @@ class TestTenggatMengikutiPencarian:
         assert dibatalkan == [True]
 
     async def test_tenggat_tidak_menunda_giliran_lebih_dari_grace(self, llm):
-        """Waktu total mengikuti pencarian + grace, bukan lama JEV macet."""
+        """Waktu total mengikuti pencarian + grace, bukan lama Laya macet."""
         loop = asyncio.get_running_loop()
         mulai = loop.time()
         await run_pipeline(
@@ -543,10 +538,10 @@ class TestTenggatMengikutiPencarian:
 
 
 class TestBlokirMenghentikanPencarian:
-    """Pesan yang diblokir JEV tidak menunggu -- dan tidak ikut gagal bersama --
+    """Pesan yang diblokir Laya tidak menunggu -- dan tidak ikut gagal bersama --
     cabang pencarian yang hasilnya akan dibuang.
 
-    Kejadian 2026-09-28: "resep nasi goreng dong" diblokir JEV dalam 2 dtk,
+    Kejadian 2026-09-28: "resep nasi goreng dong" diblokir gerbang dalam 2 dtk,
     tetapi rewrite LLM gagal (token gateway dicabut) setelah 127 dtk, dan
     mahasiswa melihat "Koneksi terputus" alih-alih balasan penolakan.
     """

@@ -3,8 +3,10 @@
 Body permintaan dibuat dengan `gate.build_request`, jadi sama persis dengan yang
 dikirim gerbang di produksi (instruksi, kriteria, `topik_dipilih`, `riwayat`).
 Jawaban JEV (probabilitas per label) menjadi target lunak (`gold`) untuk Laya.
-JEV dipanggil lewat gateway (`JEV_URL`, bawaan `<BASE_URL>/systemone`), tidak
-langsung ke OpenRouter.
+JEV dipanggil lewat gateway (`<BASE_URL>/systemone`, `API_KEY`, model
+`MODEL_JEV`), tidak langsung ke OpenRouter. Setelan gerbang `LAYA_*` sengaja
+tidak dipakai: sejak 2026-10-27 gerbang chatbot hanya memakai Laya, sedangkan
+skrip ini tetap memanggil JEV sebagai guru supaya data latih dapat direproduksi.
 
 Bisa dilanjutkan bila terputus: id yang sudah berlabel dilewati. Pesan yang
 gagal setelah beberapa kali coba ditulis dengan `ok: false` dan dicoba lagi
@@ -28,6 +30,9 @@ import httpx
 from app.config import get_settings
 from app.rag import gate as G
 from app.rag.providers import USER_AGENT
+
+MODEL_JEV = "openrouter/typesafe/jev-1.13"
+"""Model guru menurut gateway; juga dicatat sebagai `guru` di manifest dataset."""
 
 BIAYA_PER_PANGGILAN = 0.000023
 """Perkiraan biaya JEV lewat gateway (ai-gateway-facts, 2026-09-25)."""
@@ -70,10 +75,11 @@ async def label_satu(
 
 async def utama(pesan: Path, out: Path, paralel: int, timeout: float, coba: int) -> None:
     s = get_settings()
-    url, model = s.url_jev(), s.jev_model
-    kunci = s.kunci_jev()
+    url = f"{s.base_url.rstrip('/')}/systemone" if s.base_url else None
+    model = MODEL_JEV
+    kunci = s.kunci_api()
     if not url or kunci is None:
-        raise SystemExit("JEV_URL/BASE_URL dan JEV_API_KEY/API_KEY harus terisi di api/.env")
+        raise SystemExit("BASE_URL dan API_KEY harus terisi di api/.env (JEV lewat gateway)")
     headers = {"Authorization": f"Bearer {kunci.get_secret_value()}", "User-Agent": USER_AGENT}
 
     rows = baca_jsonl(pesan)

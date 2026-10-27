@@ -13,7 +13,6 @@ PRICES_PER_MTOK: dict[str, tuple[float, float]] = {
     # model: (input, output)
     "cx/gpt-6-luna": (0.10, 0.50),
     "intfloat/multilingual-e5-small": (0.0, 0.0),
-    "openrouter/typesafe/jev-1.13": (0.042, 0.0),
 }
 
 

@@ -110,8 +110,8 @@ class TestTidakDikenali:
         assert not detect(teks).handled
 
 
-class TestBalasanUntukVonisJev:
-    """JEV hanya memvonis "smalltalk"; nada balasannya dibaca dari pesannya."""
+class TestBalasanUntukVonisLaya:
+    """Laya hanya memvonis "smalltalk"; nada balasannya dibaca dari pesannya."""
 
     def test_pamit_dibalas_penutup(self):
         assert reply_for("oke deh kalau begitu, nanti saya ke kampus aja") == REPLIES[
@@ -123,7 +123,7 @@ class TestBalasanUntukVonisJev:
             SmallTalkKind.THANKS
         ]
 
-    def test_tanpa_kata_dikenal_diserahkan_ke_jev(self):
+    def test_tanpa_kata_dikenal_diserahkan_ke_laya(self):
         assert reply_for("apa kabar bot") is None
 
     def test_sapaan_bersama_kata_lain_bukan_basa_basi(self):

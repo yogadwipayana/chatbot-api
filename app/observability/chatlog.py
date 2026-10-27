@@ -63,7 +63,7 @@ class ChatLogEntry:
     embed_dipanggil: bool = False
     """False untuk FR-7 dan sapaan berbasis aturan: keduanya berhenti sebelum
     retrieval, sehingga pertanyaannya tidak pernah di-embed sama sekali. Pesan
-    yang diblokir JEV bisa True -- pencarian berjalan paralel dengan gerbang dan
+    yang diblokir Laya bisa True -- pencarian berjalan paralel dengan gerbang dan
     baru dihentikan saat vonis blokir tiba."""
     embed_model: str | None = None
     embed_tokens: int | None = None
@@ -125,8 +125,8 @@ def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
         "embed_tokens": entry.embed_tokens,
         "embed_cost_usd": entry.embed_biaya_usd,
         "embed_cost_source": entry.embed_biaya_sumber,
-        # Gerbang JEV atau saringan aturan (`gate_source`). `gate_label` terisi
-        # juga untuk pesan yang diteruskan JEV, supaya ambangnya dapat
+        # Gerbang Laya atau saringan aturan (`gate_source`). `gate_label` terisi
+        # juga untuk pesan yang diteruskan Laya, supaya ambangnya dapat
         # dikalibrasi dari log, bukan ditebak.
         "gate_label": outcome.gate.label.value if outcome.gate else None,
         "gate_confidence": outcome.gate.confidence if outcome.gate else None,

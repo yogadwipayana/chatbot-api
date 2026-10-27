@@ -124,7 +124,7 @@ class TestSamarkan:
 
 
 async def test_catat_panggilan_di_luar_graf_tidak_melempar():
-    """Skrip dan test fungsi tunggal memanggil JEV/tool tanpa run induk."""
+    """Skrip dan test fungsi tunggal memanggil Laya/tool tanpa run induk."""
     import time
 
     await catat_panggilan(jenis="tool", nama="x", masukan={}, mulai=time.perf_counter())

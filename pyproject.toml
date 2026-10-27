@@ -42,7 +42,7 @@ dependencies = [
     "pyjwt>=2.13,<3",
     "slowapi>=0.1.10,<0.2",
 
-    # --- Layanan luar via HTTP (JEV, SADS) -------------------------------
+    # --- Layanan luar via HTTP (Laya, SADS) -------------------------------
     "httpx>=0.28,<0.29",
 ]
 

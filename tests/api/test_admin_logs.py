@@ -71,7 +71,7 @@ def terisi(log_store):
                     "detail": {"document_count": 2},
                 },
             ),
-            _log("app.rag.gate", "Gerbang JEV gagal", turn_id="t1"),
+            _log("app.rag.gate", "Gerbang Laya gagal", turn_id="t1"),
             _log("app.audit", "Akun x@instiki.ac.id dihapus oleh y", turn_id="t1"),
             _log("app.audit", "Kill switch dinyalakan", levelno=40),
         ]
@@ -257,11 +257,11 @@ class TestRekamanDanGraf:
         assert r.status_code == 200
         body = r.json()
         nodes = {n["id"]: n["group"] for n in body["nodes"]}
-        assert {"__start__", "__end__", "rule_gate", "jev_gate", "generate"} <= set(nodes)
+        assert {"__start__", "__end__", "rule_gate", "laya_gate", "generate"} <= set(nodes)
         assert nodes["rewrite"] == nodes["retrieve"] == "cari"
         assert nodes["generate"] is None
         sisi = {(e["source"], e["target"]): e for e in body["edges"]}
-        assert sisi[("rule_gate", "jev_gate")]["conditional"]
+        assert sisi[("rule_gate", "laya_gate")]["conditional"]
         assert sisi[("rule_gate", "rewrite")]["conditional"]
         assert sisi[("rewrite", "retrieve")]["conditional"] is False
         assert sisi[("validate_context", "__end__")]["label"] == "selesai"

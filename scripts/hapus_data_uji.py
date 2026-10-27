@@ -1,8 +1,8 @@
 """Hapus percakapan uji (tes manual, uji A/B, uji browser) dari database.
 
     python -m scripts.hapus_data_uji                         # daftar sesi, tanpa menghapus
-    python -m scripts.hapus_data_uji --awalan jev-uji-       # pratinjau yang akan dihapus
-    python -m scripts.hapus_data_uji --awalan jev-uji- --sesi <id> --hapus
+    python -m scripts.hapus_data_uji --awalan laya-uji-       # pratinjau yang akan dihapus
+    python -m scripts.hapus_data_uji --awalan laya-uji- --sesi <id> --hapus
     python -m scripts.hapus_data_uji --semua --hapus --konfirmasi HAPUS-SEMUA   # sebelum rilis
 
 Database pengembangan dan produksi saat ini SATU database (kontainer `pg` di

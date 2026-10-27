@@ -20,7 +20,7 @@ def sisi() -> set[tuple[str, str]]:
 def test_seluruh_node_ada():
     nodes = set(build_graph().get_graph().nodes)
     assert nodes == set(URUTAN_AWAL) | {
-        "jev_gate",
+        "laya_gate",
         SEARCH_NODE,
         "validate_context",
         "refuse",
@@ -39,14 +39,14 @@ def test_urutan_awal():
 
 def test_gerbang_dan_pencarian_bercabang_dari_saringan_aturan():
     edges = sisi()
-    assert ("rule_gate", "jev_gate") in edges
+    assert ("rule_gate", "laya_gate") in edges
     assert ("rule_gate", SEARCH_NODE) in edges
-    assert ("smalltalk", "jev_gate") not in edges
+    assert ("smalltalk", "laya_gate") not in edges
 
 
 def test_keduanya_bertemu_di_validate_context():
     edges = sisi()
-    assert ("jev_gate", "validate_context") in edges
+    assert ("laya_gate", "validate_context") in edges
     assert (SEARCH_NODE, "validate_context") in edges
 
 
@@ -60,7 +60,7 @@ def test_jalan_keluar_lebih_awal():
     edges = sisi()
     for node in ("sensitive", "smalltalk", "rule_gate"):
         assert (node, "__end__") in edges
-    # Vonis JEV baru ditindaklanjuti di titik temu, setelah pencarian selesai.
+    # Vonis Laya baru ditindaklanjuti di titik temu, setelah pencarian selesai.
     assert ("validate_context", "__end__") in edges
 
 
@@ -78,4 +78,4 @@ def test_pembungkus_pencarian_tidak_dicatat_sebagai_langkah():
 
 
 def test_diagram_mermaid_dapat_dibuat():
-    assert "jev_gate" in build_graph().get_graph().draw_mermaid()
+    assert "laya_gate" in build_graph().get_graph().draw_mermaid()

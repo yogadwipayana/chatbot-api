@@ -218,7 +218,7 @@ python -m scripts.export_openapi -o /tmp/live.yaml
 | `app/rag/prompts.py` | Instruksi wajib + penyusunan konteks | FR-5 |
 | `app/rag/risk.py` | Topik berisiko tinggi + kontak unit | FR-6 |
 | `app/rag/sensitive.py` | Pertanyaan sensitif → konseling | FR-7 |
-| `app/rag/gate.py` | Gerbang semantik JEV: nonsense / malicious / di luar topik | — |
+| `app/rag/gate.py` | Gerbang semantik Laya: nonsense / malicious / di luar topik | — |
 | `app/rag/graph.py` | Graf LangGraph: urutan node dan jalan keluar lebih awal | §7 |
 | `app/rag/chain.py` | Bentuk hasil + titik masuk `run_pipeline` | §7 |
 | `app/ingestion/` | Loader, chunker, embedder, pipeline | FR-1 |
@@ -250,7 +250,7 @@ sebelum ada query ke database.
 "Deadline pembayaran UKT" menyangkut akademik dan keuangan sekaligus; mahasiswa
 yang ditolak tidak boleh dikirim ke loket yang salah.
 
-**4. Gerbang JEV fail-open dan berada setelah FR-7.**
+**4. Gerbang Laya fail-open dan berada setelah FR-7.**
 Galat, timeout, atau keyakinan di bawah ambang berarti pesan diteruskan ke
 retrieval — pertanyaan akademik yang salah diblokir hilang tanpa jejak di AD-4,
 sedangkan pesan buruk yang lolos masih dihadang FR-3 dan delimiter FR-5.
@@ -358,7 +358,7 @@ yang dinilai; tingkat dijawab dilaporkan terpisah.
 
 | Fitur | Setelan | Catatan |
 |---|---|---|
-| Gerbang JEV | `JEV_ENABLED=true` | Dikirim ke `<BASE_URL>/systemone` dengan `API_KEY`, model `openrouter/typesafe/jev-1.13` |
+| Gerbang Laya | `LAYA_ENABLED=true` | Dikirim ke `LAYA_URL` (server Laya, `/v1/systemone`) dengan `LAYA_API_KEY`, model `multilingual` |
 | Embedding lokal | `EMBED_PROVIDER=local`, `EMBED_MODEL=intfloat/multilingual-e5-small` | Wajib re-index dan kalibrasi ulang ambang sesudahnya; panduan lengkap di [`docs/e5.md`](docs/e5.md) |
 
 Vektor e5-small (384 dimensi) diisi nol sampai 1024 — cosine similarity tidak

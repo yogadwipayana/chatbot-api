@@ -228,7 +228,7 @@ tanya jawab mengirim `question`/`answer`, yang tersimpan di
   terpisah. Pengecualiannya record yang dibangun langsung dari baris tabel
   (`UnitRecord`, `KunciSematan`, `Account`). Field-nya sekaligus menjadi daftar
   kolom SQL dan kunci perubahan dari API, jadi namanya mengikuti kolom.
-- Kunci yang ditentukan layanan luar, misalnya isi permintaan ke gerbang JEV
+- Kunci yang ditentukan layanan luar, misalnya isi permintaan ke gerbang Laya
   (`app/rag/gate.py`). Kontraknya milik layanan itu, jadi tidak dapat diganti
   dari sisi kita.
 
@@ -513,15 +513,15 @@ Hanya diisi pada baris `role = 'assistant'`.
 | `program_code` | string \| null | Kode prodi penanya (`app/prodi.py`, digit 4-7 NIM, mis. `1010`), untuk analitik per kohort. `null` untuk pesan dari sebelum NIM tersedia (2026-10-05), dan **selalu `null` untuk `support`**: kohort kecil ditambah tanda FR-7 cukup untuk menebak orangnya |
 | `intake_year` | int \| null | Tahun angkatan penanya (mis. `2024`); aturan `null`-nya sama dengan `program_code` |
 | `nim` | string \| null | NIM penanya apa adanya, wajib di widget sejak 2026-10-07. Tidak dicocokkan ke data mahasiswa, jadi bisa saja NIM orang lain atau NIM yang tidak pernah ada. Hanya tersimpan di sini: tidak ikut ke LLM, trace LangSmith, maupun log aplikasi. `null` untuk pesan dari sebelum 2026-10-07. **Tetap terisi untuk `support`**, berbeda dari `program_code`: pesan konseling dapat ditelusuri ke penanyanya walau isinya disembunyikan |
-| `embed_called` | bool | `false` untuk FR-7 dan sapaan berbasis aturan — keduanya berhenti sebelum retrieval. Pesan yang diblokir JEV (`rejected`, atau `smalltalk` dari JEV) bisa `true`: pencarian berjalan paralel dengan gerbang dan baru dihentikan saat vonis blokir tiba |
+| `embed_called` | bool | `false` untuk FR-7 dan sapaan berbasis aturan — keduanya berhenti sebelum retrieval. Pesan yang diblokir Laya (`rejected`, atau `smalltalk` dari Laya) bisa `true`: pencarian berjalan paralel dengan gerbang dan baru dihentikan saat vonis blokir tiba |
 | `embed_model` | string \| null | Model yang **diminta**, bukan yang dilaporkan gateway |
 | `embed_tokens` | int \| null | `usage.prompt_tokens`; `null` bila endpoint tidak melaporkannya |
 | `embed_cost_usd` | float \| null | Biaya meng-embed pertanyaan, **tanpa pembulatan** |
 | `embed_cost_source` | string \| null | `provider` atau `estimasi` |
-| `gate_label` | string \| null | Label gerbang JEV, terisi juga untuk pesan yang diteruskan; `null` bila JEV tidak berjalan |
+| `gate_label` | string \| null | Label gerbang Laya, terisi juga untuk pesan yang diteruskan; `null` bila Laya tidak berjalan |
 | `gate_confidence` | float \| null | Keyakinan label itu |
-| `gate_error` | string \| null | Galat panggilan JEV (pesan tetap diteruskan, fail-open) |
-| `gate_cost_usd` | float \| null | Biaya panggilan JEV |
+| `gate_error` | string \| null | Galat panggilan Laya (pesan tetap diteruskan, fail-open) |
+| `gate_cost_usd` | float \| null | Biaya panggilan Laya |
 | `tool_calls` | array \| null | Jejak tool-calling (`docs/tool-call.md` §13): satu objek per panggilan, `{name, args, ok, latency_ms}`. Panggilan yang sengaja tidak dijalankan juga membawa `error`: `batas_per_giliran` (lebih dari 4 dalam satu giliran) atau `argumen_rusak` (argumen bukan JSON sah). `args` adalah argumen **mentah** dari model, dengan setiap string dipotong 200 karakter, supaya argumen yang dihalusinasi tetap terlihat. `null` bila tidak ada tool yang dipanggil, termasuk saat jalur tool berjalan tetapi model menjawab tanpa memanggil tool |
 | `attachments` | array \| null | Lampiran tool yang tampil di bawah jawaban (`docs/tool-call.md` §10a), utuh: `[{title, source, items}]`, sama dengan `ChatResponse.attachments`. Disimpan lengkap karena data SADS berubah per semester, jadi memanggil ulang tool tidak mengulang daftar yang dilihat mahasiswa saat menilai. `null` bila tidak ada lampiran |
 

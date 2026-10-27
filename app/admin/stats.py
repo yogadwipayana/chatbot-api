@@ -306,9 +306,9 @@ async def compute_stats(
         "daily_volume": [dict(r) for r in volume],
         "top_topics": [dict(r) for r in topik],
         # Sama dengan total di halaman Biaya (`compute_costs`): LLM chat +
-        # embedding. Gerbang JEV tidak dihitung karena berjalan di Laya yang
-        # di-host sendiri; `gate_cost_usd` hanya terisi pada baris lama (sebelum
-        # 2026-10-06) saat JEV masih memakai gateway.
+        # embedding. Gerbang Laya tidak dihitung karena di-host sendiri;
+        # `gate_cost_usd` hanya terisi pada baris lama (sebelum 2026-10-06) saat
+        # gerbang masih memakai model berbayar lewat gateway.
         "running_cost_usd": round(float(pesan["biaya"]) + float(pesan["biaya_embed"]), 6),
         "messages_without_cost_estimate": pesan["tanpa_biaya"] + pesan["embed_tanpa_biaya"],
         "latency_p95_ms": round(pesan["p95"]) if pesan["p95"] is not None else None,

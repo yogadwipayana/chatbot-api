@@ -11,7 +11,7 @@ Dokumen → Parse → Chunking → Embedding (API / e5 lokal) ─┐
                                                           ▼
                                    PostgreSQL: pgvector (HNSW) + Full-Text Search (GIN)
                                                           ▲
-User → FastAPI → LangGraph → FR-7 → Smalltalk → Saringan aturan → JEV → Rewrite
+User → FastAPI → LangGraph → FR-7 → Smalltalk → Saringan aturan → Laya → Rewrite
                                                           │
                                        Retrieval hibrida → RRF → Context Check → LLM → Answer + Sources
                                                           │                       ⇅
@@ -27,8 +27,8 @@ Komponen utama:
 | LangGraph | Mengatur urutan node dan jalan keluar lebih awal | `app/rag/graph.py` |
 | Deteksi sensitif (FR-7) | Pesan bernuansa tekanan mental → layanan konseling | `app/rag/sensitive.py` |
 | Smalltalk | Sapaan dan basa-basi, berbasis aturan | `app/rag/smalltalk.py` |
-| Saringan aturan | Pesan acak, tawa, basa-basi tentang PANDU, dan manipulasi, tanpa model; cadangan JEV | `app/rag/rule_gate.py` |
-| JEV | Gerbang semantik: academic / smalltalk / out_of_scope / nonsense / malicious | `app/rag/gate.py` |
+| Saringan aturan | Pesan acak, tawa, basa-basi tentang PANDU, dan manipulasi, tanpa model; cadangan Laya | `app/rag/rule_gate.py` |
+| Laya | Gerbang semantik: academic / smalltalk / out_of_scope / nonsense / malicious | `app/rag/gate.py` |
 | Rewriter (FR-4) | Pertanyaan lanjutan → pertanyaan mandiri | `app/rag/rewriter.py` |
 | PostgreSQL Full-Text Search | Keyword search (`ts_rank`, konfigurasi `indonesian`) | `app/rag/retriever.py` |
 | Model embedding | Semantic embedding: API (`text-embedding-3-*`) atau lokal (`multilingual-e5-small`) | `app/rag/providers.py`, `app/rag/local_embeddings.py` |
@@ -189,9 +189,9 @@ Berjalan setiap kali mahasiswa mengirim pertanyaan (`POST /api/chat` atau `/api/
             │
             ▼
 ┌─────────────────────────┐
-│ JEV Semantic Gate       │──── nonsense (≥ 0.7) ──────────→ kind = rejected
-│ (jika JEV_ENABLED)      │──── malicious (≥ 0.7) ─────────→ kind = rejected
-│ + riwayat + topik unit  │──── out_of_scope (≥ 0.9) ──────→ kind = rejected
+│ Laya Semantic Gate      │──── nonsense (≥ 0.7) ──────────→ kind = rejected
+│ (jika LAYA_ENABLED)     │──── malicious (≥ 0.7) ─────────→ kind = rejected
+│ + riwayat + topik unit  │──── out_of_scope (≥ 0.7) ──────→ kind = rejected
 │                         │──── smalltalk (≥ 0.7) ─────────→ kind = smalltalk
 │ ragu / galat = lanjut   │
 └───────────┬─────────────┘
@@ -281,8 +281,8 @@ Berjalan setiap kali mahasiswa mengirim pertanyaan (`POST /api/chat` atau `/api/
 | `answer` | Jawaban bersumber dokumen resmi, atau data SADS lewat tool (kartu "Data akademik SADS") | ✓ | ✓ | ✓ | – |
 | `refusal` | Konteks terlalu lemah (FR-3), atau LLM tidak menemukan jawabannya di konteks maupun hasil tool | ✓ | –/✓ | – | ✓ |
 | `support` | Pertanyaan sensitif (FR-7) | – | – | – | – |
-| `smalltalk` | Sapaan (aturan atau JEV) | – | – | – | – |
-| `rejected` | Nonsense / malicious / di luar topik: dihentikan saringan aturan, JEV, atau LLM penjawab (`[DI_LUAR_TOPIK]`) | –/✓ | –/✓ | – | – |
+| `smalltalk` | Sapaan (aturan atau Laya) | – | – | – | – |
+| `rejected` | Nonsense / malicious / di luar topik: dihentikan saringan aturan, Laya, atau LLM penjawab (`[DI_LUAR_TOPIK]`) | –/✓ | –/✓ | – | – |
 
 ---
 
@@ -310,7 +310,7 @@ rule_gate ──────── acak / manipulasi ───────→ EN
   │
   ├──────────────────────────────┐          (berjalan PARALEL)
   ▼                              ▼
-jev_gate                       cari (subgraph)
+laya_gate                      cari (subgraph)
   │                              rewrite   (FR-4, dilewati pada pesan pertama berbahasa Indonesia)
   │                                │
   │                                ▼
@@ -321,10 +321,10 @@ jev_gate                       cari (subgraph)
   └──────────────┬─────────────────┘
                  ▼
 validate_context             (titik temu, lalu FR-3 + gerbang kelayakan tool)
-  │   ├── JEV memblokir ─────── nonsense / malicious / out_of_scope → END (rejected)
+  │   ├── Laya memblokir ────── nonsense / malicious / out_of_scope → END (rejected)
   │   │                         smalltalk                           → END (smalltalk)
   │   │                         (hasil pencarian dibuang)
-  │ academic / ragu / JEV mati / galat
+  │ academic / ragu / Laya mati / galat
   │        │
 cukup*  tidak cukup*
   │        │
@@ -345,23 +345,23 @@ generate  refuse
 
 **Jalur tool di `generate`** (`TOOLS_ENABLED=true`). `validate_context` menandai `tool_eligible` bila kata pemicu salah satu tool (`dosen`, `mata kuliah`, `mengampu`, …) muncul di pertanyaan bersih **atau** di hasil rewrite. Hasil rewrite ikut dicek supaya pertanyaan lanjutan ("kalau Basis Data?") dan pertanyaan berbahasa Inggris tetap memicu tool. Pertanyaan yang eligible boleh masuk `generate` walau konteks retrieval lemah. Di sana `LLMCall.run_tools` menjalankan loop agentik: seluruh tool di registry di-bind, model memilih sendiri, dan hasilnya kembali sebagai pesan `role:"tool"`. Kalau tool tidak dapat dijalankan, padahal konteksnya lemah, `generate` langsung mengembalikan penolakan FR-3 tanpa memanggil LLM. Unit pilihan mahasiswa tidak memengaruhi kelayakan: data SADS bersifat lintas-unit.
 
-Gerbang JEV dan pencarian berjalan paralel karena keduanya hanya butuh pertanyaan yang sudah bersih. Menunggu JEV dulu menambah sekitar 3 detik ke **setiap** giliran, hanya untuk menghemat pencarian pada sekitar 5% pesan yang diblokir. Begitu JEV memblokir, `rewrite` dan `retrieve` yang masih berjalan dihentikan (`PipelineDeps.gate_blocked`), sehingga pesan yang diblokir tidak menunggu, dan tidak ikut gagal bersama, cabang pencarian. Yang sempat berjalan sebelum vonis tiba (embedding, rewrite) tetap terbayar. LLM penjawab tidak pernah dipanggil untuknya.
+Gerbang Laya dan pencarian berjalan paralel karena keduanya hanya butuh pertanyaan yang sudah bersih. Menunggu Laya dulu menambah sekitar 3 detik ke **setiap** giliran, hanya untuk menghemat pencarian pada sekitar 5% pesan yang diblokir. Begitu Laya memblokir, `rewrite` dan `retrieve` yang masih berjalan dihentikan (`PipelineDeps.gate_blocked`), sehingga pesan yang diblokir tidak menunggu, dan tidak ikut gagal bersama, cabang pencarian. Yang sempat berjalan sebelum vonis tiba (embedding, rewrite) tetap terbayar. LLM penjawab tidak pernah dipanggil untuknya.
 
-`rewrite → retrieve` dibungkus subgraph `cari` karena LangGraph berjalan per superstep. Sebagai dua node biasa, `retrieve` baru bisa dimulai setelah JEV selesai, sehingga pesan pertama (tanpa rewrite) tidak mendapat penghematan apa pun. Perekam durasi melewati pembungkus `cari` (`applog.WRAPPER_NODES`), dan `last_node` adalah node yang mengisi `outcome`, bukan node yang terakhir dimulai.
+`rewrite → retrieve` dibungkus subgraph `cari` karena LangGraph berjalan per superstep. Sebagai dua node biasa, `retrieve` baru bisa dimulai setelah Laya selesai, sehingga pesan pertama (tanpa rewrite) tidak mendapat penghematan apa pun. Perekam durasi melewati pembungkus `cari` (`applog.WRAPPER_NODES`), dan `last_node` adalah node yang mengisi `outcome`, bukan node yang terakhir dimulai.
 
 Diagram Mermaid yang selalu sesuai kode: `python -m app.rag.graph`.
 
 ---
 
-# 5. JEV Semantic Gate
+# 5. Laya Semantic Gate
 
-JEV (`typesafe/jev-1.13`) adalah model keputusan, bukan LLM penghasil teks: ia menjawab pertanyaan bertipe dengan probabilitas. PANDU mengajukan satu pertanyaan `choice` dengan lima kategori (`app/rag/gate.py`).
+Laya adalah model keputusan *open-weight* yang dilatih untuk PANDU (checkpoint `laya-pandu-gerbang`, `docs/laya.md`), bukan LLM penghasil teks: ia menjawab pertanyaan bertipe dengan probabilitas. PANDU mengajukan satu pertanyaan `choice` dengan lima kategori (`app/rag/gate.py`).
 
-Endpoint: `POST <BASE_URL>/systemone` (gateway, bukan OpenRouter langsung), model `openrouter/typesafe/jev-1.13`, dengan `API_KEY` yang sama seperti LLM.
+Endpoint: `POST <LAYA_URL>`, yaitu `/v1/systemone` di server Laya (`eval/laya/sajikan_laya.py`, mis. `https://laya.dwipa.my.id/v1/systemone`), model `multilingual` (`LAYA_MODEL`), dengan `LAYA_API_KEY`. `LAYA_URL` dan `LAYA_API_KEY` wajib saat `LAYA_ENABLED=true` dan tidak jatuh ke `BASE_URL`/`API_KEY`.
 
 ```json
 {
-  "model": "openrouter/typesafe/jev-1.13",
+  "model": "multilingual",
   "state": {
     "pesan_terbaru": "yang kedua gimana?",
     "riwayat": [{"peran": "user", "isi": "apa syarat cuti akademik?"}, "..."]
@@ -379,10 +379,11 @@ Endpoint: `POST <BASE_URL>/systemone` (gateway, bukan OpenRouter langsung), mode
 
 ## Posisi di alur
 
-- **Setelah** FR-7, smalltalk berbasis aturan, dan saringan aturan (`app/rag/rule_gate.py`). Ketiganya gratis dan dapat diaudit. Pesan "saya stres takut di-DO" tidak boleh bergantung pada klasifikasi model luar, dan pesan yang jelas acak atau manipulatif tidak perlu dibayar satu panggilan JEV.
+- **Setelah** FR-7, smalltalk berbasis aturan, dan saringan aturan (`app/rag/rule_gate.py`). Ketiganya gratis dan dapat diaudit. Pesan "saya stres takut di-DO" tidak boleh bergantung pada klasifikasi model luar, dan pesan yang jelas acak atau manipulatif tidak perlu dibayar satu panggilan Laya.
 - **Sebelum** rewrite, embedding, dan retrieval. Pesan nonsense tidak perlu dibayar dengan satu panggilan LLM rewrite.
 - **Riwayat ikut dikirim**, supaya pertanyaan lanjutan pendek tidak dikira nonsense.
-- **Topik unit pilihan mahasiswa ikut dikirim** (`topik_dipilih`), dan kriterianya menyebut pembayaran biaya kampus lewat bank, VA, atau aplikasi sebagai urusan akademik (T18). Tanpa keduanya JEV menilai "cara bayar VA BNI lewat SMS" sebagai urusan perbankan umum: 12 dari 76 panggilan untuk pertanyaan akademik mendapat `out_of_scope` sampai 0,75 (sekali 0,93, terblokir). Dengan keduanya: 1 dari 76, paling tinggi 0,45 (uji 29 Sep 2026, lihat `jev.md`).
+- **Topik unit pilihan mahasiswa ikut dikirim** (`topik_dipilih`), dan kriterianya menyebut pembayaran biaya kampus lewat bank, VA, atau aplikasi sebagai urusan akademik (T18). Tanpa keduanya model gerbang lama menilai "cara bayar VA BNI lewat SMS" sebagai urusan perbankan umum: 12 dari 76 panggilan untuk pertanyaan akademik mendapat `out_of_scope` sampai 0,75 (sekali 0,93, terblokir). Dengan keduanya: 1 dari 76, paling tinggi 0,45 (uji 29 Sep 2026, lihat `jev.md`).
+- **Instruksi dan kriteria terkunci ke checkpoint.** Laya dilatih dengan `INSTRUCTIONS` dan `CRITERIA` ini persis, jadi mengubah salah satunya berarti membangun ulang data dan melatih ulang Laya (`docs/laya.md`).
 
 ## Kebijakan: konservatif dan fail-open
 
@@ -390,22 +391,22 @@ Endpoint: `POST <BASE_URL>/systemone` (gateway, bukan OpenRouter langsung), mode
 |---|---|---|
 | `academic` | tidak pernah | lanjut ke RAG |
 | `smalltalk` | ≥ 0.7 | balasan sapaan |
-| `nonsense` | ≥ 0.7 | balasan "belum memahami pesan" |
+| `nonsense` | ≥ 0.7 (`.env` Laya: 0.95) | balasan "belum memahami pesan" |
 | `malicious` | ≥ 0.7 | balasan datar tanpa menyebut deteksi |
-| `out_of_scope` | ≥ 0.9 (lebih ketat) | balasan cakupan PANDU |
+| `out_of_scope` | ≥ 0.7 | balasan cakupan PANDU |
 
-Keyakinan di bawah ambang, galat HTTP, atau lewat tenggat berarti pesan **diteruskan**. Tenggatnya bukan angka tetap: JEV ditunggu selama pencarian paralel berjalan, ditambah `JEV_GRACE_SECONDS` (1,5 dtk). `JEV_TIMEOUT_SECONDS` (10 dtk) hanya batas keras bila pencarian juga lambat. Dengan cara ini JEV tidak pernah menambah lebih dari waktu tambahan itu ke giliran mahasiswa, padahal latensinya sendiri berayun dari ~1 sampai ~29 detik. Pertanyaan akademik yang salah diblokir hilang tanpa jejak di AD-4. Sebaliknya, pesan buruk yang lolos masih dihadang threshold FR-3 dan delimiter FR-5.
+Keyakinan di bawah ambang, galat HTTP, atau lewat tenggat berarti pesan **diteruskan**. Tenggatnya bukan angka tetap: Laya ditunggu selama pencarian paralel berjalan, ditambah `LAYA_GRACE_SECONDS` (1,5 dtk). `LAYA_TIMEOUT_SECONDS` (10 dtk) hanya batas keras bila pencarian juga lambat. Dengan cara ini gerbang tidak pernah menambah lebih dari waktu tambahan itu ke giliran mahasiswa, walau latensinya sendiri melonjak (model gerbang lama berayun ~1–29 detik; Laya ~1–3 detik, `docs/laya.md`). Pertanyaan akademik yang salah diblokir hilang tanpa jejak di AD-4. Sebaliknya, pesan buruk yang lolos masih dihadang threshold FR-3 dan delimiter FR-5.
 
-Ambang dikalibrasi 29 Sep 2026 dari 64 pesan berlabel: pertanyaan akademik tidak pernah mendapat lebih dari 0,03 untuk `smalltalk`/`nonsense`/`malicious` dan 0,57 untuk `out_of_scope`, sedangkan pesan di luar topik sungguhan paling rendah 0,94.
+Ambang dikalibrasi pada skala `answer_confidence` Laya dengan set kalibrasi 60 pesan (`docs/laya.md` A3, 8 Okt 2026): `out_of_scope` 0,7 (bawaan kode; p tertinggi pada pesan akademik 0,49) dan `nonsense` 0,95 (lewat `.env`; bawaan kode kosong = 0,7). Ambang 0,7 untuk `smalltalk`/`malicious` berasal dari kalibrasi model gerbang lama (29 Sep 2026, `jev.md`).
 
 Balasan untuk `malicious` sengaja datar. Memberi tahu bahwa injeksi terdeteksi hanya mengajari penyerang cara merumuskannya ulang.
 
-## Cadangan tanpa JEV (`JEV_ENABLED=false`)
+## Cadangan tanpa Laya (`LAYA_ENABLED=false`)
 
-Dua lapis yang juga berjalan saat JEV hidup menggantikan vonisnya:
+Dua lapis yang juga berjalan saat Laya hidup menggantikan vonisnya:
 
 - **Saringan aturan** (`rule_gate`, sebelum pencarian): pesan acak (tanpa huruf, deret keyboard, konsonan beruntun, gumam), tawa dan basa-basi tentang PANDU ("kamu siapa?"), serta pola manipulasi (tag `<pertanyaan_mahasiswa>`, "abaikan semua instruksi", "system prompt", bermain peran sebagai admin). Aturan acak dan basa-basi batal bila pesan memuat istilah kampus. Vonisnya dicatat dengan `gate_source = rules`.
-- **Penanda `[DI_LUAR_TOPIK]`** dari LLM penjawab (aturan 4 `SYSTEM_PROMPT`): pertanyaan di luar urusan kampus yang lolos threshold dibalas seperti blokir JEV `out_of_scope` (`rejected`, tanpa sitasi, tidak masuk AD-4, `rejection_source = llm`). Tidak menambah panggilan: LLM toh dipanggil untuk pertanyaan itu.
+- **Penanda `[DI_LUAR_TOPIK]`** dari LLM penjawab (aturan 4 `SYSTEM_PROMPT`): pertanyaan di luar urusan kampus yang lolos threshold dibalas seperti blokir Laya `out_of_scope` (`rejected`, tanpa sitasi, tidak masuk AD-4, `rejection_source = llm`). Tidak menambah panggilan: LLM toh dipanggil untuk pertanyaan itu.
 
 Yang tidak tergantikan: pesan di luar topik pada unit tanpa dokumen ditolak threshold FR-3 sebelum LLM, jadi masuk AD-4 sebagai `refusal`.
 
@@ -652,7 +653,7 @@ RETRIEVAL_CANDIDATES / TOP_N      (dashboard)
 RRF_WEIGHT_VECTOR / FULLTEXT      (dashboard)
 VECTOR_THRESHOLD / LEXICAL_THRESHOLD (dashboard)
 EMBED_PROVIDER / EMBED_MODEL      (+ reindex)
-JEV_BLOCK_THRESHOLD / JEV_OUT_OF_SCOPE_THRESHOLD / JEV_NONSENSE_THRESHOLD
+LAYA_BLOCK_THRESHOLD / LAYA_OUT_OF_SCOPE_THRESHOLD / LAYA_NONSENSE_THRESHOLD
 prompt                            (app/rag/prompts.py)
 ```
 
@@ -693,7 +694,7 @@ Sensitif (FR-7) ──→ support
  ↓
 Smalltalk ──→ smalltalk
  ↓
-JEV ──→ rejected / smalltalk
+Laya ──→ rejected / smalltalk
  ↓ academic
 Rewrite (FR-4)
  ↓
@@ -735,7 +736,7 @@ SERVER PANDU
 │   │
 │   ├── LangGraph (alur chat)
 │   ├── Aturan FR-7 / smalltalk / FR-6
-│   ├── JEV client ─────────────→ BASE_URL/systemone
+│   ├── Laya client ────────────→ LAYA_URL (server Laya)
 │   ├── Embedding
 │   │   ├── API ────────────────→ BASE_URL
 │   │   └── lokal (opsional): sentence-transformers
@@ -768,7 +769,7 @@ FastAPI              = menyediakan API + streaming
 LangGraph            = mengatur urutan node dan jalan keluar lebih awal
 Deteksi sensitif     = mengalihkan pesan tekanan mental ke konseling (FR-7)
 Smalltalk            = membalas sapaan tanpa retrieval
-JEV                  = menentukan apakah pesan boleh masuk RAG
+Laya                 = menentukan apakah pesan boleh masuk RAG
 Rewriter             = menjadikan pertanyaan lanjutan mandiri (FR-4)
 Full-Text Search     = mencari berdasarkan keyword
 Embedding (API / e5) = mengubah teks menjadi semantic vector
@@ -800,7 +801,7 @@ Dokumen + unit → Parse → Clean → Chunk struktural
 
                               PRODUCTION
                                  │
-User → FastAPI → Validation → Sensitif (FR-7) → Smalltalk → JEV
+User → FastAPI → Validation → Sensitif (FR-7) → Smalltalk → Laya
                                  │                  │          │
                               support          smalltalk   rejected
                                                                │ academic

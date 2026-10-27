@@ -23,8 +23,8 @@ Masalah yang ingin diselesaikan:
    menyala. Tidak ada catatan durasi/status per node di sisi aplikasi.
 3. Log audit hanya ada di stdout, jadi hilang saat log pm2/Docker dirotasi.
 
-Sudah dikerjakan sebelumnya: panggilan HTTP JEV kini tercatat sebagai child run
-`jev_classify` di bawah node `jev_gate` (`app/rag/gate.py`, `@traceable`).
+Sudah dikerjakan sebelumnya: panggilan HTTP Laya kini tercatat sebagai child run
+`laya_classify` di bawah node `laya_gate` (`app/rag/gate.py`, `@traceable`).
 
 ## Keputusan
 
@@ -74,7 +74,7 @@ yang sama seperti di Postgres. `LOG_NODE_IO=false` mengembalikan prinsip awal.
 | `session_id`, `message_id` | untuk membuka percakapannya di Postgres |
 | `unit` | unit pilihan mahasiswa, atau null |
 | `outcome` | `answer`, `refusal`, `support`, `smalltalk`, `rejected` |
-| `last_node` | titik keluar: `sensitive`, `smalltalk`, `jev_gate`, `refuse`, `generate` |
+| `last_node` | titik keluar: `sensitive`, `smalltalk`, `laya_gate`, `refuse`, `generate` |
 | `total_ms` | durasi total giliran |
 | `ttft_ms` | waktu sampai token pertama (streaming saja) |
 | `status` | `ok` / `error` / `dibatalkan` (mahasiswa menutup panel saat streaming) |
@@ -97,7 +97,7 @@ Isi `detail` per node:
 | `sanitize` | `length`: panjang pertanyaan (angka saja) |
 | `sensitive` | `level` sensitivitas, `redirected`: apakah alur dialihkan |
 | `smalltalk` | `handled`: apakah pesan ditangani di sini |
-| `jev_gate` | `disabled`, atau `label`, `confidence`, `blocked`, `cost_usd`, `error` fail-open |
+| `laya_gate` | `disabled`, atau `label`, `confidence`, `blocked`, `cost_usd`, `error` fail-open |
 | `rewrite` | `query_rewritten` (false juga saat dilewati; durasi ≈0 menandakan dilewati) |
 | `retrieve` | `document_count` (unit filter ada di baris `turns`) |
 | `validate_context` | `decision`, `reason` (`ok`/`no_results`/`below_threshold`), `top_score` |
@@ -153,15 +153,15 @@ recharts yang sudah ada (`admin/src/components/ui/chart.tsx`).
 ### Tab 1: Performa
 
 ```
-┌ Giliran ─┐ ┌ p95 total ┐ ┌ Error ──┐ ┌ Diblokir JEV ┐
+┌ Giliran ─┐ ┌ p95 total ┐ ┌ Error ──┐ ┌ Diblokir Laya ┐
 │   1.284  │ │  3,8 dtk  │ │  0,6 %  │ │    4,1 %     │
 └──────────┘ └───────────┘ └─────────┘ └──────────────┘
 
 Durasi per node (p50 ▓ / p95 ░)          Titik keluar giliran
 generate         ▓▓▓▓▓▓▓▓▓▓░░░░░░ 2,9s    generate  ████████████ 71%
 retrieve         ▓▓▓░░ 0,6s               refuse    ███ 14%
-jev_gate         ▓▓░ 0,4s                 smalltalk █ 8%
-rewrite          ▓▓░ 0,4s                 jev_gate  █ 4%
+laya_gate         ▓▓░ 0,4s                 smalltalk █ 8%
+rewrite          ▓▓░ 0,4s                 laya_gate  █ 4%
 sanitize…valid.  ▏ <5ms                   sensitive ▏ 3%
 
 p95 latensi per jam (garis, 7 hari) + jumlah error (batang)
@@ -182,7 +182,7 @@ Klik baris untuk membuka panel detail berisi waterfall:
 sanitize          ▏ 1ms
 sensitive         ▏ 2ms
 smalltalk         ▏ 1ms
-jev_gate          ███ 380ms       academic · 0,97
+laya_gate          ███ 380ms       academic · 0,97
 rewrite           (dilewati)
 retrieve             ████ 540ms   8 dokumen
 validate_context         ▏ 1ms    answer · top 0,82
@@ -269,25 +269,25 @@ direkam node beserta child run-nya; uji coba admin ikut dicatat.
 |---|---|---|
 | `input` | masukan graf: pertanyaan, riwayat, unit, profil | callback akar graf |
 | `output` | `outcome` akhir (null bila gagal/dibatalkan) | callback akar graf |
-| `nodes[]` | per node: `input` (state yang diterima), `output` (perubahan state), `route` (keluaran router sesudahnya, mis. `["jev_gate", "cari"]` atau `selesai`) | `on_chain_start/end` node dan router |
-| `calls[]` | pohon panggilan di dalam node: `kind` (`llm`/`retriever`/`tool`/`jev`/`chain`), nama, model, token, biaya, durasi, status, input, output, `parent_id` | callback LangChain (LLM, retriever) dan custom event `pandu_panggilan` (JEV, tool) |
+| `nodes[]` | per node: `input` (state yang diterima), `output` (perubahan state), `route` (keluaran router sesudahnya, mis. `["laya_gate", "cari"]` atau `selesai`) | `on_chain_start/end` node dan router |
+| `calls[]` | pohon panggilan di dalam node: `kind` (`llm`/`retriever`/`tool`/`laya`/`chain`), nama, model, token, biaya, durasi, status, input, output, `parent_id` | callback LangChain (LLM, retriever) dan custom event `pandu_panggilan` (Laya, tool) |
 
 Rincian:
 
 - **Template prompt dilewati**, dan rantai `prompt | llm` yang dipanggil dengan
   `run_name` digabung menjadi satu panggilan LLM bernama `generate_answer` /
   `rewrite_query` berisi pesan sungguhan (`_ratakan`).
-- **JEV dan handler tool bukan runnable**, jadi dicatat lewat
-  `rekaman.catat_panggilan` (custom event). JEV: badan permintaan dan respons
+- **Laya dan handler tool bukan runnable**, jadi dicatat lewat
+  `rekaman.catat_panggilan` (custom event). Laya: badan permintaan dan respons
   mentah, tanpa header. Tool: argumen dari model dan teks yang dikembalikan ke
-  model. Saat tracing menyala, `@traceable` di JEV membuat induk event menjadi
+  model. Saat tracing menyala, `@traceable` di Laya membuat induk event menjadi
   run LangSmith; perekam lalu mencari node lewat `metadata.langgraph_node`.
 - **Giliran gagal atau dibatalkan tetap direkam** sampai langkah terakhir yang
   sempat berjalan; panggilan yang belum selesai berstatus `berjalan`.
 - **Penyamaran FR-7** (`Giliran._teks_sensitif`): pertanyaan giliran yang
   dialihkan ke konseling, dan pertanyaan sensitif dari giliran sebelumnya yang
   ikut di riwayat widget, diganti `SENSITIVE_PLACEHOLDER` di seluruh rekaman --
-  state, prompt rewrite, permintaan JEV.
+  state, prompt rewrite, permintaan Laya.
 
 Penyimpanan (`rekaman.py`): serialisasi ke JSON (string dipotong 32.000 karakter,
 daftar 300 butir), subpohon di atas 300 karakter disimpan sekali dan dirujuk
@@ -325,7 +325,7 @@ bersamaan oleh thread penulis dan pembaca.
 | `admin/src/app/(dashboard)/log/page.tsx` | `?tab=graf&giliran=` |
 
 Mode ringkasan: jumlah dan median per langkah pada rentang ini, dan jumlah
-giliran yang berhenti di setiap penanda `selesai` (blokir JEV dihitung di
+giliran yang berhenti di setiap penanda `selesai` (blokir Laya dihitung di
 `validate_context`, karena titik temu itu yang mengarahkannya ke `selesai`).
 
 ### Ikut diperbaiki (temuan uji browser s38)
@@ -333,7 +333,7 @@ giliran yang berhenti di setiap penanda `selesai` (blokir JEV dihitung di
 - T54: rincian giliran tidak menunjukkan tool -> `detail.tools` di `generate` + tab Graf.
 - T55: `rule_gate` tidak ada di `NODE_ORDER` -> "Saringan aturan" kini sesudah Sapaan.
 - T56: giliran `error`/`dibatalkan` tertulis "Tracing mati" -> `langsmith_run_id` diisi sejak awal giliran.
-- T57: WARNING "Gerbang JEV gagal, pesan diteruskan: " tanpa sebab (`str(ReadTimeout)` kosong) -> jenis galat ikut ditulis.
+- T57: WARNING "Gerbang Laya gagal, pesan diteruskan: " tanpa sebab (`str(ReadTimeout)` kosong) -> jenis galat ikut ditulis.
 
 ### Yang tetap hanya ada di LangSmith
 

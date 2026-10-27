@@ -21,7 +21,7 @@ from scripts.hapus_data_uji import (
 
 class TestPolaAwalan:
     def test_awalan_biasa(self):
-        assert pola_awalan("jev-uji-") == "jev-uji-%"
+        assert pola_awalan("laya-uji-") == "laya-uji-%"
 
     @pytest.mark.parametrize(
         ("awalan", "pola"),
@@ -53,20 +53,20 @@ class TestArgumen:
 
     def test_semua_tidak_bisa_digabung(self):
         galat = periksa_argumen(
-            Target(semua=True, awalan=("jev-uji-",)), hapus=False, konfirmasi=None
+            Target(semua=True, awalan=("laya-uji-",)), hapus=False, konfirmasi=None
         )
         assert "tidak bisa digabung" in galat
 
     def test_target_sah(self):
-        target = Target(sesi=("82360357-f1af-4c88-b49b-9f71395ad4c2",), awalan=("jev-uji-",))
+        target = Target(sesi=("82360357-f1af-4c88-b49b-9f71395ad4c2",), awalan=("laya-uji-",))
         assert periksa_argumen(target, hapus=True, konfirmasi=None) is None
 
 
 class TestKondisi:
     def test_sesi_dan_awalan_jadi_parameter_bukan_teks_sql(self):
-        kondisi, params = Target(sesi=("s1",), awalan=("jev-uji-",)).kondisi()
-        assert "s1" not in kondisi and "jev" not in kondisi
-        assert params == {"sesi": ["s1"], "pola": ["jev-uji-%"]}
+        kondisi, params = Target(sesi=("s1",), awalan=("laya-uji-",)).kondisi()
+        assert "s1" not in kondisi and "laya" not in kondisi
+        assert params == {"sesi": ["s1"], "pola": ["laya-uji-%"]}
 
     def test_semua(self):
         assert Target(semua=True).kondisi() == ("TRUE", {})
@@ -95,7 +95,7 @@ class TestHapus:
         """FK `unanswered_questions.message_id` adalah ON DELETE SET NULL:
         percakapan dulu berarti entri AD-4 tertinggal tanpa induk."""
         sesi = SesiPalsu()
-        hasil = await hapus(sesi, Target(awalan=("jev-uji-",)), yatim=False)
+        hasil = await hapus(sesi, Target(awalan=("laya-uji-",)), yatim=False)
         assert sesi.sql[0].startswith("DELETE FROM unanswered_questions")
         assert sesi.sql[1].startswith("DELETE FROM conversations")
         assert len(sesi.sql) == 2
@@ -104,6 +104,6 @@ class TestHapus:
 
     async def test_yatim_hanya_bila_diminta(self):
         sesi = SesiPalsu()
-        hasil = await hapus(sesi, Target(awalan=("jev-uji-",)), yatim=True)
+        hasil = await hapus(sesi, Target(awalan=("laya-uji-",)), yatim=True)
         assert "message_id IS NULL" in sesi.sql[2]
         assert hasil["yatim"] == 3

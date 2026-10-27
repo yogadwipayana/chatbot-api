@@ -407,11 +407,11 @@ class TestUjiCoba:
         assert data["refusal_source"] is None
         assert data["llm_called"] is True
 
-    def test_memakai_gerbang_jev_seperti_chat_mahasiswa(
+    def test_memakai_gerbang_laya_seperti_chat_mahasiswa(
         self, make_client, strong_documents, admin_headers, api_llm
     ):
         """T14: "yang dilihat mahasiswa" harus sama dengan chat sungguhan --
-        pesan yang diblokir JEV di chat juga diblokir di sini."""
+        pesan yang diblokir Laya di chat juga diblokir di sini."""
         from app.rag.gate import REPLIES, GateLabel, GateVerdict
 
         async def gerbang(question, history=(), unit=None):
@@ -426,14 +426,14 @@ class TestUjiCoba:
             "confidence": 1.0,
             "blocked": True,
             "error": None,
-            "source": "jev",
+            "source": "laya",
         }
-        assert data["rejection_source"] == "jev"
+        assert data["rejection_source"] == "laya"
         assert data["decision"] is None
         assert data["retrieved"] == []
         assert api_llm.calls == []
 
-    def test_vonis_jev_yang_meloloskan_ikut_dilaporkan(
+    def test_vonis_laya_yang_meloloskan_ikut_dilaporkan(
         self, make_client, strong_documents, admin_headers
     ):
         from app.rag.gate import GateLabel, GateVerdict

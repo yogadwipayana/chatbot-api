@@ -182,7 +182,7 @@ class TestRingkasan:
             [
                 turn("t1", total_ms=1000),
                 turn("t2", total_ms=3000, status="error"),
-                turn("t3", total_ms=200, outcome="rejected", last_node="jev_gate"),
+                turn("t3", total_ms=200, outcome="rejected", last_node="laya_gate"),
                 turn("t4", total_ms=100, outcome="refusal", last_node="refuse"),
                 node("t1", "retrieve", 100),
                 node("t2", "retrieve", 300, status="error"),
@@ -194,7 +194,7 @@ class TestRingkasan:
         r = store.ringkasan(SEKARANG - timedelta(hours=1), SEKARANG, audit=True)
         assert r["turn_count"] == 4
         assert r["error_turn_count"] == 1 and r["error_ratio"] == 0.25
-        assert r["jev_blocked_count"] == 1 and r["jev_blocked_ratio"] == 0.25
+        assert r["laya_blocked_count"] == 1 and r["laya_blocked_ratio"] == 0.25
         assert r["error_log_count"] == 2
         # Urutan mengikuti graf, bukan abjad.
         assert [n["node"] for n in r["per_node"]] == ["sanitize", "retrieve"]
@@ -242,11 +242,11 @@ class TestDaftarGiliran:
         store.tulis(
             [
                 turn("t1"),
-                turn("t2", outcome="rejected", last_node="jev_gate"),
+                turn("t2", outcome="rejected", last_node="laya_gate"),
             ]
         )
         total, items = store.daftar_giliran(
-            SEKARANG - timedelta(hours=1), outcome="rejected", last_node="jev_gate"
+            SEKARANG - timedelta(hours=1), outcome="rejected", last_node="laya_gate"
         )
         assert total == 1 and items[0]["turn_id"] == "t2"
         assert {"timestamp", "outcome", "last_node"} <= items[0].keys()
@@ -288,7 +288,7 @@ class TestDaftarLog:
         store.tulis(
             [
                 log("app.main", "Tracing mati"),
-                log("app.rag.gate", "Gerbang JEV gagal", levelno=30),
+                log("app.rag.gate", "Gerbang Laya gagal", levelno=30),
                 log("app.routers.common", "100% gagal_total", levelno=40),
                 log("app.audit", "Akun a@b dihapus", levelno=30),
             ]
@@ -435,13 +435,13 @@ def test_saringan_aturan_diurutkan_sesudah_sapaan(store):
             node("t1", "generate", 5.0, position=4),
             node("t1", "rule_gate", 1.0, position=3),
             node("t1", "smalltalk", 1.0, position=2),
-            node("t1", "jev_gate", 1.0, position=5),
+            node("t1", "laya_gate", 1.0, position=5),
         ]
     )
     r = store.ringkasan(SEKARANG - timedelta(hours=1), SEKARANG, audit=True)
     assert [n["node"] for n in r["per_node"]] == [
         "smalltalk",
         "rule_gate",
-        "jev_gate",
+        "laya_gate",
         "generate",
     ]

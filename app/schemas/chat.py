@@ -18,7 +18,7 @@ Kotak pertanyaan portal membatasi 200 karakter, tetapi pertanyaan siap klik
 di menu topik adalah entri tanya jawab admin, yang boleh sampai 500
 (`FaqEntryCreate.question`). Di atas ini hanya pemanggil langsung --
 Postman, skrip -- yang dapat mengirim, dan setiap karakternya dibayar sebagai
-token di penulisan ulang, gerbang JEV, dan jawaban."""
+token di penulisan ulang, gerbang Laya, dan jawaban."""
 
 MAKS_KONTEN_RIWAYAT = 2000
 """Satu giliran riwayat dipotong sepanjang ini, bukan ditolak. Isinya hanya

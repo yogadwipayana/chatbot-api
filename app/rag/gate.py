@@ -1,7 +1,7 @@
-"""Gerbang semantik JEV (flow.md §5).
+"""Gerbang semantik Laya (flow.md §5).
 
-JEV (`typesafe/jev-1.13`, lewat OpenRouter Decisions API atau endpoint
-`/systemone` gateway yang meneruskannya) bukan LLM penghasil
+Laya (checkpoint hasil latih, dilayani `eval/laya/sajikan_laya.py` di
+`POST /v1/systemone`, docs/laya.md) adalah model keputusan, bukan LLM penghasil
 teks: ia menjawab pertanyaan bertipe dengan probabilitas. Di sini satu
 pertanyaan `choice` memilah pesan menjadi lima kategori sebelum pesan itu
 menyentuh embedding, retrieval, atau LLM.
@@ -22,7 +22,7 @@ diteruskan (fail-open). Pertanyaan akademik yang salah diblokir hilang tanpa
 jejak di AD-4, sedangkan pesan buruk yang lolos masih dihadang FR-3, delimiter
 FR-5, dan penanda `[DI_LUAR_TOPIK]` LLM penjawab.
 
-Dengan `JEV_ENABLED=false`, saringan aturan dan penanda itu menggantikan
+Dengan `LAYA_ENABLED=false`, saringan aturan dan penanda itu menggantikan
 gerbang ini (lihat `app.rag.rule_gate`).
 """
 
@@ -51,7 +51,7 @@ class GateLabel(StrEnum):
 class GateSource(StrEnum):
     """Siapa yang menjatuhkan vonis. Dicatat di `messages.meta.gate_source`."""
 
-    JEV = "jev"
+    LAYA = "laya"
     RULES = "rules"
     """Saringan aturan `app.rag.rule_gate`, tanpa model apa pun."""
     LLM = "llm"
@@ -72,11 +72,14 @@ INSTRUCTIONS = (
     "conversation only to understand short follow-up messages."
 )
 """Topik pilihan mahasiswa dan kalimat "even when it names a bank" adalah
-perbaikan T18. Tanpa keduanya JEV menilai "cara bayar VA BNI lewat SMS" sebagai
-urusan perbankan umum: 12 dari 76 panggilan untuk pertanyaan akademik diberi
-label `out_of_scope` dengan keyakinan sampai 0,75, dan sekali 0,93, sehingga
-terblokir. Dengan keduanya: 1 dari 76, paling tinggi 0,45 (uji 2026-09-29, 64
-pesan berlabel, masing-masing 2 kali, lihat `jev.md`)."""
+perbaikan T18. Tanpa keduanya model gerbang lama menilai "cara bayar VA BNI lewat
+SMS" sebagai urusan perbankan umum: 12 dari 76 panggilan untuk pertanyaan
+akademik diberi label `out_of_scope` dengan keyakinan sampai 0,75, dan sekali
+0,93, sehingga terblokir. Dengan keduanya: 1 dari 76, paling tinggi 0,45 (uji
+2026-09-29, 64 pesan berlabel, masing-masing 2 kali, lihat `docs/jev.md`).
+
+Laya dilatih dengan INSTRUCTIONS dan CRITERIA ini persis, jadi mengubah salah
+satunya berarti membangun ulang data dan melatih ulang Laya (laya.md)."""
 
 CRITERIA: dict[str, str] = {
     GateLabel.ACADEMIC: (
@@ -144,9 +147,9 @@ class GatePolicy:
     """Keyakinan minimum untuk nonsense, malicious, dan smalltalk. Pertanyaan
     akademik tidak pernah mendapat lebih dari 0,03 untuk ketiganya (uji
     2026-09-29), sedangkan pesan acak sungguhan bisa serendah 0,78."""
-    out_of_scope_threshold: float = 0.9
-    """Lebih ketat: pertanyaan akademik mendapat `out_of_scope` sampai 0,57,
-    pesan di luar topik sungguhan paling rendah 0,94. Yang lolos di bawah ambang
+    out_of_scope_threshold: float = 0.7
+    """Set kalibrasi Laya (laya.md A3): pesan akademik paling tinggi 0,49 untuk
+    `out_of_scope`, jadi 0,7 masih memberi jarak ±0,2. Yang lolos di bawah ambang
     ini masih ditandai LLM penjawab (`OFF_TOPIC_MARKER`)."""
     nonsense_threshold: float | None = None
     """None = `block_threshold`. Laya hasil latih memberi nonsense sampai 0,81
@@ -172,8 +175,8 @@ class GateVerdict:
     probabilities: dict[str, float] = field(default_factory=dict)
     cost_usd: float | None = None
     error: str | None = None
-    """Terisi bila JEV gagal dipanggil; saat itu pesan selalu diteruskan."""
-    source: GateSource = GateSource.JEV
+    """Terisi bila Laya gagal dipanggil; saat itu pesan selalu diteruskan."""
+    source: GateSource = GateSource.LAYA
 
     @property
     def reply(self) -> str:
@@ -218,8 +221,8 @@ def parse_response(data: Any, policy: GatePolicy) -> GateVerdict:
     entropi ternormalisasi (1 - H/log k), bukan probabilitas, sedangkan
     `answer_confidence` adalah probabilitas pilihan yang terkalibrasi. Dengan
     `confidence`, ambang 0,9 hanya memblokir 1 dari 9 pesan di luar topik yang
-    dilabeli benar (0,62-0,93 untuk p 0,75-0,98). JEV tidak mengirim
-    `answer_confidence`, jadi untuk JEV tidak ada yang berubah.
+    dilabeli benar (0,62-0,93 untuk p 0,75-0,98). Server yang tidak mengirim
+    `answer_confidence` tetap dinilai dengan `confidence`.
     """
     jawaban = data["answers"][QUESTION_KEY]
     label = GateLabel(jawaban["choice"])
@@ -240,7 +243,7 @@ def parse_response(data: Any, policy: GatePolicy) -> GateVerdict:
 
 
 def _jejak_masukan(inputs: dict) -> dict:
-    """Masukan run `jev_classify`: tanpa `self`, yang membawa kunci API."""
+    """Masukan run `laya_classify`: tanpa `self`, yang membawa kunci API."""
     return {
         "question": inputs.get("question"),
         "history": list(inputs.get("history") or ()),
@@ -259,11 +262,11 @@ def _jejak_keluaran(verdict: GateVerdict) -> dict:
     }
 
 
-class JevGate:
+class LayaGate:
     """`(pertanyaan, riwayat) -> GateVerdict`. Tidak pernah melempar galat.
 
-    Node `jev_gate` di graf memanggilnya; panggilan HTTP-nya sendiri tercatat
-    sebagai child run `jev_classify` di bawah node itu. Tanpa run ini trace
+    Node `laya_gate` di graf memanggilnya; panggilan HTTP-nya sendiri tercatat
+    sebagai child run `laya_classify` di bawah node itu. Tanpa run ini trace
     hanya memuat state sebelum dan sesudah node -- probabilitas per label, biaya,
     dan galat fail-open tidak terlihat, padahal justru itu yang dibutuhkan
     untuk mengkalibrasi ambang. Saat tracing mati `traceable` tidak mengirim apa pun.
@@ -284,15 +287,15 @@ class JevGate:
         self.model = model
         self.policy = policy
         self.grace_seconds = grace_seconds
-        """Dibaca node `jev_gate`: lama JEV masih ditunggu setelah pencarian
-        paralel selesai (`Settings.jev_grace_seconds`)."""
+        """Dibaca node `laya_gate`: lama Laya masih ditunggu setelah pencarian
+        paralel selesai (`Settings.laya_grace_seconds`)."""
         self._api_key = api_key
         self._timeout = timeout
         self._client = client
         """Disuntikkan di test (`httpx.AsyncClient` dengan MockTransport)."""
 
     @traceable(
-        name="jev_classify",
+        name="laya_classify",
         run_type="tool",
         process_inputs=_jejak_masukan,
         process_outputs=_jejak_keluaran,
@@ -328,14 +331,14 @@ class JevGate:
             # Jenisnya ikut ditulis: `str(httpx.ReadTimeout())` kosong, dan tanpa
             # jenis baris log ini berakhir di titik dua tanpa sebab (T57).
             logger.warning(
-                "Gerbang JEV gagal, pesan diteruskan: %s: %s", type(exc).__name__, exc
+                "Gerbang Laya gagal, pesan diteruskan: %s: %s", type(exc).__name__, exc
             )
             verdict = lolos(f"{type(exc).__name__}: {exc}"[:200])
-        # Rekaman tab Graf (`rekaman.py`): permintaan dan respons mentah JEV,
+        # Rekaman tab Graf (`rekaman.py`): permintaan dan respons mentah Laya,
         # tanpa header -- kuncinya tidak pernah ikut tercatat.
         await catat_panggilan(
-            jenis="jev",
-            nama="jev_classify",
+            jenis="laya",
+            nama="laya_classify",
             masukan=body,
             keluaran=jawaban,
             mulai=mulai,
@@ -344,19 +347,19 @@ class JevGate:
         return verdict
 
 
-def build_gate(settings: Any) -> JevGate | None:
-    """Gerbang sesuai JEV_ENABLED, atau None bila dimatikan."""
-    if not settings.jev_enabled:
+def build_gate(settings: Any) -> LayaGate | None:
+    """Gerbang sesuai LAYA_ENABLED, atau None bila dimatikan."""
+    if not settings.laya_enabled:
         return None
-    return JevGate(
-        url=settings.url_jev(),
-        api_key=settings.kunci_jev().get_secret_value(),
-        model=settings.jev_model,
+    return LayaGate(
+        url=settings.url_laya(),
+        api_key=settings.kunci_laya().get_secret_value(),
+        model=settings.laya_model,
         policy=GatePolicy(
-            block_threshold=settings.jev_block_threshold,
-            out_of_scope_threshold=settings.jev_out_of_scope_threshold,
-            nonsense_threshold=settings.jev_nonsense_threshold,
+            block_threshold=settings.laya_block_threshold,
+            out_of_scope_threshold=settings.laya_out_of_scope_threshold,
+            nonsense_threshold=settings.laya_nonsense_threshold,
         ),
-        timeout=settings.jev_timeout_seconds,
-        grace_seconds=settings.jev_grace_seconds,
+        timeout=settings.laya_timeout_seconds,
+        grace_seconds=settings.laya_grace_seconds,
     )
