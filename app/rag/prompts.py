@@ -120,7 +120,9 @@ USER_PROMPT = "{question}"
 TOOL_RULES = """\
 Anda juga dapat memanggil alat (tool) untuk mengambil data akademik resmi yang \
 mungkin tidak tercantum di KONTEKS, misalnya daftar dosen, dosen pengampu \
-mata kuliah, atau mata kuliah yang diampu seorang dosen. Aturan alat:
+mata kuliah, mata kuliah yang diampu seorang dosen, prasyarat dan daftar mata \
+kuliah kurikulum, serta data pribadi penanya (nilai, jadwal KRS, tagihan). \
+Aturan alat:
 T1. Bila menjawab pertanyaan membutuhkan data seperti itu dan KONTEKS belum \
 memuatnya, panggil alat yang sesuai lebih dahulu. Jangan membalas \
 [TIDAK_DITEMUKAN] sebelum mencoba alat yang relevan.
@@ -140,7 +142,13 @@ seperti biasa, lalu sebut nama yang tercatat di data.
 T7. Topik yang dipilih mahasiswa hanya membatasi dokumen resmi di KONTEKS; \
 data alat mencakup seluruh kampus. Untuk bagian yang dijawab atau dicari \
 dengan alat, jangan menulis bahwa pencarian hanya mencakup dokumen topik itu \
-dan jangan menyarankan mengganti topik."""
+dan jangan menyarankan mengganti topik.
+T8. Alat yang namanya berakhiran _saya selalu mengambil data pribadi mahasiswa \
+yang sedang bertanya; sistem sudah mengetahui identitasnya, jadi jangan meminta \
+NIM. Alat itu tidak dapat mengambil data mahasiswa lain: bila pertanyaan \
+menanyakan data mahasiswa lain (mis. menyebut NIM atau nama orang lain), jangan \
+menyajikan data penanya sebagai data orang itu; jelaskan bahwa hanya data milik \
+penanya sendiri yang dapat ditampilkan."""
 """Aturan tambahan untuk jalur tool-calling (docs/tool-call.md §9).
 
 Disisipkan sebelum blok KONTEKS pada `SYSTEM_PROMPT` lewat `TOOL_SYSTEM_PROMPT`,
@@ -163,7 +171,11 @@ mata kuliah tersebut sama" tanpa satu nama pun (T47, uji live 2026-10-07).
 T7 ada karena baris `TOPIK_AKTIF` juga dikirim ke loop tool, sehingga catatan
 topik aturan 3 ikut menempel di jawaban dari data SADS: "Pak Wayan" dijawab
 "ganti topik ke unit yang menangani data dosen", padahal SADS tidak dibatasi
-unit (T41, uji browser 2026-10-07)."""
+unit (T41, uji browser 2026-10-07).
+
+T8 ada karena tool data pribadi (`sads_mahasiswa`) tidak punya argumen NIM: NIM
+datang dari request. Tanpa T8, "berapa IPK NIM 2401010001?" dijawab dengan IPK
+penanya sendiri seolah-olah milik NIM itu (docs/tool-call.md §11)."""
 
 
 def _sisipkan_aturan_tool(system_prompt: str, aturan: str) -> str:

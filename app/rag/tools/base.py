@@ -14,6 +14,14 @@ from typing import Any
 from langchain_core.documents import Document
 
 from app.db.models import DocumentType
+from app.prodi import ProfilMahasiswa
+
+ARGUMEN_TERLARANG = frozenset({"nim", "penanya"})
+"""Nama argumen yang tidak boleh ada di skema tool mana pun.
+
+Identitas penanya datang dari request (`Penanya`), bukan dari model. Bila `nim`
+menjadi argumen, "berapa nilai NIM 2401010001?" cukup untuk membaca data
+mahasiswa lain lewat chat (docs/tool-call.md §11)."""
 
 MAKS_PANJANG_ARGUMEN = 200
 """Batas panjang nilai argumen string dari model sebelum diteruskan ke layanan.
@@ -24,6 +32,20 @@ beban atau panggilan tak terduga ke layanan hulu (docs/tool-call.md §11)."""
 
 class ToolArgumentError(ValueError):
     """Argumen dari model tidak memenuhi skema tool."""
+
+
+@dataclass(frozen=True)
+class Penanya:
+    """Mahasiswa yang sedang bertanya, menurut request -- bukan menurut model.
+
+    Diteruskan hanya ke handler ber-`pakai_penanya`. NIM-nya tidak pernah masuk
+    pesan ke LLM, `meta.tool_calls`, maupun log aplikasi (`app.prodi`): handler
+    memakainya untuk memanggil SADS, lalu membuangnya dari teks hasil."""
+
+    nim: str | None = None
+    """`ChatRequest.nim`. None di uji coba admin, yang tidak membawa NIM."""
+    profile: ProfilMahasiswa | None = None
+    """Prodi dan angkatan dari NIM, untuk bawaan saringan prodi."""
 
 
 @dataclass(frozen=True)
@@ -60,6 +82,9 @@ class ToolResult:
     attachments: tuple[Lampiran, ...] = ()
     """Daftar yang ditampilkan langsung ke mahasiswa; kosong = model menulis
     jawabannya sendiri dari `text`, seperti sebelum lampiran ada."""
+    galat: str = ""
+    """Alasan kegagalan untuk model, mis. "NIM penanya tidak terdaftar di SADS."
+    Kosong = alasan umum. Hanya dipakai bila `ok` False."""
 
     def pesan_untuk_model(self) -> str:
         """Isi pesan `role:"tool"` yang dibalikkan ke model.
@@ -72,7 +97,7 @@ class ToolResult:
         jawaban (aturan T5). Datanya tetap dikirim utuh: model masih butuh nama-
         namanya untuk menjawab, mis. "apakah Pak Totok dosen INSTIKI?"."""
         if not self.ok:
-            return "DATA_TIDAK_TERSEDIA: data tidak dapat diambil saat ini."
+            return f"DATA_TIDAK_TERSEDIA: {self.galat or 'data tidak dapat diambil saat ini.'}"
         kepala = f"(Kutip data berikut dengan menyalin penanda [{self.label}].)"
         if self.attachments:
             kepala += f"\n{CATATAN_LAMPIRAN}"
@@ -163,6 +188,16 @@ class ToolSpec:
     Pemicu tidak melihat unit pilihan mahasiswa: data SADS bersifat lintas-unit,
     dan kelayakan dihitung hanya dari teks pertanyaan (`ToolRegistry.eligible`)."""
     citation_label: str = ""
+    pakai_penanya: bool = False
+    """Handler menerima `penanya=Penanya(...)` dari request, di luar argumen model.
+
+    Untuk data pribadi (nilai, tagihan) dan bawaan saringan prodi. Model tidak
+    dapat mengisinya: `penanya` dan `nim` dilarang di `parameters`."""
+
+    def __post_init__(self) -> None:
+        terlarang = ARGUMEN_TERLARANG & set(self.parameters.get("properties", {}))
+        if terlarang:
+            raise ValueError(f"tool {self.name}: argumen {sorted(terlarang)} dilarang")
 
     def openai_schema(self) -> dict[str, Any]:
         return {

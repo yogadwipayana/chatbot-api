@@ -30,6 +30,7 @@ from app.rag.providers import PenyaringGalatGateway
 from app.rag.tools.base import (
     MAKS_PANJANG_ARGUMEN,
     Lampiran,
+    Penanya,
     ToolArgumentError,
     ToolResult,
     ToolSpec,
@@ -133,30 +134,42 @@ def _args_untuk_log(args: Any) -> dict[str, Any]:
     }
 
 
-async def _jalankan_tool(tc: dict, by_name: dict[str, ToolSpec]) -> ToolResult:
+async def _jalankan_tool(
+    tc: dict, by_name: dict[str, ToolSpec], penanya: Penanya | None
+) -> ToolResult:
     spec = by_name.get(tc.get("name", ""))
     if spec is None:
         return ToolResult(name=str(tc.get("name")), label="", text="", ok=False)
     try:
         args = validasi_argumen(spec, tc.get("args") or {})
+        if spec.pakai_penanya:
+            # Identitas dari request, di luar argumen model: model tidak bisa
+            # memilih NIM siapa yang diambil datanya (docs/tool-call.md §11).
+            return await spec.handler(**args, penanya=penanya or Penanya())
         return await spec.handler(**args)
     except ToolArgumentError as e:
         logger.warning("argumen tool %s tidak valid: %s", spec.name, e)
+    # Tanpa teks galatnya: pesan httpx memuat URL, dan URL endpoint data pribadi
+    # memuat NIM, yang tidak boleh masuk log aplikasi (`app.prodi`).
+    except httpx.HTTPStatusError as e:
+        logger.warning("tool %s: layanan membalas HTTP %s", spec.name, e.response.status_code)
     except httpx.HTTPError as e:
-        logger.warning("tool %s gagal memanggil layanan: %s", spec.name, e)
+        logger.warning("tool %s gagal memanggil layanan: %s", spec.name, type(e).__name__)
     except Exception:  # pragma: no cover - jaring pengaman, jangan jatuhkan giliran
         logger.exception("tool %s galat tak terduga", spec.name)
     return ToolResult(name=spec.name, label=spec.citation_label, text="", ok=False)
 
 
-async def _jalankan_terukur(tc: dict, by_name: dict[str, ToolSpec]) -> tuple[ToolResult, int]:
+async def _jalankan_terukur(
+    tc: dict, by_name: dict[str, ToolSpec], penanya: Penanya | None = None
+) -> tuple[ToolResult, int]:
     """`_jalankan_tool` beserta latensinya (ms) untuk `meta.tool_calls`.
 
     Juga tercatat sebagai panggilan di bawah node `generate` di tab Graf
     (`rekaman.py`): argumen dari model, dan teks yang dikembalikan ke model --
     persis yang dibaca model, termasuk sisipan `DAFTAR_DITAMPILKAN`."""
     mulai = time.perf_counter()
-    r = await _jalankan_tool(tc, by_name)
+    r = await _jalankan_tool(tc, by_name, penanya)
     latency_ms = round((time.perf_counter() - mulai) * 1000)
     await catat_panggilan(
         jenis="tool",
@@ -184,6 +197,7 @@ async def run_tool_loop(
     on_stage: OnStage | None = None,
     max_rounds: int = 2,
     buat_config: Callable[[], Any] | None = None,
+    penanya: Penanya | None = None,
 ) -> ToolLoopResult:
     """Jalankan loop. `llm_tools` sudah di-bind dengan skema tool; `llm_plain`
     tanpa tool, dipakai memaksa jawaban bila batas putaran tercapai.
@@ -191,7 +205,10 @@ async def run_tool_loop(
     `buat_config` dipanggil sekali per giliran LLM. Setiap giliran butuh `run_id`
     sendiri: LangSmith menolak run kedua dengan ID yang sama, sehingga satu
     config yang dipakai ulang membuat giliran sesudah tool -- yang berisi
-    jawabannya -- hilang dari trace."""
+    jawabannya -- hilang dari trace.
+
+    `penanya` hanya diteruskan ke tool ber-`pakai_penanya`; None = tanpa NIM
+    (uji coba admin), dan tool data pribadi membalas bahwa NIM tidak diketahui."""
     by_name = {s.name: s for s in specs}
     messages: list[Any] = [
         SystemMessage(content=TOOL_SYSTEM_PROMPT.format(context=format_context(documents))),
@@ -221,7 +238,7 @@ async def run_tool_loop(
         # Bersamaan, seperti FTS ∥ pgvector: setiap handler memakai klien HTTP
         # sendiri, dan `gather` mengembalikan hasil menurut urutan panggilan.
         keluaran = await asyncio.gather(
-            *(_jalankan_terukur(tc, by_name) for tc in dijalankan)
+            *(_jalankan_terukur(tc, by_name, penanya) for tc in dijalankan)
         )
         for tc, (r, latency_ms) in zip(dijalankan, keluaran, strict=True):
             jejak.append(

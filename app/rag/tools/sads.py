@@ -2,7 +2,8 @@
 
 Handler tipis: panggil endpoint, normalisasi (data SADS punya spasi & koma di
 ujung `nmdosen`), ratakan jadi teks ringkas. Menambah endpoint = menambah satu
-handler + satu `ToolSpec` di sini, lalu registry memungutnya (docs/tool-call.md §16).
+handler + satu `ToolSpec`, lalu daftarkan di `tool_specs` (docs/tool-call.md §16).
+Tool kurikulum ada di `sads_kurikulum`, tool data pribadi di `sads_mahasiswa`.
 """
 
 from __future__ import annotations
@@ -290,13 +291,25 @@ async def _mk_dosen(client: SadsClient, *, nama: str) -> ToolResult:
 
 
 def tool_specs(settings: Settings) -> list[ToolSpec]:
-    """Bangun ToolSpec SADS dengan handler yang sudah terikat ke satu klien."""
+    """Semua ToolSpec SADS, dengan handler yang terikat ke satu klien: dosen (di
+    sini), kurikulum (`sads_kurikulum`), dan data pribadi (`sads_mahasiswa`)."""
+    # Di dalam fungsi: kedua modul itu mengimpor `LABEL_SADS` dan `_bersih` dari sini.
+    from app.rag.tools import sads_kurikulum, sads_mahasiswa
+
     secret = settings.kunci_sads()
     client = SadsClient(
         base_url=settings.sads_base_url or "",
         secret=secret.get_secret_value() if secret else "",
         timeout=settings.sads_timeout_seconds,
     )
+    return [
+        *_spec_dosen(client),
+        *sads_kurikulum.tool_specs(client),
+        *sads_mahasiswa.tool_specs(client),
+    ]
+
+
+def _spec_dosen(client: SadsClient) -> list[ToolSpec]:
     return [
         ToolSpec(
             name="get_daftar_dosen",

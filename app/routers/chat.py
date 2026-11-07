@@ -135,6 +135,7 @@ async def chat(
                 callbacks=[giliran.recorder],
                 tool_registry=tool_registry,
                 tool_max_rounds=settings.tools_max_rounds,
+                nim=payload.nim,
             )
             akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
 
@@ -236,6 +237,7 @@ async def chat_stream(
                             callbacks=[giliran.recorder],
                             tool_registry=tool_registry,
                             tool_max_rounds=settings.tools_max_rounds,
+                            nim=payload.nim,
                         )
                         akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
 

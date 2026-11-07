@@ -70,6 +70,15 @@ class TestRegistry:
             "get_daftar_dosen",
             "get_mk_diampu_dosen",
             "get_mk_dosen",
+            "get_prasyarat_matkul",
+            "get_matkul_kurikulum",
+            "get_nilai_saya",
+            "get_jadwal_krs_saya",
+            "get_revisi_krs_saya",
+            "get_syarat_skripsi_saya",
+            "get_biaya_krs_saya",
+            "get_jadwal_pembayaran_saya",
+            "get_semester_aktif_saya",
         }
 
     def test_eligible_cocok_kata_kunci(self):
@@ -86,7 +95,9 @@ class TestRegistry:
         reg = _registry()
         assert reg.eligible("who teaches Web Programming?")
         assert reg.eligible("Who is the lecturer for Database?")
-        assert reg.eligible("how do I register for courses (KRS)?") == []
+        # Bukan pemicu "course": pertanyaan prosedur umum tidak masuk jalur tool.
+        # (Pertanyaan KRS kini eligible lewat tool jadwal KRS, 2026-11-07.)
+        assert reg.eligible("how do I get a new student card?") == []
 
     def test_eligible_membuka_semua_tool_bukan_hanya_yang_cocok(self):
         """Regresi: pemicu asimetris pernah menyembunyikan tool yang benar.
@@ -94,8 +105,10 @@ class TestRegistry:
         "ada berapa dosen?" hanya cocok pemicu `get_mk_diampu_dosen` (yang
         mewajibkan `matkul`). `get_daftar_dosen` -- satu-satunya tool yang bisa
         menjawabnya -- harus tetap ter-bind supaya model dapat memilihnya."""
-        names = {s.name for s in _registry().eligible("ada berapa dosen?")}
-        assert names == {"get_daftar_dosen", "get_mk_diampu_dosen", "get_mk_dosen"}
+        reg = _registry()
+        names = {s.name for s in reg.eligible("ada berapa dosen?")}
+        assert names == {s.name for s in reg.specs}
+        assert "get_daftar_dosen" in names
 
     def test_schema_openai_berbentuk_benar(self):
         fn = _registry().get("get_mk_diampu_dosen").openai_schema()
@@ -606,13 +619,23 @@ class ToolLLM(RecordingLLM):
         self.tool_calls_made = 0
         self.last_wrapped: str | None = None
         self.last_specs: list[Any] = []
+        self.last_penanya: Any = None
 
     async def run_tools(
-        self, wrapped, documents, *, specs, on_token=None, on_stage=None, max_rounds=2
+        self,
+        wrapped,
+        documents,
+        *,
+        specs,
+        on_token=None,
+        on_stage=None,
+        max_rounds=2,
+        penanya=None,
     ):
         self.tool_calls_made += 1
         self.last_wrapped = wrapped
         self.last_specs = list(specs)
+        self.last_penanya = penanya
         self.usage = {"total_tokens": 5}
         return self._answer, list(self._docs)
 

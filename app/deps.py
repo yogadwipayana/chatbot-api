@@ -595,8 +595,12 @@ class LLMCall:
         on_token: Any = None,
         on_stage: Any = None,
         max_rounds: int = 2,
+        penanya: Any = None,
     ) -> tuple[str, list[Any]]:
         """Loop agentik tool-calling (docs/tool-call.md §5, §9).
+
+        `penanya` (`app.rag.tools.base.Penanya`) membawa NIM dari request ke tool
+        data pribadi, di luar pesan ke LLM.
 
         Mengembalikan (jawaban_utuh, dokumen_sumber_tool) dan mencatat `usage`
         gabungan semua giliran LLM ke `self.usage`, sama seperti `__call__`,
@@ -621,6 +625,7 @@ class LLMCall:
             # Pabriknya, bukan satu hasil: tiap giliran LLM dalam loop butuh
             # run_id sendiri. `self.run_id` berakhir pada giliran jawaban.
             buat_config=self._config,
+            penanya=penanya,
         )
         self.usage = result.usage
         self.tool_calls = result.tool_calls

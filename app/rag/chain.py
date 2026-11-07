@@ -184,6 +184,7 @@ async def run_pipeline(
     callbacks: Sequence[Any] = (),
     tool_registry: Any = None,
     tool_max_rounds: int = 2,
+    nim: str | None = None,
 ) -> PipelineOutcome:
     """Jalankan satu putaran tanya-jawab lewat graf `app.rag.graph`.
 
@@ -212,6 +213,9 @@ async def run_pipeline(
             (docs/tool-call.md). Dipakai sebagai gerbang kelayakan sebelum FR-3
             dan di `generate`.
         tool_max_rounds: batas putaran loop agentik tool.
+        nim: NIM penanya, hanya untuk tool data pribadi (docs/tool-call.md §11).
+            Dibawa `PipelineDeps`, bukan state graf, supaya tidak ikut terekam
+            sebagai masukan node atau trace. None = tanpa NIM (uji coba admin).
 
     `llm_call`, `rewrite_call`, dan `gate_call` disuntikkan agar test dapat
     membuktikan kapan layanan luar dipanggil dan kapan tidak, tanpa memanggil
@@ -229,6 +233,7 @@ async def run_pipeline(
         on_stage=on_stage,
         tool_registry=tool_registry,
         tool_max_rounds=tool_max_rounds,
+        nim=nim,
     )
     return await run_graph(
         question,

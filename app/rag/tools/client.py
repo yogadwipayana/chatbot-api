@@ -32,6 +32,11 @@ class SadsClient:
         self._transport = transport
         """Disuntikkan di test (`httpx.MockTransport`); None = jaringan sungguhan."""
 
+    @property
+    def base_url(self) -> str:
+        """Kunci cache data publik (`sads_kurikulum`); rahasia tidak ikut."""
+        return self._base
+
     async def get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
         headers = {
             "secret": self._secret,

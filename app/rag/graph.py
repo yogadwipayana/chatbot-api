@@ -76,6 +76,7 @@ from app.rag.gate import GateLabel, GateVerdict, lolos
 from app.rag.prompts import pesan_mahasiswa
 from app.rag.rewriter import HISTORY_WINDOW, Turn, format_history, needs_rewrite
 from app.rag.threshold import Decision, ThresholdDecision, ThresholdPolicy, evaluate
+from app.rag.tools.base import Penanya
 from app.security.sanitize import sanitize_question, wrap_user_input
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,10 @@ class PipelineDeps:
     """Registry tool-calling, atau None bila TOOLS_ENABLED=false (docs/tool-call.md).
     Dipakai sebagai gerbang kelayakan di `validate_context` dan di `generate`."""
     tool_max_rounds: int = 2
+    nim: str | None = None
+    """NIM penanya untuk tool data pribadi. Di sini, bukan di `PipelineState`:
+    state terekam sebagai masukan/keluaran node (tab Graf, LangSmith), dan NIM
+    tidak boleh ikut (`app.prodi`)."""
 
 
 class PipelineState(TypedDict, total=False):
@@ -437,6 +442,7 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
             on_token=deps.on_token,
             on_stage=deps.on_stage,
             max_rounds=deps.tool_max_rounds,
+            penanya=Penanya(nim=deps.nim, profile=state.get("profile")),
         )
         documents = [*documents, *tool_docs]
         lampiran = list(getattr(deps.llm_call, "attachments", None) or [])

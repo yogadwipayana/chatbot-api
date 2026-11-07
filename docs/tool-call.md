@@ -8,10 +8,16 @@ boleh **meminta data terstruktur yang segar** lewat API yang terdaftar.
 > **Status: terimplementasi, AKTIF di `.env` lokal (`TOOLS_ENABLED=true`).**
 > Bawaan kodenya tetap mati. Modulnya di `app/rag/tools/`, terintegrasi di
 > `app/rag/graph.py` (`validate_context`, `route_context`, `generate`). Diuji
-> `tests/unit/test_tools.py` dan diverifikasi live lewat `POST /api/chat` dengan
+> `tests/unit/test_tools*.py` dan diverifikasi live lewat `POST /api/chat` dengan
 > seluruh komponen asli: retriever (dev DB), Laya, rewrite, LLM, dan SADS (§18).
 > Untuk produksi, set `TOOLS_ENABLED=true`, `SADS_BASE_URL`, dan
 > `SADS_API_SECRET` di env server.
+>
+> **12 tool** (2026-11-07): 3 dosen, 2 kurikulum (prasyarat, mata kuliah per
+> semester), dan 7 data pribadi penanya (nilai, jadwal KRS, revisi KRS, syarat
+> skripsi, biaya KRS, pembayaran, semester aktif), sesuai `api-chatbot.md` di
+> root proyek. Tool data pribadi memakai NIM dari request, **yang belum
+> diverifikasi**; risikonya diterima untuk dev/staging (§11).
 
 Nama berkas di dalam `( )` relatif terhadap `api/`.
 
@@ -116,7 +122,8 @@ Gerbang lain tidak berubah:
 |---|---|---|
 | Spesifikasi & primitif | `ToolSpec`, `ToolResult`, validasi argumen, kartu sitasi | `app/rag/tools/base.py` |
 | Registry | Daftar tool + gerbang kelayakan `eligible()` | `app/rag/tools/registry.py` |
-| Handler SADS | Panggil endpoint SADS, normalisasi, hitung jumlah | `app/rag/tools/sads.py` |
+| Handler SADS | Panggil endpoint SADS, normalisasi, hitung jumlah | `app/rag/tools/sads.py` (dosen, `tool_specs` gabungan), `sads_kurikulum.py` (prasyarat, mata kuliah per semester, cache kurikulum), `sads_mahasiswa.py` (data pribadi) |
+| Identitas penanya | `Penanya(nim, profile)` dari request ke tool ber-`pakai_penanya`, di luar argumen model | `app/rag/tools/base.py`, `PipelineDeps.nim` di `app/rag/graph.py`, `run_pipeline(nim=…)` |
 | Klien HTTP | `httpx.AsyncClient`, header `secret`, timeout, `transport` untuk test | `app/rag/tools/client.py` |
 | Loop agentik | LLM ↔ tool, eksekusi paralel, batas, streaming | `app/rag/tools/loop.py` |
 | Binding ke LLM | `build_llm(...).bind(tools=…, tool_choice="auto")` | `app/deps.py` (`LLMCall.run_tools`) |
@@ -183,6 +190,7 @@ class ToolSpec:
     handler: Callable[..., Awaitable[ToolResult]]
     triggers: tuple[str, ...]      # kata kunci gerbang kelayakan (§8)
     citation_label: str            # "Data akademik SADS"
+    pakai_penanya: bool = False    # handler menerima penanya=Penanya(...) (§11)
 
 @dataclass(frozen=True)
 class ToolResult:
@@ -191,6 +199,12 @@ class ToolResult:
     text: str                      # teks ternormalisasi untuk model
     ok: bool = True
     attachments: tuple[Lampiran, ...] = ()   # daftar untuk widget (§10a)
+    galat: str = ""                # alasan DATA_TIDAK_TERSEDIA; kosong = umum
+
+@dataclass(frozen=True)
+class Penanya:                     # dari request, bukan dari model
+    nim: str | None = None         # None di uji coba admin
+    profile: ProfilMahasiswa | None = None
 
 @dataclass(frozen=True)
 class Lampiran:
@@ -203,9 +217,10 @@ class Lampiran:
 `ToolResult.pesan_untuk_model()` membentuk isi pesan `role:"tool"`. Bila
 berhasil, isinya `(Kutip data berikut dengan menyalin penanda [label].)` diikuti
 datanya; hasil berlampiran mendapat sisipan `DAFTAR_DITAMPILKAN` (§10a). Bila
-gagal, isinya `DATA_TIDAK_TERSEDIA: …`. Skema `parameters` adalah
-satu-satunya kontrak argumen; `validasi_argumen` menegakkannya sebelum handler
-dipanggil.
+gagal, isinya `DATA_TIDAK_TERSEDIA: …` dengan `galat` bila ada. Skema
+`parameters` adalah satu-satunya kontrak argumen; `validasi_argumen`
+menegakkannya sebelum handler dipanggil. Argumen bernama `nim` atau `penanya`
+ditolak saat `ToolSpec` dibuat (`ARGUMEN_TERLARANG`, §11).
 
 `ToolSpec` sengaja tidak punya field unit. Kelayakan tool tidak bergantung pada
 unit pilihan mahasiswa (§8).
@@ -300,6 +315,94 @@ Bearer dan bukan query param (terverifikasi 2026-10-06). Base dari
 > tidak seperti retrieval yang mengambil top-k. Pertanyaan "sebutkan **semua**
 > dosen mata kuliah X" karena itu terjawab lengkap.
 
+### Kurikulum (`app/rag/tools/sads_kurikulum.py`)
+
+Data publik. Respons `daftar-matkul-kurikulum` di-cache di proses selama
+`TTL_KURIKULUM` (30 menit), dengan kunci (base URL, semester, kurikulum_id).
+Data pribadi tidak pernah di-cache.
+
+Temuan data SADS yang membentuk handler ini (uji 2026-11-07):
+
+- **Kurikulum aktif saja.** Tanpa `kurikulum_id`, SADS hanya mengembalikan
+  kurikulum aktif. "Kurikulum 2022 Informatika" (id 2) **tidak aktif**,
+  padahal ke-30 mata kuliah mahasiswa IF angkatan 2024 yang diuji tercatat di
+  sana dan tidak satu pun di kurikulum aktif. Kurikulum 2022 prodi lain (RSK,
+  DKV, BD) aktif. `KURIKULUM_TAMBAHAN = (2,)` ikut ditanyakan; hapus begitu SADS
+  menandainya aktif.
+- **Satu kurikulum, banyak rumpun kode.** Kurikulum 2022 Informatika berisi
+  rumpun BIF, BTI, TIW, MKB, MKK, dan lain-lain (566 baris): semester 5 saja
+  110 mata kuliah, "Kerja Praktik" tercatat 6 kali. Rumpun = awalan kode tanpa
+  huruf jenis di ujung (`rumpun_kode`: BIFW, BIFP, BIFN → BIF).
+- **Kode prodi berbeda.** Prodi dari NIM dipetakan ke `prodi_kode` SADS
+  (`KODE_PRODI_SADS`): IF, RSK, **SK** (DKV), BD, MI. Saringan `prodi` milik
+  SADS tidak dipakai karena mencocokkan potongan nama ("TI" juga mengembalikan
+  Magister Informatika).
+- Semester 0 ada (mata kuliah tanpa semester tetap) dan ikut dicari menurut
+  nama, tetapi argumen `semester` hanya 1–8.
+
+**Kurikulum penanya** (`jejak_penanya`): bila penanya punya NIM dan nilai,
+kurikulumnya adalah kurikulum yang memuat paling banyak kode mata kuliah yang
+sudah ditempuhnya, dan rumpunnya rumpun kode terbanyak. Kedua tool kurikulum
+lalu menyaring ke keduanya dan menulis keterangan "Disaring ke kurikulum
+penanya sendiri: …". Tanpa NIM, tanpa nilai, atau SADS gagal: saringan prodi
+saja, tanpa galat.
+
+#### `get_prasyarat_matkul`
+- `GET /service/tp/chatbot/prasyarat-matkul/{kdmk}`. Argumen `matkul` (wajib):
+  nama atau kode.
+- Kode berpola `ABCD-123` langsung dipakai (di-escape ke path). Teks lain
+  dicari sebagai nama di seluruh semester 0–8: nama persis dulu, lalu potongan
+  nama; prodi penanya diutamakan; lebih dari satu calon disaring ke kurikulum
+  penanya. Lebih dari `MAKS_PRASYARAT_DIRINCI` (3) calon: hanya nama-namanya.
+  0 calon: `ok=True`, "0 mata kuliah" (model diminta mencoba nama Inggris lewat
+  `description`).
+- Baris SADS per `kdjur` (konsentrasi) yang isinya sama digabung menjadi satu
+  blok "Berlaku untuk jurusan/konsentrasi IF-AI, IF-GD, IF-MDA".
+- **`kelompok`**: kelompok 2 ditulis sebagai *alternatif kelompok 1, umumnya
+  mata kuliah padanan dari kurikulum lama*. Dari 144 sampel berkelompok dua,
+  isinya padanan ("Mathematics" / "Matematika 1") atau syarat SKS. Apakah semua
+  baris dalam SATU kelompok wajib dipenuhi **tidak** dinyatakan, karena kelompok
+  2 "Basis Data Lanjut" berisi dua kode "Basis Data" lama. **Belum dikonfirmasi
+  pengembang SADS.**
+
+#### `get_matkul_kurikulum`
+- `GET /service/tp/chatbot/daftar-matkul-kurikulum/{smtrke}`. Argumen
+  `semester` (integer 1–8, wajib) dan `prodi` (opsional). Semester divalidasi
+  ketat sebelum masuk path.
+- Tanpa `prodi`, atau `prodi` = prodi penanya sendiri (model sering mengisinya
+  dari baris profil): kurikulum penanya. `prodi` lain: seluruh kurikulum prodi
+  itu.
+- Per kurikulum: jumlah mata kuliah dan SKS (wajib, pilihan/lainnya) dihitung
+  handler, daftar `kode nama (SKS, status)`, dan satu **lampiran** per kurikulum.
+
+### Data pribadi (`app/rag/tools/sads_mahasiswa.py`)
+
+Tujuh tool tanpa argumen, semuanya `pakai_penanya`. Path
+`/service/tp/chatbot/{endpoint}/{nim}` dengan NIM dari `Penanya`, divalidasi
+`POLA_NIM`. Teks untuk model diawali "Data pribadi milik mahasiswa yang sedang
+bertanya" dan satu baris profil dari blok `mahasiswa` (status, prodi/konsentrasi,
+angkatan, kelas) **tanpa NIM dan nama**. `nokrs` dan `kode_status_krs` juga
+tidak dikirim. Tanggal ditulis "12 September 2026 pukul 21.00" beserta selisih
+hari dari tanggal kampus (WITA), dan rupiah "Rp5.185.000"; keduanya dihitung
+handler.
+
+| Tool | Endpoint | Isi yang dihitung handler |
+|---|---|---|
+| `get_nilai_saya` | `krs-mahasiswa` | jumlah mata kuliah dan SKS, **IPK** (Σ bobot × SKS / Σ SKS; `hide`=1 dibuang, mata kuliah ulang dihitung nilai terbaik), sebaran nilai huruf, SKS wajib/pilihan lulus vs minimal dan total kekurangannya; lampiran "Daftar nilai" |
+| `get_jadwal_krs_saya` | `jadwal-krs` | periode, buka/tutup + selisih hari, status SADS, masih bisa mengisi |
+| `get_revisi_krs_saya` | `revisi-krs` | seperti di atas + `jenis_jadwal`, `keterangan` |
+| `get_syarat_skripsi_saya` | `syarat-skripsi` | minimal SKS, mata kuliah metodologi yang diakui (tanpa duplikat), SKS lulus + kekurangannya, kelayakan, keterangan SADS |
+| `get_biaya_krs_saya` | `biaya-krs` | tarif komponen, tagihan (total/terbayar/sisa/status); `tagihan_krs` null = belum punya KRS |
+| `get_jadwal_pembayaran_saya` | `jadwal-pembayaran` | dibuka, batas + selisih hari, tagihan aktif, jumlah dan total sisa tunggakan, boleh mengisi KRS |
+| `get_semester_aktif_saya` | `semester-aktif` | periode, tahun akademik, ganjil/genap, semester ke-, tanggal kuliah, jadwal KRS |
+
+IPK tidak disediakan SADS. Rumusnya standar dan cocok dengan data uji (30 mata
+kuliah, 3,85), tetapi transkrip resmi tetap acuan. Nilai per semester (IPS)
+tidak ada di endpoint ini.
+
+`kode_mk_penanya` (kode mata kuliah bernilai, untuk `jejak_penanya`) memakai
+endpoint `krs-mahasiswa` yang sama; kegagalannya diabaikan.
+
 ---
 
 ## 8. Gerbang kelayakan & FR-3
@@ -329,6 +432,13 @@ tool_eligible = ADA ToolSpec yang `triggers`-nya cocok (substring, tanpa beda
 - **Seluruh tool di-bind.** Pemicu yang tidak simetris pernah menyembunyikan tool
   yang benar: "ada berapa dosen?" hanya cocok dengan pemicu `get_mk_diampu_dosen`,
   yang mewajibkan `matkul`.
+- **Pemicu tool data pribadi sengaja lebar** (`krs`, `nilai`, `sks`, `bayar`,
+  `tagihan`, `semester`, `skripsi`, …). Akibatnya banyak pertanyaan dokumen
+  ("bagaimana cara mengisi KRS?") kini tool-eligible: seluruh tool di-bind dan
+  FR-3 boleh dilewati bila konteks lemah. Uji live 2026-11-07: pertanyaan
+  prosedur seperti itu tetap dijawab dari dokumen tanpa memanggil tool. Pemicu
+  substring juga cocok dengan kata lain ("sks" di "tasks", "grade" di
+  "upgrade"); dampaknya hanya tool ikut di-bind.
 - **Tidak melihat unit pilihan.** Data SADS bersifat lintas-unit. Unit tetap
   memfilter retrieval RAG dan tetap diberitahukan ke LLM lewat baris
   `TOPIK_AKTIF`. Aturan T7 menegaskan bahwa topik tidak membatasi data alat:
@@ -477,6 +587,36 @@ Batasan:
   bila `TOOLS_ENABLED=true` tetapi `SADS_BASE_URL` atau `SADS_API_SECRET` kosong.
 - **Batas beban.** Timeout `SADS_TIMEOUT_SECONDS` per panggilan, maksimal 4 tool
   per giliran, dan `TOOLS_MAX_ROUNDS` putaran.
+- **Argumen path.** Semester hanya angka 1–8; kode mata kuliah hanya pola
+  `ABCD-123` dan di-escape; NIM hanya `POLA_NIM` dari request. Teks lain dari
+  model tidak pernah masuk path.
+
+### Data pribadi dan NIM
+
+- **NIM dari request, bukan dari model.** Tool data pribadi tidak punya argumen;
+  `ToolSpec` menolak argumen bernama `nim` atau `penanya`, `validasi_argumen`
+  membuang argumen tak dikenal, dan loop menambahkan `penanya=` dari request
+  hanya untuk tool ber-`pakai_penanya`. Jadi "berapa IPK NIM 2401010001?"
+  tetap mengambil data penanya sendiri, dan aturan T8 membuat model menjawab
+  bahwa hanya data penanya yang dapat ditampilkan (uji live: benar).
+- **NIM tidak ke LLM, trace, atau log.** `ChatRequest.nim` dibawa
+  `PipelineDeps.nim` (bukan `PipelineState`, yang terekam sebagai masukan node),
+  dan teks hasil tool tidak memuat NIM maupun nama. Galat httpx tidak dicatat
+  isinya karena URL-nya memuat NIM; log hanya "HTTP 500" atau nama kelas galat.
+- **Uji coba admin** tidak membawa NIM, jadi tool data pribadi membalas
+  `DATA_TIDAK_TERSEDIA: NIM penanya tidak diketahui…` tanpa memanggil SADS.
+- **NIM belum diverifikasi (RISIKO DITERIMA).** `embed.js` membaca NIM dari
+  localStorage SADS, portal contoh menerima NIM 10 digit apa pun, dan `POST
+  /api/chat` memercayai NIM yang dikirim. Siapa pun yang memanggil API dengan NIM
+  orang lain dapat membaca nilai, tagihan, dan status KRS orang itu. Pengguna
+  memilih "buat semua, langsung aktif" untuk dev/staging pada 2026-11-07.
+  Sebelum produksi kampus perlu identitas terverifikasi, mis. token bertanda
+  tangan dari SADS yang memuat NIM, diperiksa API sebelum `nim` dipakai.
+- **Ke mana data pribadi mengalir.** Hasil tool (nilai, tagihan) masuk pesan ke
+  gateway LLM, trace LangSmith (risiko H10 diterima), tab Graf (`traces`,
+  `rekaman.catat_panggilan`), dan `messages.meta.attachments` untuk daftar
+  nilai. Sesuai H9 (NIM dan teks disimpan permanen atas permintaan kampus),
+  tidak ada retensi khusus.
 
 ---
 
@@ -494,6 +634,11 @@ Batasan:
 | Giliran final tanpa teks | diganti `[TIDAK_DITEMUKAN]` → penolakan resmi beserta kontak, bukan `answer` kosong |
 | Gateway menyisipkan `[Error]` | `GalatGateway` dilempar, giliran gagal dan tidak ada jawaban yang disimpan (seperti jalur biasa) |
 | Tool tak dapat dijalankan, konteks lemah | penolakan FR-3 tanpa LLM (`refusal_source = threshold`) |
+| Tool data pribadi tanpa NIM (uji coba admin) | `DATA_TIDAK_TERSEDIA: NIM penanya tidak diketahui…`, SADS tidak dipanggil |
+| NIM tidak terdaftar (SADS 404 `Mahasiswa Tidak Ditemukan`) | `DATA_TIDAK_TERSEDIA: NIM penanya tidak terdaftar sebagai mahasiswa di SADS.` |
+| SADS 500 (mis. `jadwal-krs`, §18) | `DATA_TIDAK_TERSEDIA` umum; uji live: model menjawab dari Kalender Akademik dan menyebut jadwal khususnya tidak dapat ditampilkan |
+| `semester` di luar 1–8 | `DATA_TIDAK_TERSEDIA: semester harus angka 1 sampai 8.`, SADS tidak dipanggil |
+| Prasyarat: 0 calon / lebih dari 3 calon | `ok=True`, "0 mata kuliah" / hanya nama-nama calon |
 
 Prinsipnya sama seperti gerbang Laya: **tool memperkaya, bukan syarat
 menjawab.** Kegagalan tool tidak boleh memunculkan jawaban ngawur.
@@ -591,6 +736,24 @@ Polanya mengikuti `LAYA_*`: fitur di belakang sakelar, bawaan mati, nilai di
   dirinci + dihitung + berlampiran, sapaan dan gelar dibuang, nama umum hanya
   nama-nama, beberapa dosen tanpa lampiran, 0 hasil tetap `ok`, SADS kosong
   gagal, pemicu Indonesia/Inggris.
+
+`tests/unit/test_tools_kurikulum.py`: rumpun kode, pemetaan prodi SADS, jumlah
+dan lampiran per kurikulum, prodi eksplisit vs profil, semester tidak sah tanpa
+memanggil SADS, kurikulum tambahan (id 2) ikut ditanyakan, saringan kurikulum
+penanya (juga bila `prodi` = prodi penanya), cache, prasyarat per kode/nama,
+konsentrasi digabung atau dipisah, kelompok alternatif, terlalu banyak calon,
+0 calon, saringan rumpun "Kerja Praktik".
+
+`tests/unit/test_tools_mahasiswa.py`: tidak ada skema berargumen `nim`,
+`ToolSpec` menolaknya, NIM dari `Penanya` masuk path dan NIM dari model
+diabaikan loop, tanpa NIM tidak memanggil SADS, 404, galat 500 tercatat tanpa
+NIM, teks tanpa NIM dan nama, T8 di prompt, `run_pipeline(nim=…)` sampai ke
+`run_tools`, IPK/sebaran/sisa SKS, `hide` dan nilai ulang, tanggal dan selisih
+hari, revisi, semester aktif, skripsi, biaya, tunggakan, dan pemicu.
+
+`tests/api/conftest.py` mematikan registry tool (`build_tool_registry` → None),
+seperti gerbang Laya: tanpa itu `TOOLS_ENABLED=true` di `.env` lokal membuat
+pemicu "krs" mengubah rute pertanyaan contoh `kapan pengisian KRS dibuka?`.
 
 Yang **tidak** diuji otomatis: ketahanan model terhadap instruksi yang disisipkan
 di hasil tool. Itu perilaku model, dan pertahanannya ada di aturan T2 + aturan 5.
@@ -750,6 +913,52 @@ Kecerdasan Buatan → jawaban ringkas + kotak "1–10 dari 35"; "programming" �
 kotak. Pada uji widget itu model tidak menulis satu pun nama mata kuliah,
 sehingga kelima kotak tampil lewat jalur "tidak ada yang tertulis".
 
+### Kurikulum dan data pribadi (2026-11-07)
+
+Sembilan endpoint dari `api-chatbot.md` (root proyek) ditambahkan sebagai
+tool (§7). Semua endpoint hidup; tujuh endpoint NIM membalas 404 `{"msg":
+"Mahasiswa Tidak Ditemukan"}` untuk NIM palsu. Uji live `POST /api/chat`
+dengan retriever (dev DB, Tailscale lewat DERP), Laya, rewrite, LLM, dan SADS
+asli, satu NIM mahasiswa IF angkatan 2024 atas izin pemiliknya; hanya pencatat
+percakapan yang diganti.
+
+| Pertanyaan | Tool | Hasil |
+|---|---|---|
+| berapa IPK saya? / what is my GPA? | `get_nilai_saya` | "3,85", lampiran 30 nilai (cocok dengan hitungan manual) |
+| berapa SKS lagi yang harus saya ambil supaya bisa lulus? | `get_nilai_saya` | "60 SKS: 51 wajib dan 9 pilihan" |
+| apakah saya sudah bisa mengajukan seminar proposal? | `get_syarat_skripsi_saya` | "belum": 84 dari 100 SKS, metodologi belum lulus |
+| berapa tagihan KRS saya semester ini? sudah lunas belum? | `get_biaya_krs_saya` | Rp5.185.000, lunas |
+| apakah saya punya tunggakan pembayaran? | `get_jadwal_pembayaran_saya` | tidak ada |
+| kapan jadwal pengisian KRS saya? | `get_jadwal_krs_saya` (SADS 500) | jadwal pribadi "tidak dapat ditampilkan", lalu jadwal umum dari Kalender Akademik |
+| apa prasyarat mata kuliah Kerja Praktik? | `get_prasyarat_matkul` | BIFW-063 (kurikulum penanya): minimal 80 SKS |
+| syarat ambil Basis Data Lanjut apa? | `get_prasyarat_matkul` | Basis Data (BIFW-004), alternatif BTIW-004 / MKK-204 |
+| mata kuliah semester 5 apa saja? | `get_matkul_kurikulum` | 17 mata kuliah, 46 SKS, Kurikulum 2022 Informatika (sebelum perbaikan `prodi` = prodi penanya: 110 mata kuliah) |
+| mata kuliah semester 3 prodi DKV apa saja? | `get_matkul_kurikulum` | dua kurikulum DKV, masing-masing 9 mata kuliah, 23 SKS |
+| berapa IPK mahasiswa dengan NIM 2401010001? | `get_nilai_saya` (NIM request) | "hanya dapat menampilkan data milik Anda sendiri", lalu IPK penanya sebagai milik penanya |
+| siapa dosen pengampu Basis Data? | `get_mk_diampu_dosen` | 10 nama, tidak berubah |
+| bagaimana cara mengisi KRS? | (tidak ada) | dijawab dari Panduan KRS walau kini tool-eligible |
+
+Token masukan pertanyaan ber-tool kini sekitar 15–18 ribu (dua giliran LLM),
+naik dari 7–8 ribu pada 2026-10-07. Sebagian karena skema 12 tool (~7 KB, ~2
+ribu token per giliran), sebagian karena konteks retrieval yang lebih panjang
+sejak Oktober. Pertanyaan pertama yang mencari prasyarat menurut nama butuh
+5–7 dtk untuk membangun indeks 18 permintaan; berikutnya dari cache.
+
+Temuan di sisi SADS (perlu disampaikan ke pengembang SADS):
+
+1. **`jadwal-krs`, `revisi-krs`, dan `semester-aktif` selalu HTTP 500** untuk
+   NIM yang terdaftar: `BadMethodCallException: Method betweenIncluded does not
+   exist` di `ChatBotController.php` baris 410 (`jadwalKrsData`). Versi Carbon
+   SADS belum punya `betweenIncluded`; padanannya `between($a, $b, true)`.
+2. **Halaman galat SADS menampilkan stack trace** (nama berkas, baris, argumen),
+   artinya mode debug aktif di server produksi SADS.
+3. **Kurikulum 2022 Informatika tidak aktif** walau masih dipakai angkatan IF
+   lama (§7); kurikulum 2022 prodi lain aktif.
+4. **Arti `kelompok` prasyarat** belum terdokumentasi (§7).
+5. Contoh NIM di `api-chatbot.md` (`21104075`) 8 digit, sedangkan widget
+   mewajibkan 10 digit (`POLA_NIM`). Bila NIM lama 8 digit masih ada, mahasiswa
+   itu tidak dapat memakai chatbot sama sekali.
+
 ### Masih terbuka (sengaja tidak diubah tanpa keputusan)
 
 1. **`eval/run_generation.py` tidak memakai tool.** RAGAS melihat `refusal` untuk
@@ -766,7 +975,8 @@ sehingga kelima kotak tampil lewat jalur "tidak ada yang tertulis".
    `out_of_scope` menyebut "general coding or technology help". Keempat uji live
    lolos, tetapi "who teaches Web Programming?" hanya mendapat 0,49. Mengubah
    kriterianya berarti membangun ulang data dan melatih ulang Laya (`laya.md`).
-5. **Hasil SADS tidak di-cache.** Setiap pertanyaan ber-tool memanggil SADS, dan
+5. **Hasil SADS tidak di-cache**, kecuali daftar kurikulum (TTL 30 menit,
+   2026-11-07). Setiap pertanyaan ber-tool memanggil SADS, dan
    `get_daftar_dosen` membawa sekitar 220 nama ke prompt. Datanya berubah per
    semester, jadi cache singkat (TTL) aman bila beban atau biaya menjadi masalah.
 6. **Asumsi giliran tool tanpa konten.** Model yang mengirim konten *dan*
@@ -776,3 +986,11 @@ sehingga kelima kotak tampil lewat jalur "tidak ada yang tertulis".
    2026-10-07 (T43/T47, §7). ~~Daftar panjang dari tool ini disalin model dan
    kadang kehilangan nama.~~ Selesai 2026-10-08 (T49: per mata kuliah +
    lampiran, §7, §10a, §18).
+8. **NIM belum diverifikasi** (§11). Risiko diterima untuk dev/staging; syarat
+   sebelum produksi kampus.
+9. **Seluruh 12 tool di-bind** begitu satu pemicu cocok. Mengelompokkan per
+   kelompok (dosen, kurikulum, data pribadi) menghemat sekitar seribu token per
+   giliran, dengan risiko pemicu asimetris antarkelompok seperti §8.
+10. Tool data pribadi tidak dibatasi per giliran selain `MAKS_TOOL_PER_GILIRAN`;
+    pembatas laju per NIM (`RATE_LIMIT_PER_NIM`) yang menahan pemanggilan
+    beruntun.

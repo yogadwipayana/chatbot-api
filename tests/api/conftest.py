@@ -18,6 +18,7 @@ from app.deps import (
     build_llm_call,
     build_retriever,
     build_rewrite_call,
+    build_tool_registry,
     get_account_store,
     get_chat_logger,
     get_embed_key_store,
@@ -212,6 +213,10 @@ def make_client(
         app.dependency_overrides[build_rewrite_call] = lambda: api_rewriter
         # None = gerbang mati, apa pun isi LAYA_ENABLED di .env mesin ini.
         app.dependency_overrides[build_gate_call] = lambda: gate
+        # None = tool-calling mati, apa pun isi TOOLS_ENABLED di .env mesin ini.
+        # Jalur tool diuji di tests/unit/test_tools*.py. Tanpa ini pemicu tool
+        # ("krs", "bayar") mengubah rute pertanyaan contoh di sini (2026-11-07).
+        app.dependency_overrides[build_tool_registry] = lambda: None
         app.dependency_overrides[get_kill_switch] = lambda: kill_switch
         app.dependency_overrides[get_kill_switch_store] = lambda: kill_switch_store
         app.dependency_overrides[get_session] = lambda: session
