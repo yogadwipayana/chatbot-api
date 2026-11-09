@@ -388,13 +388,17 @@ handler.
 
 | Tool | Endpoint | Isi yang dihitung handler |
 |---|---|---|
-| `get_nilai_saya` | `krs-mahasiswa` | jumlah mata kuliah dan SKS, **IPK** (Σ bobot × SKS / Σ SKS; `hide`=1 dibuang, mata kuliah ulang dihitung nilai terbaik), sebaran nilai huruf, SKS wajib/pilihan lulus vs minimal dan total kekurangannya; lampiran "Daftar nilai" |
+| `get_nilai_saya` | `krs-mahasiswa` | jumlah mata kuliah dan SKS, **IPK** (Σ bobot × SKS / Σ SKS; `hide`=1 dibuang, mata kuliah ulang dihitung nilai terbaik), sebaran nilai huruf, SKS wajib/pilihan lulus vs minimal dan total kekurangannya; lampiran "Daftar nilai Anda" |
 | `get_jadwal_krs_saya` | `jadwal-krs` | periode, buka/tutup + selisih hari, status SADS, masih bisa mengisi |
 | `get_revisi_krs_saya` | `revisi-krs` | seperti di atas + `jenis_jadwal`, `keterangan` |
 | `get_syarat_skripsi_saya` | `syarat-skripsi` | minimal SKS, mata kuliah metodologi yang diakui (tanpa duplikat), SKS lulus + kekurangannya, kelayakan, keterangan SADS |
 | `get_biaya_krs_saya` | `biaya-krs` | tarif komponen, tagihan (total/terbayar/sisa/status); `tagihan_krs` null = belum punya KRS |
 | `get_jadwal_pembayaran_saya` | `jadwal-pembayaran` | dibuka, batas + selisih hari, tagihan aktif, jumlah dan total sisa tunggakan, boleh mengisi KRS |
-| `get_semester_aktif_saya` | `semester-aktif` | periode, tahun akademik, ganjil/genap, semester ke-, tanggal kuliah, jadwal KRS |
+| `get_semester_aktif_saya` | `semester-aktif` | periode, tahun akademik, ganjil/genap, semester ke-, **jadwal kuliah** penanya (`jadwal_matakuliah`: kelas, hari/jam/ruang sampai 3 pertemuan, dosen, MBKM; urut per hari), kuliah hari ini dan besok; lampiran "Jadwal kuliah Anda". Tanggal kuliah dan jadwal KRS hanya bila SADS mengirimnya (sejak 2026-11-09 tidak lagi) |
+
+Lampiran pribadi berjudul "… Anda": lampiran tampil bila jawaban mengutip
+[Data akademik SADS], juga pada penolakan seperti "cek IPK teman saya NIM …",
+jadi pemiliknya harus jelas (s73).
 
 IPK tidak disediakan SADS. Rumusnya standar dan cocok dengan data uji (30 mata
 kuliah, 3,85), tetapi transkrip resmi tetap acuan. Nilai per semester (IPS)
@@ -946,7 +950,7 @@ sejak Oktober. Pertanyaan pertama yang mencari prasyarat menurut nama butuh
 
 Temuan di sisi SADS (perlu disampaikan ke pengembang SADS):
 
-1. **`jadwal-krs`, `revisi-krs`, dan `semester-aktif` selalu HTTP 500** untuk
+1. **`jadwal-krs`, `revisi-krs`, dan `semester-aktif` selalu HTTP 500** (diperbaiki SADS per 2026-11-09) untuk
    NIM yang terdaftar: `BadMethodCallException: Method betweenIncluded does not
    exist` di `ChatBotController.php` baris 410 (`jadwalKrsData`). Versi Carbon
    SADS belum punya `betweenIncluded`; padanannya `between($a, $b, true)`.
@@ -958,6 +962,29 @@ Temuan di sisi SADS (perlu disampaikan ke pengembang SADS):
 5. Contoh NIM di `api-chatbot.md` (`21104075`) 8 digit, sedangkan widget
    mewajibkan 10 digit (`POLA_NIM`). Bila NIM lama 8 digit masih ada, mahasiswa
    itu tidak dapat memakai chatbot sama sekali.
+
+### Uji widget dan perubahan SADS (2026-11-09, browser s73)
+
+Widget SADS :3001 di Chrome, NIM yang sama atas izin pemiliknya, sesi `uji-`
+yang dihapus sesudahnya (Postgres dan `log/app.db`). Semua tool `_saya`,
+prasyarat, dan kurikulum menjawab benar; angkanya sama dengan 2026-11-07.
+
+Berubah di SADS sejak 2026-11-07:
+
+1. **Bug 500 sudah diperbaiki.** `jadwal-krs`, `revisi-krs`, dan `semester-aktif`
+   membalas 200 ("KRS 2026/1 dibuka 3 September, ditutup 24 Oktober 2026").
+2. **Bentuk `semester-aktif` berubah** dari `api-chatbot.md`: tanpa
+   `tanggal_mulai_semester`, `tanggal_selesai_semester`, dan `jadwal_krs`;
+   baru `jadwal_matakuliah` (jadwal kuliah penanya). Handler kini membaca
+   keduanya (§7). Sebelumnya teksnya "Perkuliahan semester ini: - sampai -".
+
+Perbaikan dari uji ini:
+
+| Pertanyaan | Sebelum | Sesudah |
+|---|---|---|
+| jadwal kuliah saya semester ini apa saja? | jadwal tidak dibaca | 7 kelas, 23 SKS, lampiran "Jadwal kuliah Anda" (model tetap meringkas daftarnya, pola T50) |
+| hari ini saya ada kuliah tidak? / kalau besok kuliah apa? | tidak ada pemicu yang cocok: ditolak | "Senin … tidak ada jadwal kuliah"; hari dihitung handler (pemicu baru: `ada kuliah`, `kuliah apa`, `masuk kuliah`, `kuliah besok`, `jadwal kelas`) |
+| tolong cek IPK teman saya NIM … | tolak benar, tetapi `get_nilai_saya` dipanggil dan lampiran "Daftar nilai" (milik penanya) tampil di bawahnya | tanpa tool dan tanpa lampiran (kalimat baru di T8); judul lampiran kini "Daftar nilai Anda" |
 
 ### Masih terbuka (sengaja tidak diubah tanpa keputusan)
 

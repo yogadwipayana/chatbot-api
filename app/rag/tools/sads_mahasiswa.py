@@ -339,7 +339,9 @@ def _susun_nilai(data: dict[str, Any], _hari: date) -> tuple[str, tuple[Lampiran
         for n in nilai
     ]
     lampiran = Lampiran(
-        title="Daftar nilai",
+        # "Anda": lampiran tetap tampil di bawah penolakan yang mengutip SADS
+        # ("cek IPK teman saya NIM …"), jadi pemiliknya harus jelas (s73).
+        title="Daftar nilai Anda",
         source=LABEL_SADS,
         items=tuple(f"{n.matkul} ({n.kdmk}) · {n.sks} SKS · {n.grade or '-'}" for n in nilai),
     )
@@ -381,24 +383,168 @@ def _susun_revisi(data: dict[str, Any], hari: date) -> tuple[str, tuple[Lampiran
     )
 
 
+_HARI = ("Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu")
+
+
+def _str(nilai: Any) -> str:
+    return _bersih(nilai) if isinstance(nilai, str) else ""
+
+
+def _jam(nilai: Any) -> str:
+    """ "19:50 - 22:20" apa adanya; " - " (jam kosong di SADS) -> ""."""
+    teks = _str(nilai)
+    return teks if teks.strip(" -") else ""
+
+
+def _indeks_hari(teks: str) -> int:
+    """ "Jumat"/"Jum'at" -> 4; nama yang tidak dikenal diurutkan paling akhir."""
+    kunci = re.sub(r"['’]", "", teks).casefold()
+    return next((i for i, h in enumerate(_HARI) if h.casefold() == kunci), len(_HARI))
+
+
+@dataclass(frozen=True)
+class _Pertemuan:
+    hari: str
+    jam: str
+    ruang: str
+
+    def teks(self) -> str:
+        return " ".join(
+            b for b in (self.hari, self.jam, self.ruang and f"ruang {self.ruang}") if b
+        )
+
+
+@dataclass(frozen=True)
+class _Kelas:
+    kdmk: str
+    matkul: str
+    kelas: str
+    sks: int | None
+    mbkm: bool
+    dosen: str
+    pertemuan: tuple[_Pertemuan, ...]
+
+    def waktu(self) -> str:
+        return "; ".join(p.teks() for p in self.pertemuan) or "jadwal belum tercantum"
+
+
+def _kelas_kuliah(data: dict[str, Any]) -> list[_Kelas]:
+    """Jadwal kuliah penanya dari `semester-aktif` (bentuk respons SADS sejak 2026-11).
+
+    Satu kelas bisa punya sampai tiga pertemuan (`hari`, `hari2`, `hari3`);
+    pertemuan tanpa hari diabaikan, jam kosong ditulis SADS sebagai " - "."""
+    baris = data.get("jadwal_matakuliah")
+    if not isinstance(baris, list):
+        return []
+    hasil = []
+    for r in baris:
+        if not isinstance(r, dict):
+            continue
+        pertemuan = tuple(
+            _Pertemuan(
+                hari=_str(r.get(f"hari{k}")),
+                jam=_jam(r.get(f"jam{k}")),
+                ruang=_str(r.get(f"ruang{k}")),
+            )
+            for k in ("", "2", "3")
+            if _str(r.get(f"hari{k}"))
+        )
+        hasil.append(
+            _Kelas(
+                kdmk=_str(r.get("kdmk")),
+                matkul=_str(r.get("matkul")) or "-",
+                kelas=_str(r.get("nama_kelas")),
+                sks=_int(r.get("sks")),
+                mbkm=r.get("is_mbkm") in (1, True, "1"),
+                dosen=_str(r.get("nmdosen")),
+                pertemuan=pertemuan,
+            )
+        )
+    hasil.sort(
+        key=lambda k: (
+            min((_indeks_hari(p.hari) for p in k.pertemuan), default=len(_HARI)),
+            k.pertemuan[0].jam if k.pertemuan else "",
+            k.matkul,
+        )
+    )
+    return hasil
+
+
+def _baris_kelas(k: _Kelas) -> str:
+    ciri = [k.kdmk] if k.kdmk else []
+    if k.kelas:
+        ciri.append(f"kelas {k.kelas}")
+    if k.sks is not None:
+        ciri.append(f"{k.sks} SKS")
+    if k.mbkm:
+        ciri.append("MBKM")
+    dosen = f"; dosen {k.dosen}" if k.dosen else ""
+    return f"- {k.matkul} ({', '.join(ciri)}): {k.waktu()}{dosen}"
+
+
+def _jadwal_kuliah(kelas: list[_Kelas], hari: date) -> tuple[list[str], tuple[Lampiran, ...]]:
+    if not kelas:
+        return [], ()
+
+    def kuliah_pada(label: str, tanggal: date) -> str:
+        # Dihitung di sini: model sering keliru mencocokkan hari dengan tanggal.
+        nama = [
+            k.matkul
+            for k in kelas
+            if any(_indeks_hari(p.hari) == tanggal.weekday() for p in k.pertemuan)
+        ]
+        return (
+            f"{label.capitalize()} hari {_HARI[tanggal.weekday()]}; kuliah {label}: "
+            + (", ".join(nama) if nama else "tidak ada")
+            + "."
+        )
+
+    sks = sum(k.sks or 0 for k in kelas)
+    baris = [
+        f"Jadwal kuliah penanya semester ini: {len(kelas)} kelas, {sks} SKS.",
+        *(_baris_kelas(k) for k in kelas),
+        kuliah_pada("hari ini", hari),
+        kuliah_pada("besok", hari + timedelta(days=1)),
+    ]
+    lampiran = Lampiran(
+        title="Jadwal kuliah Anda",
+        source=LABEL_SADS,
+        items=tuple(
+            " · ".join(b for b in (f"{k.matkul} ({k.kdmk})", k.waktu(), k.dosen) if b)
+            for k in kelas
+        ),
+    )
+    return baris, (lampiran,)
+
+
 def _susun_semester(data: dict[str, Any], hari: date) -> tuple[str, tuple[Lampiran, ...]]:
     krs = data.get("jadwal_krs")
     ke = _int(data.get("semester_ke_mahasiswa"))
+    mulai, selesai = data.get("tanggal_mulai_semester"), data.get("tanggal_selesai_semester")
+    if {_tanggal(mulai), _tanggal(selesai)} <= {"", "-"}:
+        # Sejak 2026-11 SADS tidak lagi mengirim tanggal ini. Kalimat jelas
+        # supaya model mencari di Kalender Akademik, bukan menulis "- sampai -".
+        kuliah = "Tanggal mulai dan selesai perkuliahan semester ini tidak tercantum di SADS."
+    else:
+        kuliah = (
+            f"Perkuliahan semester ini: {_dengan_selisih(mulai, hari)} "
+            f"sampai {_dengan_selisih(selesai, hari)}."
+        )
+    jadwal, lampiran = _jadwal_kuliah(_kelas_kuliah(data), hari)
     return (
         _teks(
             f"Semester aktif: periode {_bersih(data.get('periode')) or '-'}, tahun akademik "
             f"{_bersih(data.get('tahun_akademik')) or '-'}, semester "
             f"{_bersih(data.get('semester')) or '-'}.",
             f"Bagi penanya ini semester ke-{ke}." if ke is not None else "",
-            "Perkuliahan semester ini: "
-            f"{_dengan_selisih(data.get('tanggal_mulai_semester'), hari)} "
-            f"sampai {_dengan_selisih(data.get('tanggal_selesai_semester'), hari)}.",
+            kuliah,
             ("Jadwal KRS semester ini:\n" + _jadwal(krs, hari))
             if isinstance(krs, dict)
             else "",
+            *jadwal,
             _hari_ini_teks(hari),
         ),
-        (),
+        lampiran,
     )
 
 
@@ -626,7 +772,27 @@ def tool_specs(client: SadsClient) -> list[ToolSpec]:
             "semester-aktif",
             _susun_semester,
             "Semester aktif (periode, tahun akademik, ganjil/genap), semester ke-berapa "
-            "bagi penanya, tanggal mulai dan selesai perkuliahan, dan jadwal KRS-nya.",
-            ("semester", "tahun akademik", "kalender akademik", "mulai kuliah", "perkuliahan"),
+            "bagi penanya, dan jadwal kuliah penanya semester ini (mata kuliah, kelas, "
+            "hari, jam, ruang, dosen, serta kuliah hari ini). Untuk 'saya semester "
+            "berapa?', 'jadwal kuliah saya?', 'hari ini saya kuliah apa?'. Tanggal "
+            "mulai dan selesai perkuliahan tidak selalu ada; bila tidak ada, pakai "
+            "Kalender Akademik.",
+            (
+                "semester",
+                "tahun akademik",
+                "kalender akademik",
+                "mulai kuliah",
+                "perkuliahan",
+                "jadwal kuliah",
+                "jam kuliah",
+                "ruang kuliah",
+                "kuliah hari",
+                "ada kuliah",
+                "kuliah apa",
+                "masuk kuliah",
+                "kuliah besok",
+                "jadwal kelas",
+                "class schedule",
+            ),
         ),
     ]

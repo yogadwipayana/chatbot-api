@@ -265,7 +265,7 @@ class TestNilai:
         assert "SKS yang masih kurang untuk kelulusan (wajib + pilihan): 51." in hasil.text
         assert "- BIFW-001 Algoritma (Wajib, 3 SKS): A, bobot 4, nilai 81,6" in hasil.text
         [lampiran] = hasil.attachments
-        assert lampiran.title == "Daftar nilai" and len(lampiran.items) == 3
+        assert lampiran.title == "Daftar nilai Anda" and len(lampiran.items) == 3
         assert lampiran.items[0] == "Algoritma (BIFW-001) · 3 SKS · A"
 
     async def test_ipk_dua_desimal(self):
@@ -355,6 +355,102 @@ class TestJadwal:
         assert "Bagi penanya ini semester ke-5." in hasil.text
         assert "1 September 2026 (22 hari lagi) sampai 31 Januari 2027" in hasil.text
         assert "Status menurut SADS: Ditutup; masih bisa mengisi: tidak." in hasil.text
+
+    async def test_semester_aktif_bentuk_baru_dengan_jadwal_kuliah(self):
+        # Respons SADS sejak 2026-11: tanpa tanggal semester dan jadwal_krs,
+        # dengan jadwal kuliah penanya. HARI (10 Agustus 2026) = Senin.
+        kosong = {"hari2": "", "jam2": " - ", "ruang2": "", "hari3": "", "jam3": " - "}
+        data = {
+            "mahasiswa": MAHASISWA,
+            "periode": "2026/1",
+            "tahun_akademik": "2026/2027",
+            "semester": "Ganjil",
+            "semester_ke_mahasiswa": 5,
+            "jadwal_matakuliah": [
+                {
+                    **kosong,
+                    "kdmk": "BIFW-056",
+                    "matkul": "Metodologi Penelitian",
+                    "nama_kelas": "AD",
+                    "sks": 3,
+                    "is_mbkm": 0,
+                    "nmdosen": "Dosen Satu, M.Kom.",
+                    "hari": "Jum'at",
+                    "jam": "19:50 - 22:20",
+                    "ruang": "ONLINE",
+                },
+                {
+                    **kosong,
+                    "kdmk": "BIFW-030",
+                    "matkul": "Data Mining",
+                    "nama_kelas": "AB",
+                    "sks": 3,
+                    "is_mbkm": 0,
+                    "nmdosen": "",
+                    "hari": "Senin",
+                    "jam": "08:00 - 10:30",
+                    "ruang": "L2.3",
+                    "hari2": "Rabu",
+                    "jam2": "08:00 - 09:40",
+                    "ruang2": "Lab 1",
+                },
+                {
+                    **kosong,
+                    "kdmk": "BIFW-070",
+                    "matkul": "Magang Industri",
+                    "nama_kelas": "MB",
+                    "sks": 20,
+                    "is_mbkm": 1,
+                    "nmdosen": "Dosen Dua",
+                    "hari": "",
+                    "jam": " - ",
+                    "ruang": "",
+                },
+            ],
+        }
+        hasil, _ = await _panggil("get_semester_aktif_saya", data)
+        teks = hasil.text
+        assert "Bagi penanya ini semester ke-5." in teks
+        assert "Tanggal mulai dan selesai perkuliahan semester ini tidak tercantum" in teks
+        assert "- sampai -" not in teks and "Jadwal KRS semester ini" not in teks
+        assert "Jadwal kuliah penanya semester ini: 3 kelas, 26 SKS." in teks
+        assert (
+            "- Data Mining (BIFW-030, kelas AB, 3 SKS): Senin 08:00 - 10:30 ruang L2.3; "
+            "Rabu 08:00 - 09:40 ruang Lab 1"
+        ) in teks
+        assert (
+            "- Magang Industri (BIFW-070, kelas MB, 20 SKS, MBKM): jadwal belum tercantum"
+            in teks
+        )
+        # Urut per hari: Senin dulu, Jumat, lalu yang tanpa hari.
+        assert teks.index("Data Mining") < teks.index("Metodologi") < teks.index("Magang")
+        assert "Hari ini hari Senin; kuliah hari ini: Data Mining." in teks
+        assert "Besok hari Selasa; kuliah besok: tidak ada." in teks
+        [lampiran] = hasil.attachments
+        assert lampiran.title == "Jadwal kuliah Anda"
+        assert lampiran.items[1] == (
+            "Metodologi Penelitian (BIFW-056) · Jum'at 19:50 - 22:20 ruang ONLINE · "
+            "Dosen Satu, M.Kom."
+        )
+
+    async def test_semester_aktif_tanpa_kuliah_hari_ini(self, monkeypatch):
+        monkeypatch.setattr(mhs, "hari_ini", lambda: date(2026, 8, 16))  # Minggu
+        data = {
+            "periode": "2026/1",
+            "jadwal_matakuliah": [
+                {"kdmk": "BIFW-056", "matkul": "Metodologi", "sks": 3, "hari": "Senin"}
+            ],
+        }
+        hasil, _ = await _panggil("get_semester_aktif_saya", data)
+        assert "Hari ini hari Minggu; kuliah hari ini: tidak ada." in hasil.text
+        assert "Besok hari Senin; kuliah besok: Metodologi." in hasil.text
+
+    @pytest.mark.parametrize(
+        "pertanyaan",
+        ["hari ini saya ada kuliah tidak?", "besok kuliah apa?", "jadwal kuliah saya"],
+    )
+    def test_pemicu_jadwal_kuliah(self, pertanyaan):
+        assert _spec("get_semester_aktif_saya", FakeSads()).cocok(pertanyaan)
 
 
 # --- Skripsi, biaya, pembayaran ----------------------------------------------

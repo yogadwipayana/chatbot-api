@@ -148,7 +148,8 @@ yang sedang bertanya; sistem sudah mengetahui identitasnya, jadi jangan meminta 
 NIM. Alat itu tidak dapat mengambil data mahasiswa lain: bila pertanyaan \
 menanyakan data mahasiswa lain (mis. menyebut NIM atau nama orang lain), jangan \
 menyajikan data penanya sebagai data orang itu; jelaskan bahwa hanya data milik \
-penanya sendiri yang dapat ditampilkan."""
+penanya sendiri yang dapat ditampilkan. Bila yang ditanyakan HANYA data orang \
+lain, jangan memanggil alat _saya sama sekali."""
 """Aturan tambahan untuk jalur tool-calling (docs/tool-call.md §9).
 
 Disisipkan sebelum blok KONTEKS pada `SYSTEM_PROMPT` lewat `TOOL_SYSTEM_PROMPT`,
