@@ -25,6 +25,7 @@ from app.config import Settings, get_settings
 from app.db.session import get_session
 from app.observability.tracing import id_run, konfigurasi_run
 from app.prodi import DAFTAR_PRODI, ProfilMahasiswa, cari_prodi, urai_nim
+from app.schemas.admin import LoginRequest
 from app.schemas.chat import ChatRequest
 from app.security.auth import decode_access_token, waktu_masuk
 from app.security.batas_harian import (
@@ -864,6 +865,40 @@ def require_role(minimum: AdminRole):
     check.__name__ = f"require_{minimum.value}"
     check.__doc__ = f"Minimal {ROLE_LABELS[minimum]}."
     return check
+
+
+TERLALU_BANYAK_LOGIN = (
+    "Terlalu banyak permintaan masuk dari jaringan Anda. Tunggu sebentar, lalu coba lagi."
+)
+
+
+def batasi_login(
+    request: Request,
+    payload: LoginRequest,
+    settings: BaseSettingsDep,
+    limiter: ChatLimiterDep,
+) -> None:
+    """Batas laju `POST /api/admin/login` per IP (H35), berhasil maupun gagal.
+
+    Setiap percobaan login memaksa server menghitung bcrypt, juga untuk email
+    yang tidak terdaftar (pembanding waktu). Tanpa batas ini pengirim tanpa akun
+    dapat menjenuhkan CPU dan threadpool untuk semua permintaan lain. Bukan
+    penguncian seperti `FailureLimiter` per email: yang kena hanya menunggu
+    beberapa detik, dan admin lain di IP kampus yang sama tidak terkunci.
+
+    `payload` bernama sama dengan body endpoint-nya (lihat `batasi_pertanyaan`):
+    body yang tidak sah dijawab 422 tanpa menghabiskan jatah.
+    """
+    batas = settings.batas_laju()["login"]
+    if batas is None:
+        return
+    ip = client_ip(request, settings.client_ip_header)
+    tunggu = limiter.coba([(f"login:ip:{ip}", batas)])
+    if tunggu is not None:
+        catat_audit_terbatas(
+            f"login-ip:{ip}", "Login dari %s dibatasi: terlalu banyak permintaan", ip
+        )
+        raise _terlalu_banyak(TERLALU_BANYAK_LOGIN, tunggu)
 
 
 def batasi_uji_coba(

@@ -14,7 +14,7 @@ import math
 from datetime import UTC, datetime
 
 import anyio
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.config import Settings
 from app.deps import (
@@ -23,6 +23,7 @@ from app.deps import (
     CurrentAdminDep,
     LoginLimiterDep,
     SesiAdminDep,
+    batasi_login,
 )
 from app.routers.admin_users import user_out
 from app.schemas.admin import AdminUser, LoginRequest, PasswordChange, TokenResponse
@@ -78,6 +79,8 @@ def _token(
     "/login",
     response_model=TokenResponse,
     responses={401: {"model": Error}, 403: {"model": Error}, 429: {"model": Error}},
+    # Per IP, sebelum bcrypt dihitung (H35); penguncian per email ada di handler.
+    dependencies=[Depends(batasi_login)],
 )
 async def admin_login(
     payload: LoginRequest,
@@ -94,7 +97,9 @@ async def admin_login(
 
     Tidak per IP (sejak 2026-10-23): admin di jaringan kampus keluar lewat satu
     IP bersama ribuan mahasiswa, dan satu orang yang menebak-nebak di sana akan
-    ikut mengunci semua admin kampus. IP tetap dicatat di log audit.
+    ikut mengunci semua admin kampus. IP tetap dicatat di log audit. Yang per IP
+    hanya batas laju permintaan (`batasi_login`, H35): penahan CPU bcrypt, bukan
+    penguncian, dan hanya menunda beberapa detik.
 
     Akun nonaktif baru diberi tahu SETELAH kata sandinya terbukti benar, jadi
     status itu tidak bocor ke orang yang sekadar menebak email.

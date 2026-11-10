@@ -119,7 +119,20 @@ class TestNimWajib:
         assert not api_llm.called
 
     @pytest.mark.parametrize(
-        "nim", ["", "240101010", "24010101010", "24010101a1", " 2401010101", "2401 10101"]
+        "nim",
+        [
+            "",
+            "240101010",
+            "24010101010",
+            "24010101a1",
+            " 2401010101",
+            "2401 10101",
+            # Angka Unicode non-ASCII (Arab-India): `\d` menerimanya dan
+            # `int()` tetap membacanya, padahal SADS tidak pernah memakainya (H34).
+            "٢٤01010٠٠١",
+            "٢٤٠١٠١٠١٠١",
+            "２４０１０１０１０１",
+        ],
     )
     def test_bentuk_nim_tidak_sah_ditolak_422(self, client_profil, payload, nim):
         r = client_profil.post("/api/chat", json={**payload, "nim": nim})

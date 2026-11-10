@@ -266,6 +266,69 @@ class TestBatasUjiCoba:
             assert r.status_code == 200
 
 
+class TestBatasLoginPerIp:
+    """H35: permintaan login per IP dibatasi, terpisah dari penguncian per email."""
+
+    @pytest.fixture
+    def client(self, make_client):
+        client = make_client([])
+        settings = Settings(admin_jwt_secret=rahasia(), rate_limit_login_per_ip="2/minute")
+        client.app.dependency_overrides[get_settings] = lambda: settings
+        return client
+
+    @staticmethod
+    def masuk_dari(client, ip, *, email=ADMIN_EMAIL, password=SANDI):
+        return client.post(
+            "/api/admin/login",
+            json={"email": email, "password": password},
+            headers={"X-Forwarded-For": ip},
+        )
+
+    def test_lewat_batas_429_dengan_retry_after(self, client, caplog):
+        caplog.set_level(logging.INFO, logger="app.audit")
+        ip = "203.0.113.7"
+        # Dihitung juga untuk email yang tidak terdaftar: itulah yang dibanjiri.
+        assert self.masuk_dari(client, ip, email="a@x.id", password="x").status_code == 401
+        assert self.masuk_dari(client, ip, email="b@x.id", password="x").status_code == 401
+        r = self.masuk_dari(client, ip)
+        assert r.status_code == 429
+        assert int(r.headers["retry-after"]) >= 1
+        assert "jaringan Anda" in r.json()["detail"]
+        assert any("Login dari 203.0.113.7 dibatasi" in p for p in catatan_audit(caplog))
+
+    def test_ip_lain_punya_jatah_sendiri(self, client):
+        for _ in range(2):
+            assert self.masuk_dari(client, "203.0.113.7", password="x").status_code == 401
+        assert self.masuk_dari(client, "203.0.113.7").status_code == 429
+        assert self.masuk_dari(client, "198.51.100.9").status_code == 200
+
+    def test_body_tidak_sah_tidak_menghabiskan_jatah(self, client):
+        ip = "203.0.113.7"
+        for _ in range(3):
+            r = client.post(
+                "/api/admin/login",
+                json={"email": "bukan-email"},
+                headers={"X-Forwarded-For": ip},
+            )
+            assert r.status_code == 422
+        assert self.masuk_dari(client, ip).status_code == 200
+
+    def test_tidak_mengunci_email(self, client, login_limiter):
+        """429 per IP bukan kegagalan login: hitungan penguncian per email tidak bertambah."""
+        ip = "203.0.113.7"
+        for _ in range(2):
+            self.masuk_dari(client, ip, password="x")
+        assert self.masuk_dari(client, ip).status_code == 429
+        assert login_limiter.retry_after(f"email:{ADMIN_EMAIL}") is None
+
+    def test_nol_mematikan_batas(self, make_client):
+        client = make_client([])
+        settings = Settings(admin_jwt_secret=rahasia(), rate_limit_login_per_ip="0")
+        client.app.dependency_overrides[get_settings] = lambda: settings
+        for _ in range(5):
+            assert self.masuk_dari(client, "203.0.113.7").status_code == 200
+
+
 def test_level_akun_tetap_dari_database_bukan_token(login_client, accounts):
     """Token perpanjangan membawa `role` terbaru, tetapi yang menentukan tetap DB."""
     token = create_access_token(STAF_EMAIL, rahasia(), role="superadmin")
