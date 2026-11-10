@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, HTTPException, Response, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import text
 
 from app.deps import SessionDep, StorageDep
@@ -62,6 +62,15 @@ async def get_document_file(
         )
 
     try:
+        # Disk lokal: alirkan berkasnya, jangan muat utuh ke memori. Endpoint ini
+        # publik tanpa batas laju, dan PDF bisa puluhan megabita (H36).
+        path_for = getattr(storage, "path_for", None)
+        if path_for is not None:
+            return FileResponse(
+                await path_for(row["file_path"]),
+                media_type="application/pdf",
+                headers={"Content-Disposition": disposition},
+            )
         isi = await storage.load(row["file_path"])
     except ObjectNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, TIDAK_TERSEDIA) from exc

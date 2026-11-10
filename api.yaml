@@ -624,6 +624,11 @@ paths:
         email itu dikunci sementara (429 + `Retry-After`); login berhasil
         mengosongkan hitungannya. Tidak dihitung per IP: IP kampus dipakai
         bersama, dan tebakan satu orang tidak boleh mengunci admin lain.
+
+        Terpisah dari penguncian itu, jumlah permintaan login per IP dibatasi
+        `RATE_LIMIT_LOGIN_PER_IP` (bawaan 30/menit; `0` = mati) dan dijawab 429
+        + `Retry-After` selama beberapa detik, bukan dikunci: setiap percobaan
+        memaksa server menghitung bcrypt, juga untuk email yang tidak terdaftar.
       requestBody:
         required: true
         content:
@@ -2278,7 +2283,7 @@ components:
             menyarankan memilih unit lain atau semua unit.
         nim:
           type: string
-          pattern: '^\d{10}$'
+          pattern: '^[0-9]{10}$'
           description: |
             Wajib. NIM INSTIKI `aaabbddccc`: angkatan (2000 + dua digit
             pertama), fakultas dan prodi (digit 4-7, `code` dari

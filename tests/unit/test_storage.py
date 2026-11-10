@@ -110,6 +110,22 @@ class TestLocalStorage:
         """Disk lokal tidak dapat diakses peramban; API harus mengalirkannya."""
         assert storage.url_for(document_key("abc")) is None
 
+    async def test_path_for_menunjuk_berkas_di_bawah_akar(self, storage):
+        """H36: endpoint PDF mengalirkan berkas dari lintasan ini, bukan `load()`."""
+        kunci = await storage.save(document_key("abc"), PDF)
+        path = await storage.path_for(kunci)
+        assert path.is_relative_to(storage.root)
+        assert path.read_bytes() == PDF
+
+    async def test_path_for_kunci_tak_ada(self, storage):
+        with pytest.raises(ObjectNotFound):
+            await storage.path_for(document_key("tidak-ada"))
+
+    @pytest.mark.parametrize("jahat", ["../rahasia.pdf", "documents/../../etc/passwd"])
+    async def test_path_for_menolak_keluar_akar(self, storage, jahat):
+        with pytest.raises(StorageError):
+            await storage.path_for(jahat)
+
     @pytest.mark.parametrize("jahat", ["../../etc/passwd", "../keluar.pdf"])
     async def test_kunci_keluar_dari_akar_ditolak(self, storage, jahat):
         with pytest.raises(StorageError, match="keluar dari direktori"):

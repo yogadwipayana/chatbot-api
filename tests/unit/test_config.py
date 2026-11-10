@@ -408,3 +408,19 @@ class TestBatasUjiCoba:
     def test_salah_ketik_ditolak(self):
         with pytest.raises(ValidationError, match="tidak sah"):
             settings(rate_limit_per_admin="20/menit")
+
+
+class TestBatasLoginPerIp:
+    """H35: penahan CPU bcrypt, longgar untuk IP kampus yang dipakai bersama."""
+
+    def test_default_30_per_menit(self):
+        from app.security.ratelimit import BatasLaju
+
+        assert settings().batas_laju()["login"] == BatasLaju(30, 60.0)
+
+    def test_nol_mematikan(self):
+        assert settings(rate_limit_login_per_ip="0").batas_laju()["login"] is None
+
+    def test_salah_ketik_ditolak(self):
+        with pytest.raises(ValidationError, match="tidak sah"):
+            settings(rate_limit_login_per_ip="30/menit")

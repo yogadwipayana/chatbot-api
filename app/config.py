@@ -285,6 +285,15 @@ class Settings(BaseSettings):
     """Uji coba jawaban (`POST /api/admin/test-query`) per akun dashboard. Setiap
     uji coba memanggil LLM, embedding, Laya, dan SADS seperti pertanyaan mahasiswa
     tetapi tidak terhitung batas harian. `0` = mati."""
+    rate_limit_login_per_ip: str = "30/minute"
+    """Permintaan `POST /api/admin/login` per IP, berhasil maupun gagal (H35).
+
+    Setiap percobaan login memaksa server menghitung bcrypt (~250 ms CPU), juga
+    untuk email yang tidak terdaftar; tanpa batas ini pengirim tanpa akun dapat
+    menjenuhkan CPU dan threadpool. Bukan penguncian: yang kena hanya menunggu
+    beberapa detik (`Retry-After`), dan penguncian per email (10 gagal/15 menit)
+    tetap terpisah. Longgar untuk IP kampus yang dipakai bersama: 30 login per
+    menit jauh di atas kebutuhan admin yang masuk sekali per sesi. `0` = mati."""
     rate_limit_per_nim: str = "20/minute"
     """Batas utama endpoint mahasiswa: per NIM penanya, di tab dan perangkat
     mana pun. Bentuk `N/second|minute|hour|day`; `0` = mati.
@@ -526,6 +535,7 @@ class Settings(BaseSettings):
         "rate_limit_per_ip",
         "rate_limit_per_embed_site",
         "rate_limit_per_admin",
+        "rate_limit_login_per_ip",
     )
     @classmethod
     def _batas_laju_sah(cls, v: str) -> str:
@@ -534,13 +544,15 @@ class Settings(BaseSettings):
         return v
 
     def batas_laju(self) -> dict[str, BatasLaju | None]:
-        """Batas per NIM, sesi, IP, kunci sematan, dan akun admin; None = tidak dibatasi."""
+        """Batas per NIM, sesi, IP, kunci sematan, akun admin, dan login per IP;
+        None = tidak dibatasi."""
         return {
             "nim": parse_batas(self.rate_limit_per_nim),
             "sesi": parse_batas(self.rate_limit_per_session),
             "ip": parse_batas(self.rate_limit_per_ip),
             "kunci": parse_batas(self.rate_limit_per_embed_site),
             "admin": parse_batas(self.rate_limit_per_admin),
+            "login": parse_batas(self.rate_limit_login_per_ip),
         }
 
     @field_validator("admin_jwt_secret")

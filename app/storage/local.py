@@ -61,6 +61,19 @@ class LocalStorage:
         except FileNotFoundError as exc:
             raise ObjectNotFound(f"objek tidak ditemukan: {key}") from exc
 
+    async def path_for(self, key: str) -> Path:
+        """Lintasan berkas untuk disajikan langsung (`FileResponse`), tanpa memuat
+        isinya ke memori: PDF panduan bisa puluhan megabita, dan endpoint publik
+        yang membaca seluruhnya per permintaan mudah dijadikan beban memori (H36).
+
+        Raises:
+            ObjectNotFound: kunci tidak ada.
+        """
+        path = self._path(key)
+        if not await anyio.to_thread.run_sync(path.is_file):
+            raise ObjectNotFound(f"objek tidak ditemukan: {key}")
+        return path
+
     async def delete(self, key: str) -> None:
         path = self._path(key)
         await anyio.to_thread.run_sync(lambda: path.unlink(missing_ok=True))

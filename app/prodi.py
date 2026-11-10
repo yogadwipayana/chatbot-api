@@ -69,7 +69,12 @@ DAFTAR_PRODI: tuple[Prodi, ...] = (
 ANGKATAN_PERTAMA = 2000
 """NIM hanya membawa dua digit tahun, dibaca sebagai 20xx."""
 
-POLA_NIM = r"^\d{10}$"
+POLA_NIM = r"^[0-9]{10}$"
+"""Sepuluh angka ASCII. Bukan `\\d`: di Rust regex pydantic maupun `re` Python,
+`\\d` juga cocok dengan angka Unicode lain (mis. Arab-India "٢٤"), dan
+`int("٢٤")` tetap 24 -- NIM campuran seperti itu lolos validasi, tercatat di
+log dengan bentuk yang tidak pernah dipakai SADS, dan dihitung sebagai kunci
+batas laju yang berbeda dari NIM aslinya (H34)."""
 
 
 def cari_prodi(code: str) -> Prodi | None:
