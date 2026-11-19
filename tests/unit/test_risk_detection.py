@@ -7,6 +7,7 @@ import pytest
 from app.rag.risk import (
     DEFAULT_CONTACTS,
     FRONT_OFFICE,
+    UNIT_ALIASES,
     UNIT_CONTACTS,
     RiskTopic,
     UnitContact,
@@ -126,16 +127,35 @@ class TestKontakPerUnit:
     @pytest.mark.parametrize(
         "unit,nomor",
         [
+            ("KEMAHASISWAAN", "+62 813-3936-5103"),
+            ("AKADEMIK", "+62 813-5346-2032"),
+            ("UNIT PELAYANAN SERTIFIKASI", "+62 813-3734-8654"),
+            ("PLK", "+62 851-1931-5346"),
+            ("KEUANGAN", "+62 851-7426-1765"),
+            ("FRONT OFFICE", "+62 813-3982-2383"),
+            # Nama sebelum penggantian 2026-11-18 (`UNIT_ALIASES`).
             ("Kemahasiswaan", "+62 813-3936-5103"),
             ("BAAK", "+62 813-5346-2032"),
             ("UPS", "+62 813-3734-8654"),
-            ("PLK", "+62 851-1931-5346"),
             ("Keuangan", "+62 851-7426-1765"),
             ("FO", "+62 813-3982-2383"),
         ],
     )
     def test_pic_utama_per_unit(self, unit, nomor):
         assert nomor in contacts_for_unit(unit)[0].kontak
+
+    def test_akademik_membawa_pic_plk(self):
+        """Dokumen PLK dipindah ke AKADEMIK (2026-11-18), jadi PIC-nya ikut."""
+        assert [c.unit for c in contacts_for_unit("AKADEMIK")] == [
+            "PIC BAAK",
+            "Admin PLK INSTIKI",
+        ]
+
+    def test_alias_menunjuk_unit_yang_ada(self):
+        kunci = {nama.casefold() for nama in UNIT_CONTACTS}
+        for lama, baru in UNIT_ALIASES.items():
+            assert baru.casefold() in kunci, lama
+            assert lama.casefold() not in kunci, lama
 
     def test_kemahasiswaan_membawa_pic_per_bidang(self):
         kontak = contacts_for_unit("Kemahasiswaan")
@@ -158,8 +178,9 @@ class TestKontakPerUnit:
 
     def test_nama_unit_tidak_peka_huruf_besar(self):
         assert contacts_for_unit(" baak ") == contacts_for_unit("BAAK")
+        assert contacts_for_unit(" akademik ") == contacts_for_unit("AKADEMIK")
 
-    @pytest.mark.parametrize("unit", [None, "", "Prodi", "Fakultas", "Akademik"])
+    @pytest.mark.parametrize("unit", [None, "", "Prodi", "Fakultas", "A", "RPL"])
     def test_unit_tanpa_pic_kosong(self, unit):
         """Pemanggil yang memutuskan cadangannya (Front Office)."""
         assert contacts_for_unit(unit) == ()
