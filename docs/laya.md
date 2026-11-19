@@ -4,6 +4,8 @@ Catatan kerja untuk Laya, model keputusan *open-weight* yang dicoba sebagai peng
 
 > **2026-10-27: JEV tidak dipakai lagi; Laya satu-satunya model gerbang.** Di kode, setelannya kini `LAYA_*` (dulu `JEV_*`): `LAYA_ENABLED`, `LAYA_URL`, `LAYA_API_KEY`, `LAYA_MODEL`, `LAYA_*_THRESHOLD`, dan seterusnya. Node graf menjadi `laya_gate`, run LangSmith menjadi `laya_classify`, dan nilai log `gate_source`/`rejection_source`/`calls[].kind` menjadi `laya`. `LAYA_URL` dan `LAYA_API_KEY` wajib saat gerbang hidup; keduanya tidak lagi jatuh ke `<BASE_URL>/systemone`/`API_KEY`, bawaan `LAYA_MODEL` adalah `multilingual`, dan bawaan `LAYA_OUT_OF_SCOPE_THRESHOLD` menjadi 0,7 (hasil A3; dulu 0,9 dari kalibrasi JEV). Baris lama di DB dan log aplikasi **tidak dimigrasi** dan tetap `jev`/`jev_gate`: sebelum 2026-10-05 nilainya berasal dari JEV sungguhan (produksi) dan sejak 2026-10-02/05 dari Laya (lokal/produksi). Nama `JEV_*` di catatan bertanggal di bawah adalah riwayat. JEV masih tercatat sebagai guru pelabel data latih (`eval/laya/label_jev.py`) dan sebagai pembanding.
 
+> **2026-11-19: putaran 3 (T70).** r1 di produksi memblokir pertanyaan nilai mahasiswa (4/19 pertanyaan data pribadi nyata). Dataset r1 + 395 pesan data akademik pribadi sudah dibangun di `eval/laya/data/r3/` (CRITERIA dan `gerbang_sha256` tidak berubah); tinggal latih dan ukur di Kaggle, lalu pasang hanya bila lulus. Panduannya di `docs/kaggle.md`; datanya di `api/eval/laya/README.md` → *Putaran 3*.
+
 ## Status (per 2026-10-02)
 
 - **Hasil latih sudah disajikan di server.** User melatih di Kaggle (2026-10-01, 7 menit) dan memasangnya di `/laya` pada 2026-10-02 05:21 UTC. Di sana sudah ada `sajikan_laya.py`, `LAYA_PANDU_PATH`, dan `MKL_CBWR=COMPATIBLE`, dan pemanasan lolos. Hasilnya **57/64 (89%)**, naik dari zero-shot 9/64, **tapi syarat lulus belum terpenuhi** (lihat *Hasil fine-tuning*).
@@ -88,7 +90,7 @@ Fakta host yang relevan (2026-09-30): CPU `QEMU Virtual CPU version 2.5+` **tanp
 
 **Status (2026-10-02):** sudah dilatih (Kaggle) dan disajikan di `/laya`. Panduan langkah demi langkahnya ada di `api/eval/laya/README.md`. Hasilnya ada di *Hasil fine-tuning* di bawah.
 
-**Metode.** Mengikuti skrip resmi Laya v0.3.22 (`notebooks/laya_finetune_typed_decisions_mps.py`). Loss RLCD (policy gradient ala GRPO dengan reward *proper scoring rule*) ditambah cross-entropy terhadap target lunak. LR encoder 2,5e-5, LR head 1e-4, 4 epoch, sigma 0,4 → 0,1. Titik awalnya `convaiinnovations/laya` subfolder `multilingual` revisi `55cf4c4e` (sama dengan server). Tambahan di `latih_laya.py`:
+**Metode.** Mengikuti skrip resmi Laya v0.3.22 (`notebooks/laya_finetune_typed_decisions_mps.py`). Loss RLCD (policy gradient ala GRPO dengan reward *proper scoring rule*) ditambah cross-entropy terhadap target lunak. LR encoder 2,5e-5, LR head 1e-4, 4 epoch, sigma 0,4 → 0,1. Titik awalnya model dasar publik `convaiinnovations/laya` subfolder `multilingual` revisi `55cf4c4e`, yaitu model yang disajikan server sebelum fine-tuning (zero-shot). **Bukan** checkpoint hasil fine-tuning di `/laya/models/laya-pandu-gerbang`: setiap putaran, termasuk putaran 3, dilatih ulang dari model dasar ini dengan seluruh datanya, bukan melanjutkan checkpoint putaran sebelumnya. Tambahan di `latih_laya.py`:
 - AMP fp16 (T4)
 - metrik validasi per epoch
 - bobot terbaik menurut CE validasi, disimpan fp16

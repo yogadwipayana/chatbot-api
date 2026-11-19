@@ -15,6 +15,10 @@ Kelompok tugas:
 - basa      basa-basi
 - acak      pesan acak, sebagian dibuat program tanpa LLM
 - jahat     upaya manipulasi / injeksi prompt
+- pribadi          (r3, T70) pertanyaan tentang data akademik milik penanya sendiri
+                   (nilai, IPK/SKS, jadwal, KRS, tagihan, dosen) yang dijawab tool SADS
+- pribadi-lanjutan (r3) pertanyaan lanjutan pendek tentang data itu, dengan `riwayat`
+- pribadi-luar     (r3) pembanding out_of_scope: "nilai", "jadwal", "IPK" di luar kampus
 
 Keluaran JSONL, satu pesan per baris; bisa dilanjutkan bila terputus (tugas yang
 sudah ada dilewati):
@@ -184,6 +188,73 @@ SULIT_TEMA = [
     "PLK atau magang di perusahaan tertentu (Tokopedia, Telkom, hotel di Bali) via kampus",
     "aplikasi atau sistem kampus (SIAKAD, e-learning, email kampus, wifi kampus) bermasalah",
     "pertanyaan sangat pendek atau satu kata tentang urusan kampus (ukt, krs, skp, toeic)",
+]
+
+
+PRIBADI_TEMA = [
+    (
+        "nilai mata kuliah milik penanya: nilai satu atau dua mata kuliah tertentu, nilai "
+        "tertinggi/terendah, tiga nilai terbesar, daftar semua nilai, nilai per semester, "
+        "mata kuliah dengan nilai di atas atau di bawah angka tertentu, mata kuliah yang "
+        "harus diulang"
+    ),
+    (
+        "IPK dan IPS penanya, total SKS yang sudah ditempuh, sisa SKS untuk lulus, progres "
+        "studi, apakah progresnya sudah cukup untuk seminar proposal, KP, atau skripsi"
+    ),
+    (
+        "jadwal kuliah penanya: hari ini, besok, minggu ini, hari tertentu, jam dan ruangan, "
+        "semester berapa sekarang, kelas apa saja yang diambil"
+    ),
+    (
+        "KRS penanya: mata kuliah yang sudah dan belum diambil, mata kuliah wajib/pilihan "
+        "yang belum diambil, kurikulum angkatannya, mata kuliah semester tertentu, "
+        "prasyarat mata kuliah tertentu"
+    ),
+    (
+        "tagihan penanya: biaya semester ini/lalu/depan, tunggakan, status pembayaran, batas "
+        "bayar, kenapa belum bisa isi KRS karena belum bayar"
+    ),
+    (
+        "dosen: siapa dosen pengampu mata kuliah tertentu, dosen tertentu mengajar apa saja, "
+        "daftar dosen prodi, dosen wali penanya"
+    ),
+]
+"""T70 (2026-11-18): Laya r1 memblokir "nilaiku berapa yang paling tinggi dan berapa
+yang peling rendah" sebagai out_of_scope 0,81. Pertanyaan data pribadi baru ada sejak
+tool SADS (2026-11-07), jadi tidak pernah ada di data latih putaran 1."""
+
+PRIBADI_UNIT: list[str | None] = [
+    "AKADEMIK",
+    "BAAK",
+    "Akademik",
+    "KEUANGAN",
+    "Keuangan",
+    "Prodi",
+    None,
+]
+"""Nama lama dan nama sekarang (unit diganti nama 2026-11-18) karena `topik_dipilih`
+ikut terbaca Laya."""
+
+PRIBADI_GAYA = """Tulis dari sudut pandang mahasiswa yang menanyakan datanya SENDIRI,
+kebanyakan dengan kata ganti orang pertama yang beragam: saya, aku, -ku, gw/gue, ane.
+Sebagian sangat pendek ("ipk ku", "nilai tertinggi gw", "jadwal besok"), sebagian
+kalimat lengkap, sebagian dengan salah ketik ("terbsar", "peling", "sampek").
+Sebut nama mata kuliah yang wajar untuk informatika/bisnis digital/DKV bila perlu
+(Algoritma, Basis Data, Statistika, Web Programming, Matematika Komputer, Desain Web,
+Data Integration, Pengolahan Citra, Akuntansi, Nirmana). Jangan sebut NIM."""
+
+PRIBADI_LUAR_TEMA = [
+    (
+        "kata 'nilai', 'harga', atau 'IPK' di luar urusan kampus: nilai tukar dan kurs, "
+        "nilai saham, nilai gizi makanan, nilai rapor anak SD, IPK minimal lowongan kerja "
+        "atau CPNS, cara menghitung nilai di kampus lain"
+    ),
+    (
+        "kata 'jadwal', 'tagihan', atau 'dosen' di luar urusan kampus: jadwal sepak bola, "
+        "kereta, pesawat, film, konser, imsak; tagihan listrik, PDAM, kartu kredit, pinjol; "
+        "dosen kampus lain atau artis yang jadi dosen"
+    ),
 ]
 
 
@@ -379,6 +450,58 @@ def susun_tugas(potongan: list[dict], kali: float) -> list[Tugas]:
             unit_acak=semua_unit,
         )
     )
+    for j, tema in enumerate(PRIBADI_TEMA):
+        for v in range(2):
+            tugas.append(
+                Tugas(
+                    f"pribadi:{j}:{v}",
+                    "academic",
+                    "pribadi",
+                    f"Tema: {tema}.\nTulis {n(25)} pertanyaan mahasiswa INSTIKI kepada PANDU "
+                    "tentang data akademiknya sendiri (PANDU dapat membaca data itu dari "
+                    f"sistem akademik kampus). Variasi ke-{v + 1}.\n"
+                    + PRIBADI_GAYA
+                    + "\n"
+                    + GAYA,
+                    None,
+                    n(25),
+                    unit_acak=PRIBADI_UNIT,
+                )
+            )
+    for j in range(3):
+        tugas.append(
+            Tugas(
+                f"pribadi-lanjutan:{j}",
+                "academic",
+                "pribadi-lanjutan",
+                f"Tema: {PRIBADI_TEMA[j * 2 % len(PRIBADI_TEMA)]}.\n"
+                f"Buat {n(15)} potongan percakapan. Setiap elemen adalah objek JSON "
+                '{"tanya": ..., "jawab": ..., "lanjutan": ...}: "tanya" pertanyaan '
+                'mahasiswa tentang datanya sendiri, "jawab" jawaban PANDU 1-3 kalimat yang '
+                'menyebut data contoh (angka nilai, IPK, jadwal), "lanjutan" pesan susulan '
+                "mahasiswa yang pendek dan hanya bermakna dengan konteks sebelumnya "
+                '(misalnya "kalau yg terendah?", "semester 3 gmn", "berdasarkan itu aku '
+                'jago di matkul apa?", "detailnya ada gk?").\n' + PRIBADI_GAYA,
+                None,
+                n(15),
+                lanjutan=True,
+                unit_acak=PRIBADI_UNIT,
+            )
+        )
+    for j, tema in enumerate(PRIBADI_LUAR_TEMA):
+        tugas.append(
+            Tugas(
+                f"pribadi-luar:{j}",
+                "out_of_scope",
+                "pribadi-luar",
+                f"Tema: {tema}.\nTulis {n(25)} pesan yang mungkin diketik seseorang ke "
+                "chatbot kampus tetapi sama sekali BUKAN urusan sebagai mahasiswa INSTIKI, "
+                "walau memakai kata yang sama dengan urusan kampus.\n" + GAYA,
+                None,
+                n(25),
+                unit_acak=[*UNIT, "AKADEMIK", "KEUANGAN", None],
+            )
+        )
     return tugas
 
 
@@ -480,6 +603,7 @@ async def utama(
     paralel: int,
     batas_tugas: int | None,
     suhu: float,
+    kelompok: set[str] | None = None,
 ) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     selesai = set()
@@ -489,6 +613,8 @@ async def utama(
                 selesai.add(json.loads(baris)["tugas"])
 
     tugas = susun_tugas(await ambil_potongan(maks_per_dok), kali)
+    if kelompok:
+        tugas = [t for t in tugas if t.kunci.split(":")[0] in kelompok]
     if batas_tugas is not None:
         per_kelompok: dict[str, int] = {}
         dipilih = []
@@ -526,7 +652,7 @@ async def utama(
 
     await asyncio.gather(*(satu(t) for t in sisa))
 
-    if "acak:program" not in selesai:
+    if "acak:program" not in selesai and (not kelompok or "acak" in kelompok):
         semua_unit: list[str | None] = [*UNIT, None]
         n_acak = max(1, round(100 * kali)) if batas_tugas is None else 10
         with out.open("a", encoding="utf-8", newline="\n") as f:
@@ -567,8 +693,16 @@ def main() -> None:
         "--batas-tugas", type=int, default=None, help="uji coba: maksimal N tugas per kelompok"
     )
     p.add_argument("--suhu", type=float, default=0.9, help="temperature LLM (variasi)")
+    p.add_argument(
+        "--kelompok",
+        default=None,
+        help="hanya kelompok ini, dipisah koma, mis. pribadi,pribadi-luar",
+    )
     a = p.parse_args()
-    asyncio.run(utama(a.out, a.kali, a.maks_per_dok, a.paralel, a.batas_tugas, a.suhu))
+    kelompok = {k.strip() for k in a.kelompok.split(",") if k.strip()} if a.kelompok else None
+    asyncio.run(
+        utama(a.out, a.kali, a.maks_per_dok, a.paralel, a.batas_tugas, a.suhu, kelompok)
+    )
 
 
 if __name__ == "__main__":

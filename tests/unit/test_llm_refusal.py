@@ -87,6 +87,57 @@ class TestDeteksi:
         assert strip_markers(f"  {JAWABAN}") == f"  {JAWABAN}"
 
 
+# T72 (2026-11-18): model membalas penanda dengan T, A, K Kiril, dan teks itu
+# tampil ke mahasiswa sebagai jawaban. Dibangun dari kode titik supaya sumber
+# test tetap ASCII.
+HOMOGLIF_KIRIL = "[" + chr(0x0422) + "ID" + chr(0x0410) + chr(0x041A) + "_DITEMUKAN]"
+HOMOGLIF_YUNANI = "[" + chr(0x03A4) + "IDAK_DIT" + chr(0x0395) + "MUKAN]"
+LEBAR_PENUH = chr(0xFF3B) + "TIDAK_DITEMUKAN" + chr(0xFF3D)
+TAK_TERLIHAT = "[TIDAK" + chr(0x200B) + "_DITEMUKAN]"
+
+
+class TestPenandaHomoglif:
+    @pytest.mark.parametrize(
+        "penanda", [HOMOGLIF_KIRIL, HOMOGLIF_YUNANI, LEBAR_PENUH, TAK_TERLIHAT]
+    )
+    def test_dikenali_sebagai_penolakan(self, penanda):
+        assert penanda != NOT_FOUND_MARKER
+        assert is_not_found(penanda)
+        assert is_not_found(f"  {penanda} ")
+
+    def test_tetap_jawaban_bila_bersitasi(self):
+        assert not is_not_found(f"{JAWABAN} {HOMOGLIF_KIRIL}")
+
+    @pytest.mark.parametrize("penanda", [HOMOGLIF_KIRIL, LEBAR_PENUH, TAK_TERLIHAT])
+    def test_dibuang_dari_jawaban_parsial(self, penanda):
+        assert strip_markers(f"{JAWABAN} {penanda}") == JAWABAN
+
+    def test_teks_berkurung_lain_tidak_disentuh(self):
+        teks = f"{JAWABAN} [Catatan] {NOT_FOUND_MARKER}"
+        assert strip_markers(teks) == f"{JAWABAN} [Catatan]"
+
+    async def test_pipeline_menjadi_penolakan_resmi(self, strong_retriever):
+        hasil = await tanya(strong_retriever, HOMOGLIF_KIRIL)
+        assert hasil.kind is OutcomeKind.REFUSAL
+        assert chr(0x0422) not in hasil.text
+        assert NOT_FOUND_MARKER not in hasil.text
+
+    async def test_tidak_pernah_dialirkan(self, strong_retriever):
+        potongan: list[str] = []
+
+        async def on_token(teks: str) -> None:
+            potongan.append(teks)
+
+        hasil = await run_pipeline(
+            "kapan KRS dibuka?",
+            retriever=strong_retriever,
+            llm_call=RecordingLLM(HOMOGLIF_KIRIL),
+            on_token=on_token,
+        )
+        assert potongan == []
+        assert hasil.kind is OutcomeKind.REFUSAL
+
+
 class TestPipeline:
     async def test_penanda_menjadi_penolakan(self, strong_retriever):
         hasil = await tanya(strong_retriever, NOT_FOUND_MARKER)

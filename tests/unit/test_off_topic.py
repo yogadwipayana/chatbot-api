@@ -48,6 +48,12 @@ class TestDeteksi:
         assert is_off_topic(OFF_TOPIC_MARKER)
         assert is_off_topic(f"\n {OFF_TOPIC_MARKER} \n")
 
+    def test_penanda_berhomoglif(self):
+        """T72: A Kiril di tengah penanda."""
+        penanda = "[DI_LU" + chr(0x0410) + "R_TOPIK]"
+        assert is_off_topic(penanda)
+        assert strip_markers(f"Jawaban [Dok, hal. 1]. {penanda}") == "Jawaban [Dok, hal. 1]."
+
     def test_jawaban_bersitasi_bukan_di_luar_topik(self):
         assert not is_off_topic(f"{JAWABAN} {OFF_TOPIC_MARKER}")
 
