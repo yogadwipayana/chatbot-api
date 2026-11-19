@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.admin.permissions import AdminRole
 from app.deps import CurrentAdminDep, UnitDirectoryDep, require_role
+from app.rag.risk import contacts_for_unit
 from app.schemas.admin import AdminUnit, AdminUnitCreate, AdminUnitUpdate
 from app.schemas.common import Error
 from app.units import DuplicateUnitError, UnitRecord
@@ -99,4 +100,14 @@ async def update_unit(
     if unit is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, TIDAK_DITEMUKAN)
     audit.warning("Unit %s diubah oleh %s: %s", name, actor.email, changes)
+    if "name" in changes and contacts_for_unit(name) and not contacts_for_unit(unit.name):
+        # Kontak PIC dikunci dengan nama unit di kode; tanpa catatan ini mahasiswa
+        # diam-diam mendapat Front Office (T69, 2026-11-18).
+        audit.warning(
+            "Kontak PIC unit %s tidak ikut ke nama baru %s: penolakan dan kontak "
+            "unit ini memakai Front Office sampai UNIT_CONTACTS di "
+            "app/rag/risk.py diperbarui",
+            name,
+            unit.name,
+        )
     return unit_out(unit)

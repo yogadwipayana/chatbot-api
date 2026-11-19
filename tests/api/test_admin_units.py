@@ -54,6 +54,29 @@ class TestUbah:
         menu = [u["name"] for u in client.get("/api/units").json()]
         assert "Front Office" in menu and "FO" not in menu
 
+    def test_ganti_nama_yang_memutus_kontak_pic_tercatat(self, client, admin_headers, caplog):
+        """T69: PIC dikunci dengan nama unit di kode; tanpa catatan ini
+        mahasiswa diam-diam mendapat Front Office."""
+        baru = {"name": "Bagian Keuangan"}
+        r = client.patch(f"{URL}/Keuangan", json=baru, headers=admin_headers)
+        assert r.status_code == 200
+        assert "PIC unit Keuangan tidak ikut ke nama baru Bagian Keuangan" in caplog.text
+
+    @pytest.mark.parametrize(
+        "lama,baru",
+        [("FO", "Front Office"), ("BAAK", "Akademik"), ("PLK", "Plk"), ("Prodi", "X")],
+    )
+    def test_ganti_nama_yang_kontaknya_tetap_tanpa_catatan(
+        self, client, admin_headers, caplog, lama, baru
+    ):
+        # Unit "Akademik" bawaan migrasi 0009 diganti dulu (seperti "A" di server)
+        # supaya BAAK dapat memakai nama itu.
+        client.patch(f"{URL}/Akademik", json={"name": "A"}, headers=admin_headers)
+        caplog.clear()
+        r = client.patch(f"{URL}/{lama}", json={"name": baru}, headers=admin_headers)
+        assert r.status_code == 200
+        assert "Kontak PIC unit" not in caplog.text
+
     def test_ganti_nama_ke_unit_lain_ditolak(self, client, admin_headers):
         r = client.patch(f"{URL}/FO", json={"name": "baak"}, headers=admin_headers)
         assert r.status_code == 409

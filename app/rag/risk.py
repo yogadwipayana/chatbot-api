@@ -6,10 +6,11 @@ diam-diam saat model diganti.
 
 Kontak yang ditampilkan mengikuti unit (topik) yang dipilih mahasiswa:
 `UNIT_CONTACTS` memuat PIC per unit dari daftar "Kontak PIC per bidang"
-(2026-10-12).
-Unit yang belum punya PIC di daftar itu (Prodi, Fakultas, Akademik) dan
-pertanyaan tanpa unit (Uji coba admin "Semua unit") jatuh ke `DEFAULT_CONTACTS`
-per topik, yang semuanya masih Front Office INSTIKI.
+(2026-10-12), dengan kunci nama unit di tabel `units`; nama lama unit yang
+diganti dari dashboard dicatat di `UNIT_ALIASES`.
+Unit yang belum punya PIC di daftar itu (Prodi, Fakultas) dan pertanyaan tanpa
+unit (Uji coba admin "Semua unit") jatuh ke `DEFAULT_CONTACTS` per topik, yang
+semuanya masih Front Office INSTIKI.
 
 Alamat email per unit yang dulu ada di sini (akademik@, keuangan@,
 kemahasiswaan@) tidak pernah tercantum di sumber mana pun; banner yang menyebut
@@ -113,23 +114,39 @@ def _pic(nama: str, nomor: str) -> UnitContact:
     return UnitContact(unit=nama, jam_layanan="", kontak=f"WhatsApp {nomor}")
 
 
+_PIC_BAAK = _pic("PIC BAAK", "+62 813-5346-2032")
+_PIC_PLK = _pic("Admin PLK INSTIKI", "+62 851-1931-5346")
+
 UNIT_CONTACTS: dict[str, tuple[UnitContact, ...]] = {
-    # Kuncinya nama unit di tabel `units` (pilihan topik di widget). Unit yang
-    # diganti namanya dari dashboard harus diganti juga di sini; kalau tidak,
-    # kontaknya jatuh ke Front Office.
-    "Kemahasiswaan": (
+    # Kuncinya nama unit di tabel `units` (pilihan topik di widget), tidak peka
+    # huruf besar. Unit yang diganti namanya dari dashboard harus diganti juga
+    # di sini, dan nama lamanya dipindah ke `UNIT_ALIASES`; kalau tidak,
+    # kontaknya jatuh ke Front Office (dashboard mencatat peringatannya di Log
+    # aplikasi, lihat `app.routers.admin_units`).
+    # AKADEMIK = BAAK yang diganti nama 2026-11-18; dokumen PLK ikut dipindah
+    # ke sana, jadi PIC PLK ikut tampil.
+    "AKADEMIK": (_PIC_BAAK, _PIC_PLK),
+    "KEMAHASISWAAN": (
         _pic("PIC Kemahasiswaan", "+62 813-3936-5103"),
         _pic("Bidang Pengembangan Karakter Mahasiswa (Ibu Asti)", "+62 812-3673-3230"),
         _pic("Bidang Prestasi Mahasiswa (Pak Redy)", "+62 819-9843-9707"),
         _pic("Beasiswa (Ibu Suci Ariantini)", "+62 812-3608-8993"),
     ),
-    "BAAK": (_pic("PIC BAAK", "+62 813-5346-2032"),),
-    "UPS": (_pic("Layanan Pendidikan (UPS)", "+62 813-3734-8654"),),
-    "PLK": (_pic("Admin PLK INSTIKI", "+62 851-1931-5346"),),
-    "Keuangan": (_pic("Keuangan INSTIKI", "+62 851-7426-1765"),),
-    "FO": (FRONT_OFFICE,),
+    "UNIT PELAYANAN SERTIFIKASI": (_pic("Layanan Pendidikan (UPS)", "+62 813-3734-8654"),),
+    "PLK": (_PIC_PLK,),
+    "KEUANGAN": (_pic("Keuangan INSTIKI", "+62 851-7426-1765"),),
+    "FRONT OFFICE": (FRONT_OFFICE,),
 }
 """Kontak PIC per unit, dalam urutan tampil."""
+
+UNIT_ALIASES: dict[str, str] = {
+    # Nama lama -> kunci `UNIT_CONTACTS` (penggantian nama 2026-11-18). Giliran
+    # lama, test, dan penggantian nama kembali tetap mendapat PIC yang sama.
+    "BAAK": "AKADEMIK",
+    "UPS": "UNIT PELAYANAN SERTIFIKASI",
+    "FO": "FRONT OFFICE",
+}
+"""Nama unit lama yang masih dikenali `contacts_for_unit`."""
 
 
 def contacts_for_unit(unit: str | None) -> tuple[UnitContact, ...]:
@@ -137,6 +154,10 @@ def contacts_for_unit(unit: str | None) -> tuple[UnitContact, ...]:
     if not unit:
         return ()
     kunci = unit.strip().casefold()
+    for lama, baru in UNIT_ALIASES.items():
+        if lama.casefold() == kunci:
+            kunci = baru.casefold()
+            break
     for nama, kontak in UNIT_CONTACTS.items():
         if nama.casefold() == kunci:
             return kontak
