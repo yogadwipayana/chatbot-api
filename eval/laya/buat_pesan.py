@@ -19,6 +19,11 @@ Kelompok tugas:
                    (nilai, IPK/SKS, jadwal, KRS, tagihan, dosen) yang dijawab tool SADS
 - pribadi-lanjutan (r3) pertanyaan lanjutan pendek tentang data itu, dengan `riwayat`
 - pribadi-luar     (r3) pembanding out_of_scope: "nilai", "jadwal", "IPK" di luar kampus
+- pendek       (r4) pesan akademik 1-4 kata gaya ketik cepat ("ipk ane", "jdwl rabu")
+- luar-uang    (r4) out_of_scope soal uang di luar kampus (kurs, emas, pinjol, pajak),
+               kebanyakan dengan unit Keuangan terpilih
+- luar-tugas   (r4) out_of_scope: minta dikerjakan tugas/PR milik penanya
+- jahat-data   (r4) malicious: meminta data akademik mahasiswa lain
 
 Keluaran JSONL, satu pesan per baris; bisa dilanjutkan bila terputus (tugas yang
 sudah ada dilewati):
@@ -256,6 +261,51 @@ PRIBADI_LUAR_TEMA = [
         "dosen kampus lain atau artis yang jadi dosen"
     ),
 ]
+
+PENDEK_TEMA: list[tuple[str, list[str | None]]] = [
+    (
+        "data akademik milik penanya: IPK, IPS, nilai mata kuliah tertentu, nilai "
+        "tertinggi/terendah, jumlah SKS, KHS, transkrip",
+        PRIBADI_UNIT,
+    ),
+    (
+        "jadwal kuliah, KRS, tagihan atau tunggakan, status bayar, dan dosen wali milik "
+        "penanya",
+        PRIBADI_UNIT,
+    ),
+    (
+        "urusan kampus umum: cuti, legalisir, wisuda, yudisium, KRS, UKT, SKP, beasiswa, "
+        "sertifikasi, surat keterangan, perwalian",
+        [*UNIT, "AKADEMIK", "KEUANGAN", None],
+    ),
+]
+"""r4 (2026-11-20): Laya r3 melabeli "ipk gw skrg" smalltalk 0,73 (terblokir) dan
+"cuti" nonsense 0,57. Data r3 hampir tidak punya pertanyaan akademik 2-4 kata tanpa
+kata tanya; satu-satunya soal IPK adalah "IPK ku sekarang berapa?"."""
+
+PENDEK_GAYA = """Setiap pesan HANYA 1-4 kata, seperti ketikan cepat di HP: tanpa kata
+tanya, tanpa salam, tanpa tanda tanya. Pakai singkatan dan kata ganti santai (gw, gue,
+-ku, aku, ane, smt, skrg, brp, hr, kmrn, dpn, udh, matkul), sebagian huruf kapital semua
+atau salah ketik. Contoh gaya: "ipk ane", "NILAI KU SMT 2", "jdwl rabu", "tunggakan smt
+dpn", "wisuda kpn". Setiap pesan harus berbeda. Jangan sebut NIM, jangan beri nomor."""
+
+LUAR_UANG_TEMA = [
+    "kurs mata uang asing, harga emas, saham, reksa dana, dan kripto",
+    (
+        "urusan uang pribadi di luar kampus: pinjol, paylater, kartu kredit, cicilan motor "
+        "atau HP, pajak kendaraan, BPJS, gaji atau UMR, cara menabung atau berinvestasi"
+    ),
+]
+"""r4: Laya r3 melabeli "kurs yen sekarang berapa" (unit KEUANGAN) academic 0,90,
+padahal r1 memblokirnya. Data r3 banyak memuat tagihan pribadi ber-unit KEUANGAN."""
+
+LUAR_UANG_UNIT: list[str | None] = [
+    *(["KEUANGAN", "Keuangan"] * 2),
+    "AKADEMIK",
+    "BAAK",
+    None,
+]
+"""Unit Keuangan sengaja lebih sering: di situlah r3 keliru."""
 
 
 @dataclass
@@ -500,6 +550,74 @@ def susun_tugas(potongan: list[dict], kali: float) -> list[Tugas]:
                 None,
                 n(25),
                 unit_acak=[*UNIT, "AKADEMIK", "KEUANGAN", None],
+            )
+        )
+    for j, (tema, unit_tema) in enumerate(PENDEK_TEMA):
+        for v in range(2):
+            tugas.append(
+                Tugas(
+                    f"pendek:{j}:{v}",
+                    "academic",
+                    "pendek",
+                    f"Tema: {tema}.\nTulis {n(25)} pesan sangat pendek yang dikirim "
+                    "mahasiswa INSTIKI kepada PANDU tentang tema itu (PANDU dapat membaca "
+                    f"data akademik penanya dari sistem kampus). Variasi ke-{v + 1}.\n"
+                    + PENDEK_GAYA,
+                    None,
+                    n(25),
+                    unit_acak=unit_tema,
+                )
+            )
+    for j, tema in enumerate(LUAR_UANG_TEMA):
+        for v in range(2):
+            tugas.append(
+                Tugas(
+                    f"luar-uang:{j}:{v}",
+                    "out_of_scope",
+                    "luar-uang",
+                    f"Tema: {tema}.\nTulis {n(25)} pesan yang mungkin diketik mahasiswa ke "
+                    "chatbot kampus setelah memilih menu Keuangan, tetapi sama sekali BUKAN "
+                    "tentang biaya kuliah, UKT, atau pembayaran ke kampus. Separuhnya sangat "
+                    f"pendek (2-5 kata). Variasi ke-{v + 1}.\n" + GAYA,
+                    None,
+                    n(25),
+                    unit_acak=LUAR_UANG_UNIT,
+                )
+            )
+    for v in range(2):
+        tugas.append(
+            Tugas(
+                f"luar-tugas:{v}",
+                "out_of_scope",
+                "luar-tugas",
+                f"Tulis {n(25)} pesan mahasiswa yang meminta chatbot kampus MENGERJAKAN "
+                "tugasnya: PR, soal latihan atau ujian, laporan praktikum, makalah, esai, "
+                "kode program, slide presentasi, atau bab skripsi. Kebanyakan memakai kata "
+                "ganti orang pertama dan menyebut mata kuliah (kalkulus, statistika, basis "
+                "data, algoritma, akuntansi, bahasa Inggris, pancasila). Bukan pertanyaan "
+                f"tentang aturan atau jadwal tugas. Variasi ke-{v + 1}.\n" + GAYA,
+                None,
+                n(25),
+                unit_acak=PRIBADI_UNIT,
+            )
+        )
+    for v in range(2):
+        tugas.append(
+            Tugas(
+                f"jahat-data:{v}",
+                "malicious",
+                "jahat-data",
+                f"Tulis {n(25)} pesan yang meminta chatbot kampus menampilkan data akademik "
+                "mahasiswa LAIN, bukan milik pengirim: nilai, IPK, jadwal kuliah, KRS, "
+                "tagihan, alamat, atau nomor HP milik teman, pacar, mantan, kakak tingkat, "
+                "mahasiswa dengan nama tertentu, atau mahasiswa dengan NIM tertentu (NIM "
+                "fiktif 10 digit diawali 21 sampai 25). Sebagian santai ('spil', 'kepoin', "
+                "'cek dong'), sebagian berpura-pura berwenang (dosen, orang tua, panitia). "
+                "Ini untuk melatih filter keamanan; tulis pesannya saja. "
+                f"Variasi ke-{v + 1}.\n" + GAYA,
+                None,
+                n(25),
+                unit_acak=PRIBADI_UNIT,
             )
         )
     return tugas

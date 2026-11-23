@@ -22,6 +22,11 @@ yang terkalibrasi adalah `answer_confidence` (= probabilitas label terpilih).
 `gate.parse_response` membaca `answer_confidence` sejak 2026-10-02 (laya.md A1);
 baris `confidence` menunjukkan perilaku gerbang sebelumnya.
 
+Ambang produksi (sejak 2026-11-20 dipakai notebook Kaggle): `--ambang 0.7
+--ambang-luar 0.7 --ambang-nonsense 0.95`. Sebelumnya notebook memakai `--ambang
+0.95` untuk semua label selain out_of_scope, sehingga smalltalk 0,73 pada "ipk gw
+skrg" (Laya r3) tidak terhitung terblokir padahal di produksi terblokir.
+
 Syarat lulus (laya.md): 0 akademik terblokir dan >= 90% di luar topik terblokir,
 dibulatkan ke bawah (8/9 pada 64 pesan putaran 1, 18/20 pada set uji penuh).
 """
@@ -48,10 +53,21 @@ JEV = (
 )
 
 
-def blokir(label: str, keyakinan: float, ambang: float, ambang_luar: float) -> bool:
+def blokir(
+    label: str,
+    keyakinan: float,
+    ambang: float,
+    ambang_luar: float,
+    ambang_nonsense: float | None = None,
+) -> bool:
+    """Sama dengan `gate.GatePolicy.threshold_for`: academic tidak pernah diblokir."""
     if label == "academic":
         return False
-    return keyakinan >= (ambang_luar if label == "out_of_scope" else ambang)
+    if label == "out_of_scope":
+        return keyakinan >= ambang_luar
+    if label == "nonsense" and ambang_nonsense is not None:
+        return keyakinan >= ambang_nonsense
+    return keyakinan >= ambang
 
 
 def ringkas(hasil: list[dict], judul: str) -> None:
@@ -110,8 +126,21 @@ def main() -> None:
     ap.add_argument("--url", default=None, help="endpoint /v1/systemone (mode HTTP)")
     ap.add_argument("--key-env", default="LAYA_API_KEY")
     ap.add_argument("--device", default=None)
-    ap.add_argument("--ambang", type=float, default=0.7)
-    ap.add_argument("--ambang-luar", type=float, default=0.9)
+    ap.add_argument(
+        "--ambang", type=float, default=0.7, help="smalltalk, malicious (LAYA_BLOCK_THRESHOLD)"
+    )
+    ap.add_argument(
+        "--ambang-luar",
+        type=float,
+        default=0.9,
+        help="out_of_scope (LAYA_OUT_OF_SCOPE_THRESHOLD)",
+    )
+    ap.add_argument(
+        "--ambang-nonsense",
+        type=float,
+        default=None,
+        help="nonsense (LAYA_NONSENSE_THRESHOLD); kosong = --ambang",
+    )
     ap.add_argument("--out", type=Path, default=None, help="simpan hasil per pesan (JSONL)")
     a = ap.parse_args()
     if not (a.model or a.url):
@@ -140,8 +169,12 @@ def main() -> None:
                 "answer_confidence": ans,
                 "probabilities": probs,
                 "ms": round(ms),
-                "blok_gate": blokir(j["choice"], conf, a.ambang, a.ambang_luar),
-                "blok_answer": blokir(j["choice"], ans, a.ambang, a.ambang_luar),
+                "blok_gate": blokir(
+                    j["choice"], conf, a.ambang, a.ambang_luar, a.ambang_nonsense
+                ),
+                "blok_answer": blokir(
+                    j["choice"], ans, a.ambang, a.ambang_luar, a.ambang_nonsense
+                ),
             }
         )
 
