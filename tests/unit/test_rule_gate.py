@@ -48,6 +48,9 @@ class TestBasaBasi:
             "wkwkwk",
             "hehe",
             "awokawok",
+            # Laporan 2026-11-23: "heha" tidak dikenali, pesan ini sampai ke LLM.
+            "hehe heha",
+            "hahahihi",
         ],
     )
     def test_dikenali(self, teks):

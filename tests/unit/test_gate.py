@@ -13,10 +13,13 @@ from app.config import Settings
 from app.rag.chain import OutcomeKind, run_pipeline
 from app.rag.gate import (
     QUESTION_KEY,
+    REPLIES,
+    REPLIES_TOPIK,
     GateLabel,
     GatePolicy,
     GateVerdict,
     LayaGate,
+    balasan,
     build_gate,
     build_request,
     lolos,
@@ -138,6 +141,33 @@ class TestParseResponse:
     def test_answer_confidence_rendah_tetap_diteruskan(self):
         """Arah sebaliknya: entropi tinggi tidak boleh mengalahkan p yang rendah."""
         assert not parse_response(respons_laya("nonsense", 0.95, 0.6), self.policy).blocked
+
+
+class TestBalasan:
+    """Balasan blokir mengikuti topik pilihan (laporan 2026-11-23, topik UPS)."""
+
+    UNIT = "UNIT PELAYANAN SERTIFIKASI"
+
+    @pytest.mark.parametrize("label", list(REPLIES_TOPIK))
+    def test_menyebut_topik_tanpa_contoh_unit_lain(self, label):
+        teks = balasan(label, self.UNIT)
+        assert self.UNIT in teks
+        assert "KRS" not in teks and "UKT" not in teks
+
+    @pytest.mark.parametrize("unit", [None, "", "   "])
+    def test_tanpa_topik_memakai_balasan_umum(self, unit):
+        for label in REPLIES:
+            assert balasan(label, unit) == REPLIES[label]
+
+    def test_label_tanpa_varian_topik_tidak_berubah(self):
+        """`malicious` tetap datar: menyebut topik tidak menambah apa pun."""
+        assert balasan(GateLabel.MALICIOUS, self.UNIT) == REPLIES[GateLabel.MALICIOUS]
+
+    def test_academic_tanpa_balasan(self):
+        assert balasan(GateLabel.ACADEMIC, self.UNIT) == ""
+
+    def test_kurung_kurawal_di_nama_unit_aman(self):
+        assert "{x}" in balasan(GateLabel.NONSENSE, "Unit {x}")
 
 
 class TestAmbangNonsense:
@@ -306,6 +336,20 @@ class TestGerbangDiAlur:
         assert hasil.documents == ()
         assert hasil.decision is None
         assert hasil.gate.label is label
+
+    @pytest.mark.parametrize("label", [GateLabel.NONSENSE, GateLabel.OUT_OF_SCOPE])
+    async def test_balasan_blokir_menyebut_topik_pilihan(self, label, strong_retriever, llm):
+        hasil = await run_pipeline(
+            "resep rendang padang",
+            retriever=strong_retriever,
+            llm_call=llm,
+            gate_call=GerbangPalsu(vonis(label, blocked=True)),
+            policy=POLICY,
+            unit="UNIT PELAYANAN SERTIFIKASI",
+        )
+        assert hasil.kind is OutcomeKind.REJECTED
+        assert "UNIT PELAYANAN SERTIFIKASI" in hasil.text
+        assert "KRS" not in hasil.text
 
     async def test_smalltalk_dari_laya_menjadi_smalltalk(self, strong_retriever, llm):
         hasil = await run_pipeline(

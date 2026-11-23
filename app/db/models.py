@@ -105,6 +105,60 @@ class Unit(Base):
     baru. Dokumen lamanya tetap ada."""
 
 
+class UnitContactEntry(Base):
+    """Kontak PIC satu unit, tampil di banner eskalasi dan penolakan (FE-3).
+
+    Dikelola superadmin dari halaman Unit di dashboard. Unit tanpa baris di sini
+    memakai Front Office (`app.rag.risk.FRONT_OFFICE`), yang sengaja tetap di
+    kode: cadangan terakhir tidak boleh ikut hilang bila tabel ini kosong.
+
+    Kanal kontak disimpan per kolom, bukan teks bebas. Widget hanya membuka
+    nomor di WhatsApp bila nomornya didahului label "WhatsApp" (client
+    `kontak.ts`), jadi teks yang tampil disusun server (`app.units.susun_kontak`).
+    """
+
+    __tablename__ = "unit_contacts"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    unit: Mapped[str] = mapped_column(
+        String(200),
+        # Ganti nama unit ikut ke sini (T69: dulu kontak dikunci nama unit di kode
+        # dan diam-diam jatuh ke Front Office).
+        ForeignKey("units.name", onupdate="CASCADE", ondelete="CASCADE"),
+        nullable=False,
+    )
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    """Nama yang tampil, mis. "PIC BAAK". Unik per unit: widget memakainya
+    sebagai kunci baris dan kunci banner terakhir."""
+    phone: Mapped[str | None] = mapped_column(String(40))
+    whatsapp: Mapped[str | None] = mapped_column(String(40))
+    email: Mapped[str | None] = mapped_column(String(255))
+    service_hours: Mapped[str | None] = mapped_column(String(200))
+    """Kosong bila kampus belum menetapkannya; widget melewatinya."""
+    sort_order: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    keywords: Mapped[list[str]] = mapped_column(
+        ARRAY(String(100)), server_default="{}", nullable=False
+    )
+    """Kosong = selalu tampil untuk unit ini. Terisi = hanya bila pertanyaan
+    menyebut salah satunya, mis. Admin PLK di unit Akademik (migrasi 0018,
+    `app.rag.risk.pilih_kontak`)."""
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_by: Mapped[str | None] = mapped_column(String(255))
+    """Email superadmin yang terakhir mengubah, untuk jejak audit."""
+
+    __table_args__ = (
+        CheckConstraint(
+            "phone IS NOT NULL OR whatsapp IS NOT NULL OR email IS NOT NULL",
+            name="ck_unit_contacts_channel",
+        ),
+        Index("ix_unit_contacts_unit_label", "unit", text("lower(label)"), unique=True),
+    )
+
+
 class Document(Base):
     __tablename__ = "documents"
 

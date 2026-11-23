@@ -200,6 +200,7 @@ async def admin_test_query(
     )
 
     unit = await unit_terdaftar(units, payload.unit) if payload.unit else None
+    kontak_unit = await units.kontak_tampil(unit)
 
     mulai = time.perf_counter()
     run_id = id_giliran()
@@ -231,6 +232,7 @@ async def admin_test_query(
                 callbacks=[giliran.recorder],
                 tool_registry=tool_registry,
                 tool_max_rounds=settings.tools_max_rounds,
+                unit_contacts=kontak_unit,
             )
             akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
         giliran.selesai(

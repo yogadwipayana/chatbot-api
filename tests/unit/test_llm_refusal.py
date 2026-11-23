@@ -13,10 +13,9 @@ import pytest
 
 from app.observability.chatlog import ChatLogEntry, build_meta
 from app.rag.chain import (
-    REFUSAL_TEMPLATE,
     OutcomeKind,
     is_not_found,
-    render_contacts,
+    refusal_text,
     run_pipeline,
     strip_markers,
 )
@@ -147,14 +146,24 @@ class TestPipeline:
     async def test_teksnya_penolakan_resmi_dengan_kontak(self, strong_retriever):
         hasil = await tanya(strong_retriever, NOT_FOUND_MARKER)
         assert FRONT_OFFICE in hasil.contacts
-        assert hasil.text.startswith(
-            REFUSAL_TEMPLATE.format(contacts=render_contacts(hasil.contacts))
-        )
+        assert hasil.text == refusal_text(hasil.contacts)
         assert NOT_FOUND_MARKER not in hasil.text
 
     async def test_petunjuk_unit_ikut_seperti_penolakan_threshold(self, strong_retriever):
         hasil = await tanya(strong_retriever, NOT_FOUND_MARKER, unit="UPS")
         assert "dokumen unit UPS" in hasil.text
+
+    @pytest.mark.parametrize("unit", [None, "BAAK"])
+    def test_penolakan_mengajak_menulis_lebih_rinci(self, unit):
+        """Keputusan user 2026-11-23: sebagian penolakan terjadi karena cara
+        bertanya ("Matakuliah ..." ditolak, "mata kuliah ..." dijawab, log
+        2026-11-12), jadi teksnya tidak boleh menyatakan informasinya tidak ada."""
+        teks = refusal_text([FRONT_OFFICE], unit=unit)
+        kalimat_awal = teks.split("\n", 1)[0]
+        assert kalimat_awal.startswith("Maaf, saya belum menemukan jawabannya di dokumen")
+        assert "lebih rinci" in kalimat_awal
+        assert "belum membahas" not in teks
+        assert f"- {FRONT_OFFICE.unit}" in teks
 
     async def test_prosa_tolak_juga_menjadi_penolakan(self, strong_retriever):
         hasil = await tanya(strong_retriever, PROSA_TOLAK)

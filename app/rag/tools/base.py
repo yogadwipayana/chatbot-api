@@ -30,6 +30,31 @@ Argumen yang dihalusinasi model paling buruk menghasilkan hasil kosong, bukan
 beban atau panggilan tak terduga ke layanan hulu (docs/tool-call.md §11)."""
 
 
+_SPASI = re.compile(r"\s+")
+_VARIAN_PEMICU = (
+    (re.compile(r"\bmata\s*-?\s*kuliah"), "mata kuliah"),
+    (re.compile(r"\bmakul"), "matkul"),
+    (re.compile(r"\bmk\b"), "mata kuliah"),
+)
+"""Ejaan lain kata pemicu yang biasa ditulis mahasiswa, ke bentuk di `triggers`.
+
+"Matakuliah data integration syaratnya apa supaya bisa diambil?" tidak cocok
+dengan pemicu mana pun karena "mata kuliah" ditulis tanpa spasi, jadi tool tidak
+di-bind dan model hanya bisa membalas `[TIDAK_DITEMUKAN]`. Pertanyaan yang sama
+dengan "mata kuliah" langsung dijawab `get_prasyarat_matkul` (log 2026-11-12).
+Variannya sama dengan `_MK` di `app.rag.risk`."""
+
+
+def rapikan_pemicu(teks: str) -> str:
+    """Bentuk pembanding pemicu: huruf kecil, spasi tunggal, ejaan lain diseragamkan.
+
+    Hanya untuk mencocokkan pemicu; teks yang dikirim ke model tidak diubah."""
+    teks = _SPASI.sub(" ", teks.casefold())
+    for pola, ganti in _VARIAN_PEMICU:
+        teks = pola.sub(ganti, teks)
+    return teks
+
+
 class ToolArgumentError(ValueError):
     """Argumen dari model tidak memenuhi skema tool."""
 
@@ -210,8 +235,8 @@ class ToolSpec:
         }
 
     def cocok(self, pertanyaan: str) -> bool:
-        teks = pertanyaan.casefold()
-        return any(pemicu.casefold() in teks for pemicu in self.triggers)
+        teks = rapikan_pemicu(pertanyaan)
+        return any(rapikan_pemicu(pemicu) in teks for pemicu in self.triggers)
 
 
 def validasi_argumen(spec: ToolSpec, mentah: dict[str, Any] | None) -> dict[str, Any]:

@@ -30,13 +30,12 @@ class SmallTalkKind(StrEnum):
 
 REPLIES: dict[SmallTalkKind, str] = {
     SmallTalkKind.GREETING: (
-        "Halo! Saya asisten administrasi akademik INSTIKI. Silakan tanyakan urusan "
+        "Halo! Saya asisten administrasi INSTIKI. Silakan tanyakan urusan "
         "administrasi Anda -- jawaban saya bersumber dari dokumen resmi kampus "
         "dan selalu menyertakan sumbernya."
     ),
     SmallTalkKind.THANKS: (
-        "Sama-sama. Kalau masih ada yang ingin ditanyakan soal administrasi "
-        "akademik, silakan."
+        "Sama-sama. Kalau masih ada yang ingin ditanyakan soal administrasi kampus, silakan."
     ),
     SmallTalkKind.CLOSING: (
         "Baik, semoga urusannya lancar. Silakan kembali bertanya kapan saja."
@@ -48,12 +47,14 @@ MAKS_KATA_INTI = 3
 
 _KATA = re.compile(r"[a-z]+")
 
-TAWA = re.compile(
-    r"^(?:(?:wk){2,}w?|(?:ha){2,}h?|(?:he){2,}h?|(?:hi){2,}h?|(?:hu){2,}h?|(?:xi){2,}|lol|(?:a?wok){2,})$"
-)
-"""Tawa ("wkwk", "hehe", "awokawok"). Diabaikan di sini, seperti sapaan
+TAWA = re.compile(r"^(?:(?:wk){2,}w?|(?:h[aeiu]){2,}h?|(?:xi){2,}|lol|(?:a?wok){2,})$")
+"""Tawa ("wkwk", "hehe", "heha", "awokawok"). Diabaikan di sini, seperti sapaan
 pelengkap: "wkwk oke makasih" adalah ucapan terima kasih. Pesan yang HANYA
-berisi tawa ditangani `app.rag.rule_gate`."""
+berisi tawa ditangani `app.rag.rule_gate`.
+
+Suku "h" + vokal boleh berganti vokal ("heha", "hihaha"). Dulu hanya vokal yang
+sama, sehingga "hehe heha" lolos aturan, dinilai Laya smalltalk 0,68 (di bawah
+ambang), lalu ditolak LLM penjawab sebagai di luar topik (2026-11-23)."""
 
 # Sapaan dan panggilan yang hanya menempel pada maksud sebenarnya: "halo min",
 # "makasih ya kak". Dibuang lebih dulu supaya tidak menghabiskan jatah kata inti.

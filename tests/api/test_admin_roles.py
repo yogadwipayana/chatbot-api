@@ -42,6 +42,7 @@ def konkret(path: str) -> str:
         "{entry_id}",
         "{unanswered_id}",
         "{user_id}",
+        "{contact_id}",
     ):
         path = path.replace(parameter, UUID_CONTOH)
     return path.replace("{name}", "Keuangan").replace("{key}", "emb_" + "a" * 24)

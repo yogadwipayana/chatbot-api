@@ -12,7 +12,7 @@ from typing import Any
 
 import httpx
 import pytest
-from langchain_core.messages import AIMessageChunk, ToolMessage
+from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 
 from app.config import Settings
 from app.rag.chain import OutcomeKind, run_pipeline
@@ -28,7 +28,12 @@ from app.rag.tools.base import (
     validasi_argumen,
 )
 from app.rag.tools.client import SadsClient
-from app.rag.tools.loop import MAKS_TOOL_PER_GILIRAN, PESAN_BATAS, run_tool_loop
+from app.rag.tools.loop import (
+    DORONGAN_T1,
+    MAKS_TOOL_PER_GILIRAN,
+    PESAN_BATAS,
+    run_tool_loop,
+)
 from app.rag.tools.registry import ToolRegistry, build_registry
 from tests.fixtures.fakes import FakeRetriever, RecordingLLM, RecordingRewriter
 
@@ -88,6 +93,29 @@ class TestRegistry:
 
     def test_tidak_eligible_di_luar_topik(self):
         assert _registry().eligible("resep rendang yang enak") == []
+
+    @pytest.mark.parametrize(
+        "pertanyaan",
+        [
+            # Regresi log 2026-11-12: ditolak, padahal versi "mata kuliah" dijawab.
+            "Matakuliah data integration syaratnya apa supaya bisa diambil?",
+            "mata-kuliah Basis Data itu apa",
+            "syarat MK Basis Data apa?",
+            "makul Web Programming syaratnya apa",
+            "syarat   mata\nkuliah Basis Data",
+        ],
+    )
+    def test_ejaan_lain_mata_kuliah_tetap_eligible(self, pertanyaan):
+        reg = _registry()
+        semua = [p for s in reg.specs for p in s.triggers]
+        # Tanpa penyeragaman ejaan, tidak ada pemicu yang cocok.
+        assert not any(p.casefold() in pertanyaan.casefold() for p in semua)
+        assert reg.eligible(pertanyaan)
+
+    @pytest.mark.parametrize("pertanyaan", ["resep makanan khas Bali", "berita PMK terbaru"])
+    def test_penyeragaman_ejaan_tidak_membuka_di_luar_topik(self, pertanyaan):
+        # "mk" hanya diseragamkan sebagai kata utuh, bukan bagian kata lain.
+        assert _registry().eligible(pertanyaan) == []
 
     def test_pertanyaan_inggris_pendek_eligible_tanpa_rewrite(self):
         """Regresi live: "who teaches X?" tidak di-rewrite (`looks_english` butuh
@@ -755,6 +783,108 @@ def _banyak_panggilan(*matkul: str) -> list[AIMessageChunk]:
             ],
         )
     ]
+
+
+class TestDoronganT1:
+    """Model yang menolak sebelum mencoba satu tool pun didorong sekali (T1).
+
+    Regresi log 2026-11-12: "apa 9 sks pilihan yang perlu saya penuhi?" ditolak
+    tanpa panggilan tool, padahal tool ter-bind; versi lain pertanyaan yang sama
+    dijawab `get_nilai_saya`."""
+
+    async def test_menolak_tanpa_tool_didorong_lalu_memanggil_tool(self):
+        dipanggil: list[str] = []
+
+        async def handler(*, matkul: str) -> ToolResult:
+            dipanggil.append(matkul)
+            return ToolResult("get_mk_diampu_dosen", LABEL, "- Budi: X", True)
+
+        llm = FakeChat(
+            [
+                _answer_turn(NOT_FOUND_MARKER),
+                _tool_turn("get_mk_diampu_dosen", '{"matkul":"X"}'),
+                _answer_turn("Pengampunya ", f"Budi [{LABEL}]."),
+            ]
+        )
+        token: list[str] = []
+
+        async def on_token(t: str) -> None:
+            token.append(t)
+
+        res = await _jalankan(llm, handler, on_token=on_token, max_rounds=2)
+        assert dipanggil == ["X"]
+        assert res.text == f"Pengampunya Budi [{LABEL}]."
+        assert llm.i == 3
+        # Penanda giliran pertama tidak pernah sampai ke mahasiswa.
+        assert "".join(token) == res.text
+        dorongan = [
+            m
+            for m in llm.seen_messages
+            if isinstance(m, HumanMessage) and m.content == DORONGAN_T1
+        ]
+        assert len(dorongan) == 1
+
+    async def test_penanda_berhomoglif_juga_didorong(self):
+        kiril_t = chr(0x0422)
+        llm = FakeChat(
+            [_answer_turn(f"[{kiril_t}IDAK_DITEMUKAN]"), _answer_turn(NOT_FOUND_MARKER)]
+        )
+        await _jalankan(llm, None)
+        assert llm.i == 2
+
+    async def test_didorong_hanya_sekali(self):
+        llm = FakeChat([_answer_turn(NOT_FOUND_MARKER), _answer_turn(NOT_FOUND_MARKER)])
+        res = await _jalankan(llm, None)
+        assert llm.i == 2
+        assert res.text == NOT_FOUND_MARKER
+        assert res.tool_calls == []
+
+    async def test_tidak_didorong_bila_tool_sudah_dicoba(self):
+        async def handler(*, matkul: str) -> ToolResult:
+            return ToolResult("get_mk_diampu_dosen", LABEL, "", False)
+
+        llm = FakeChat(
+            [
+                _tool_turn("get_mk_diampu_dosen", '{"matkul":"X"}'),
+                _answer_turn(NOT_FOUND_MARKER),
+            ]
+        )
+        res = await _jalankan(llm, handler)
+        assert llm.i == 2
+        assert res.text == NOT_FOUND_MARKER
+
+    @pytest.mark.parametrize(
+        "balasan",
+        [
+            "[DI_LUAR_TOPIK]",
+            "",
+            f"Prasyaratnya Basis Data [{LABEL}]. [TIDAK_DITEMUKAN]",
+        ],
+    )
+    async def test_balasan_lain_tidak_didorong(self, balasan: str):
+        llm = FakeChat([_answer_turn(balasan)])
+        await _jalankan(llm, None)
+        assert llm.i == 1
+
+    async def test_dorongan_tidak_menghabiskan_putaran(self):
+        """Dengan `max_rounds=1`, tool tetap sempat dipanggil sesudah dorongan."""
+        dipanggil: list[str] = []
+
+        async def handler(*, matkul: str) -> ToolResult:
+            dipanggil.append(matkul)
+            return ToolResult("get_mk_diampu_dosen", LABEL, "- Budi: X", True)
+
+        llm = FakeChat(
+            [
+                _answer_turn(NOT_FOUND_MARKER),
+                _tool_turn("get_mk_diampu_dosen", '{"matkul":"X"}'),
+                _answer_turn(f"Budi [{LABEL}]."),
+            ]
+        )
+        res = await _jalankan(llm, handler, max_rounds=1)
+        assert dipanggil == ["X"]
+        assert res.text == f"Budi [{LABEL}]."
+        assert llm.i == 3
 
 
 class TestSadsClient:

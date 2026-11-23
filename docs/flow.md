@@ -235,8 +235,8 @@ Berjalan setiap kali mahasiswa mengirim pertanyaan (`POST /api/chat` atau `/api/
         ▼                       ▼
 ┌──────────────────┐   ┌─────────────────────────┐
 │ Fallback         │   │ Risk check (FR-6)       │
-│ "belum ditemukan │   │ UKT/DO/sanksi/deadline  │
-│ di dokumen resmi"│   │ → kontak unit ikut      │
+│ "dokumen belum   │   │ UKT/DO/sanksi/deadline  │
+│ membahas"        │   │ → kontak unit ikut      │
 │ + kontak unit    │   └───────────┬─────────────┘
 │ + petunjuk unit  │               ▼
 │ LLM TIDAK        │   ┌─────────────────────────┐
@@ -512,10 +512,16 @@ Yang dinilai adalah skor **mentah**, bukan skor RRF. Chunk peringkat 1 selalu me
 Fallback:
 
 ```text
-"Maaf, saya tidak menemukan informasi ini di dokumen resmi yang saya miliki.
- Supaya Anda tidak mendapat jawaban yang keliru, silakan tanyakan langsung ke:
- - <unit terkait topik pertanyaan>"
+"Maaf, saya belum menemukan jawabannya di <dokumen unit X | dokumen yang saya miliki>.
+ Coba tuliskan pertanyaan Anda dengan lebih rinci, atau agar jawabannya pasti,
+ tanyakan langsung ke:
+ - <PIC unit pilihan, atau unit terkait topik pertanyaan>
+ [Bila pertanyaan Anda ditangani unit lain, ganti topik lalu tanyakan lagi.]"
 ```
+
+Kontak yang didaftar dipilih `risk.pilih_kontak` dari pertanyaan (dan tulisan ulangnya dari riwayat), bukan seluruh kontak unit: kontak berkata kunci (`unit_contacts.keywords`, mis. Admin PLK di unit Akademik) hanya ikut bila pertanyaannya menyebut kata itu, dan pertanyaan pengambilan mata kuliah (ambil/tambah/drop matkul, beban SKS, perwalian, persetujuan KRS) diarahkan ke dosen Pembimbing Akademik tanpa nomor, menggantikan kontak umum unit kecuali topiknya juga berisiko. Aturan yang sama berlaku untuk banner eskalasi.
+
+Bagian `[...]` hanya muncul bila mahasiswa memilih unit. Cakupan unit sengaja disebut di kalimat pertama, bukan setelah daftar kontak: kontak satu unit bisa empat baris, dan kalimat di bawahnya jatuh ke luar layar widget. Teks penolakan dan label bubble-nya ("Belum terjawab") sengaja tidak menyebut "dokumen resmi". Teksnya menulis "belum menemukan", bukan "belum membahas", dan mengajak menulis lebih rinci, sedangkan labelnya menyebut hasil, bukan sebab: sebagian penolakan terjadi karena cara bertanya, bukan karena informasinya tidak ada (`docs/tool-call.md` §18, 2026-11-23). Penyusunnya satu: `refusal_text` (`app/rag/chain.py`).
 
 Pertanyaan yang ditolak masuk tabel `unanswered_questions` (AD-4) supaya admin tahu dokumen apa yang kurang.
 

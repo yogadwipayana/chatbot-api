@@ -26,6 +26,7 @@ erDiagram
     messages ||--o| unanswered_questions : "0..1 (SET NULL)"
     units ||--o{ documents : "1..N (ON UPDATE CASCADE)"
     units |o--o{ admins : "0..N (ON UPDATE CASCADE)"
+    units ||--o{ unit_contacts : "0..N (ON UPDATE/DELETE CASCADE)"
     embed_keys |o--o{ conversations : "0..N (SET NULL)"
 
     units {
@@ -33,6 +34,20 @@ erDiagram
         varchar  description "500 — teks bantu menu chatbot"
         int      sort_order "NOT NULL, default 0 — urutan tampil"
         boolean  is_active "NOT NULL, default true"
+    }
+
+    unit_contacts {
+        uuid     id PK
+        varchar  unit FK "200 → units.name, NOT NULL"
+        varchar  label "200, NOT NULL — unik per unit, tanpa membedakan huruf besar"
+        varchar  phone "40"
+        varchar  whatsapp "40"
+        varchar  email "255 — minimal satu dari tiga kanal terisi"
+        varchar  service_hours "200 — kosong = tidak ditampilkan"
+        int      sort_order "NOT NULL, default 0 — urutan tampil"
+        varchar_arr keywords "100[], NOT NULL, default {} — kosong = selalu tampil"
+        timestamptz updated_at "NOT NULL, default now()"
+        varchar  updated_by "255 — email superadmin"
     }
 
     documents {
@@ -162,6 +177,7 @@ CONSTRAINT ck_admins_staff_unit CHECK (role <> 'staf' OR (unit IS NOT NULL AND b
 |---|---|---|---|
 | **Pengetahuan** | `documents`, `chunks` | `app/ingestion/`, `app/admin/faq.py` | retrieval FR-2 |
 | **Referensi** | `units` | migrasi `0009` (isi awal), `app/routers/admin_units.py` (halaman Unit, superadmin) | `app/units.py`: menu chatbot, validasi setiap isian unit, filter retrieval |
+| **Referensi** | `unit_contacts` | migrasi `0017` (isi awal) dan `0018` (kata kunci Admin PLK), `app/routers/admin_units.py` (dialog Kontak PIC di halaman Unit, superadmin) | `SqlUnitDirectory.kontak_tampil` di router chat dan uji coba: banner eskalasi dan teks penolakan (FE-3) |
 | **Log** | `conversations`, `messages`, `feedback`, `unanswered_questions` | `app/observability/chatlog.py`, `app/routers/chat.py` | dashboard AD-4, AD-5 |
 | **Akun** | `admins` | `app/admin/accounts.py`, `scripts/create_admin.py` | auth AD-1 |
 | **Setelan** | `runtime_config` | `app/routers/admin_config.py` | `get_effective_settings` di setiap permintaan |
@@ -331,6 +347,46 @@ memindah seluruh chunk-nya antar-tabel.
 Isi awal (migrasi `0009`, dalam urutan menu): BAAK, FO (Front Office), Keuangan,
 Kemahasiswaan, Prodi, Fakultas, PLK, UPS (Unit Pelaksana Sertifikasi — dieja
 "Pelayanan" di `0009`, dibetulkan `0012`), Akademik.
+
+---
+
+## `unit_contacts` — kontak PIC per unit
+
+Kontak yang tampil di banner eskalasi dan teks penolakan widget (FE-3) untuk
+unit yang dipilih mahasiswa. Sebelum `0017` daftarnya ditulis di kode
+(`UNIT_CONTACTS` di `app/rag/risk.py`) dengan kunci nama unit: mengganti PIC
+berarti deploy ulang, dan mengganti nama unit dari dashboard diam-diam memutus
+kontaknya (T69). Kini `unit` foreign key ke `units.name` dengan `ON UPDATE
+CASCADE`, jadi kontak ikut berganti nama.
+
+**Kanal per kolom, bukan teks bebas.** Widget membuka nomor yang didahului
+"WhatsApp" di WhatsApp dan nomor lain lewat `tel:` (client `kontak.ts`); admin
+yang mengetik "wa: 0813..." akan diam-diam mendapat tautan telepon. Karena itu
+teks yang tampil disusun server (`app/units.py::susun_kontak`), mis. "Telepon
+(0361) 256995 / WhatsApp +62 813-3982-2383", dan nomornya divalidasi dengan
+pola yang sama dengan widget (`schemas/admin.py::NOMOR_TELEPON`).
+
+**Kata kunci (`keywords`, migrasi `0018`).** Kosong = kontak selalu tampil
+untuk unitnya. Terisi = hanya tampil bila pertanyaan (atau tulisan ulangnya
+dari riwayat) menyebut salah satunya, utuh per kata tanpa membedakan huruf
+besar (`app/rag/risk.py::pilih_kontak`). Dipakai untuk Admin PLK di unit
+Akademik: urusan surat dan administrasi lain cukup ke BAAK sebagai pintu
+pertama, nomor PLK hanya untuk urusan PLK (2026-11-23). `0018` mengisinya
+untuk kontak berlabel "Admin PLK INSTIKI" di unit selain PLK. Pertanyaan
+pengambilan mata kuliah diarahkan ke dosen PA (`risk.DOSEN_PA`), yang sengaja
+di kode: dosen PA berbeda per mahasiswa, jadi tidak ada nomor untuk disimpan.
+
+**Unit tanpa kontak memakai Front Office.** Cadangan itu (`risk.FRONT_OFFICE`,
+`DEFAULT_CONTACTS`) dan kontak pertanyaan sensitif (`sensitive.py`) sengaja
+tetap di kode: kontak harus tetap muncul walau tabel ini kosong.
+
+**Dimuat router, bukan graf.** Router chat dan uji coba memuat kontak unit
+setelah `unit_terdaftar`, lalu meneruskannya ke `run_pipeline(unit_contacts=...)`
+lewat `PipelineDeps`; graf tidak membaca database sendiri.
+
+Isi awal `0017` adalah salinan `UNIT_CONTACTS` terakhir, dipasang ke setiap unit
+yang namanya (atau nama lamanya: BAAK, UPS, FO) cocok tanpa membedakan huruf
+besar.
 
 ---
 

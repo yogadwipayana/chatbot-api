@@ -152,6 +152,9 @@ pesan = [TOOL_SYSTEM_PROMPT + KONTEKS, <pertanyaan_mahasiswa> (§8)]
 untuk putaran 1..TOOLS_MAX_ROUNDS:
     resp = LLM(pesan, tools = seluruh registry, tool_choice = "auto")   # di-stream
     bila resp tanpa tool_calls dan tanpa invalid_tool_calls:
+        bila resp hanya [TIDAK_DITEMUKAN], belum ada tool dicoba, belum didorong:
+            pesan += resp, DORONGAN_T1     # sekali; tidak dihitung putaran
+            ulangi giliran
         kembalikan resp.content            # jawaban final (kosong → [TIDAK_DITEMUKAN])
     on_stage("mengambil data akademik")
     jalankan ≤ 4 tool_calls BERSAMAAN (asyncio.gather):
@@ -176,6 +179,15 @@ jawaban dipaksa lewat LLM TANPA tool                # batas putaran habis
 - **Satu `run_id` per giliran LLM** (`buat_config`). Setiap giliran mendapat
   config baru dari `LLMCall._config`, sehingga semua giliran tercatat di
   LangSmith. `LLMCall.run_id` berakhir pada giliran jawaban.
+- **Dorongan T1** (`DORONGAN_T1`, 2026-11-23). Bila balasan pertama model hanya
+  `[TIDAK_DITEMUKAN]` dan belum ada tool yang dicoba, model diminta sekali lagi
+  memeriksa T1, dengan tool tetap ter-bind. Dorongan dikirim sebagai pesan
+  pengguna, karena tidak semua penyedia menerima pesan sistem di tengah
+  percakapan. Balasan berpenanda tidak pernah dialirkan (penahan penanda), jadi
+  mahasiswa hanya melihat hasil akhirnya. Yang tidak didorong: jawaban parsial
+  yang menyebut penanda, balasan kosong, dan `[DI_LUAR_TOPIK]`. Biayanya satu
+  giliran LLM tambahan, hanya pada penolakan seperti itu. Kejadiannya tercatat di
+  log aplikasi (`model menolak tanpa mencoba tool`), belum di `messages.meta`.
 
 ---
 
@@ -422,6 +434,13 @@ tool_eligible = ADA ToolSpec yang `triggers`-nya cocok (substring, tanpa beda
               → seluruh tool di-bind
 ```
 
+- **Ejaan diseragamkan sebelum dicocokkan** (`rapikan_pemicu`, 2026-11-23):
+  huruf kecil, spasi tunggal, lalu "matakuliah"/"mata-kuliah" → "mata kuliah",
+  "makul" → "matkul", dan "mk" sebagai kata utuh → "mata kuliah". Variannya sama
+  dengan `_MK` di `app/rag/risk.py`. Tanpa ini "Matakuliah data integration
+  syaratnya apa supaya bisa diambil?" tidak eligible dan ditolak, padahal versi
+  "mata kuliah"-nya dijawab `get_prasyarat_matkul` (log 2026-11-12). Hanya
+  pembandingnya yang diseragamkan; teks ke model tetap asli.
 - **Hasil rewrite ikut dicek** (`_tool_eligible`). Pertanyaan lanjutan ("kalau
   Basis Data?") tidak memuat pemicu, tetapi versi mandirinya ("Siapa dosen
   pengampu mata kuliah Basis Data?") memuatnya.
@@ -985,6 +1004,37 @@ Perbaikan dari uji ini:
 | jadwal kuliah saya semester ini apa saja? | jadwal tidak dibaca | 7 kelas, 23 SKS, lampiran "Jadwal kuliah Anda" (model tetap meringkas daftarnya, pola T50) |
 | hari ini saya ada kuliah tidak? / kalau besok kuliah apa? | tidak ada pemicu yang cocok: ditolak | "Senin … tidak ada jadwal kuliah"; hari dihitung handler (pemicu baru: `ada kuliah`, `kuliah apa`, `masuk kuliah`, `kuliah besok`, `jadwal kelas`) |
 | tolong cek IPK teman saya NIM … | tolak benar, tetapi `get_nilai_saya` dipanggil dan lampiran "Daftar nilai" (milik penanya) tampil di bawahnya | tanpa tool dan tanpa lampiran (kalimat baru di T8); judul lampiran kini "Daftar nilai Anda" |
+
+### Pertanyaan sama, jawaban berbeda (2026-11-23)
+
+User melaporkan pertanyaan yang baru terjawab setelah ditulis ulang. Log DB dev
+11-12 (unit BAAK) menunjukkan dua pola, keduanya kegagalan sistem, bukan
+pertanyaan yang kurang jelas:
+
+| Ditolak | Dijawab | Penyebab | Perbaikan |
+|---|---|---|---|
+| Matakuliah data integration syaratnya apa supaya bisa diambil? | mata kuliah data integration syaratnya apa saja? (`get_prasyarat_matkul`) | "Matakuliah" tanpa spasi: tidak eligible, tool tidak di-bind | `rapikan_pemicu` (§8) |
+| apa 9 sks pilihan yang perlu saya penuhi? | apa saja 9 sks pilihan yang belum saya ambil (`get_nilai_saya`) | tool ter-bind, model menolak tanpa mencoba (melanggar T1) | `DORONGAN_T1` (§5) |
+
+Dalam 30 hari sampai 11-23 ada 39 penolakan: 35 diputuskan LLM, 4 oleh ambang.
+Dari 35 itu, 13 terjadi saat tool ter-bind, dan tak satu pun mencoba tool.
+Sebagian memang benar ditolak (nomor HP dosen, IPK teman, kunci jawaban), jadi
+angka 13 bukan jumlah bug. Teks penolakan juga diubah: kini "belum menemukan
+jawabannya" disertai ajakan menulis lebih rinci (`REFUSAL_TEMPLATE`).
+
+Uji live lewat uji coba admin (LLM, Laya, dan SADS asli, unit AKADEMIK, tanpa
+NIM, 2026-11-23):
+- "Matakuliah data integration …" kini dijawab `get_prasyarat_matkul` tanpa
+  perlu dorongan.
+- "nomor hp dosen pak gan berapa ya?" didorong sekali, lalu tetap ditolak tanpa
+  tool, dan memang benar ditolak; latensinya 6,2 detik.
+- "apa 9 sks pilihan …" kali ini dijawab dari dokumen tanpa tool, jadi dorongan
+  tidak teruji di kasus aslinya. Tool data pribadi juga butuh NIM, yang tidak
+  dimiliki uji coba admin.
+
+`eval/run_generation.py` tidak memakai tool (butir 1 di bawah), jadi kedua
+perbaikan tool tidak mengubah hasil eval generasi; hanya teks penolakannya yang
+berubah.
 
 ### Masih terbuka (sengaja tidak diubah tanpa keputusan)
 

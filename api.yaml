@@ -1816,9 +1816,9 @@ paths:
       x-min-role: superadmin
       security: [{ bearerAuth: [] }]
       description: |
-        Termasuk unit nonaktif, dalam urutan menu, beserta jumlah dokumen dan
-        akun yang memakainya. Untuk isian unit gunakan `GET /api/units`, yang
-        hanya memuat unit aktif.
+        Termasuk unit nonaktif, dalam urutan menu, beserta jumlah dokumen, akun,
+        dan kontak PIC yang memakainya. Untuk isian unit gunakan `GET /api/units`,
+        yang hanya memuat unit aktif.
       responses:
         '200':
           description: Semua unit
@@ -1869,7 +1869,7 @@ paths:
       x-min-role: superadmin
       security: [{ bearerAuth: [] }]
       description: |
-        Nama baru ikut tersimpan di setiap dokumen dan akun unit itu
+        Nama baru ikut tersimpan di setiap dokumen, akun, dan kontak PIC unit itu
         (`ON UPDATE CASCADE`). Unit tidak dapat dihapus; menonaktifkannya
         menyembunyikan unit dari menu chatbot dan dari pilihan isian baru,
         sementara dokumen dan akunnya tetap ada.
@@ -1899,6 +1899,125 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '422': { $ref: '#/components/responses/ValidationError' }
+
+  /api/admin/units/{name}/contacts:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: Ejaan resmi, persis seperti di `GET /api/admin/units`.
+        schema: { type: string }
+    get:
+      tags: [admin-units]
+      summary: Daftar kontak PIC unit
+      operationId: list_unit_contacts
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Dalam urutan tampil di banner eskalasi dan teks penolakan widget (FE-3).
+        Daftar kosong berarti widget memakai Front Office untuk unit ini.
+      responses:
+        '200':
+          description: Kontak unit
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AdminUnitContact' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+    post:
+      tags: [admin-units]
+      summary: Tambah kontak PIC unit
+      operationId: create_unit_contact
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Langsung tampil di widget untuk unit ini, tanpa deploy. Minimal satu dari
+        `phone`, `whatsapp`, `email` terisi; teks yang tampil (`display`) disusun
+        server supaya widget membuka nomor WhatsApp di WhatsApp. `sort_order`
+        kosong = paling akhir di unit itu.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminUnitContactCreate' }
+      responses:
+        '201':
+          description: Kontak dibuat
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminUnitContact' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Label sama dengan kontak lain di unit ini (huruf besar-kecil tidak dibedakan)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /api/admin/units/{name}/contacts/{contact_id}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: Ejaan resmi, persis seperti di `GET /api/admin/units`.
+        schema: { type: string }
+      - name: contact_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [admin-units]
+      summary: Ubah kontak PIC unit
+      operationId: update_unit_contact
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: |
+        Hanya field yang dikirim yang diubah; `null` atau `""` mengosongkan
+        kanal. Mengosongkan kanal terakhir ditolak 422.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminUnitContactUpdate' }
+      responses:
+        '200':
+          description: Tersimpan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminUnitContact' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Label baru sama dengan kontak lain di unit ini
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+    delete:
+      tags: [admin-units]
+      summary: Hapus kontak PIC unit
+      operationId: delete_unit_contact
+      x-status: implemented
+      x-min-role: superadmin
+      security: [{ bearerAuth: [] }]
+      description: Unit yang kehilangan kontak terakhirnya kembali memakai Front Office.
+      responses:
+        '204':
+          description: Dihapus
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/admin/embed-keys:
     get:
@@ -2164,7 +2283,7 @@ components:
         kind: refusal
         message_id: 5a2c8f13-7e94-4b60-a1d2-3f4e5a6b7c8d
         text: |-
-          Maaf, saya tidak menemukan informasi ini di dokumen resmi yang saya miliki. Supaya Anda tidak mendapat jawaban yang keliru, silakan tanyakan langsung ke:
+          Maaf, saya belum menemukan jawabannya di dokumen yang saya miliki. Coba tuliskan pertanyaan Anda dengan lebih rinci, atau agar jawabannya pasti, tanyakan langsung ke:
 
           - Front Office INSTIKI (Senin-Sabtu, 08.00-22.00 WITA): Telepon (0361) 256995 / WhatsApp +62 813-3982-2383
         citations: []
@@ -3586,7 +3705,7 @@ components:
 
     AdminUnit:
       type: object
-      required: [name, sort_order, is_active, document_count, account_count]
+      required: [name, sort_order, is_active, document_count, account_count, contact_count]
       description: Satu unit layanan, termasuk yang nonaktif.
       properties:
         name:
@@ -3601,6 +3720,9 @@ components:
           description: false = tersembunyi dari menu chatbot dan pilihan isian baru.
         document_count: { type: integer }
         account_count: { type: integer }
+        contact_count:
+          type: integer
+          description: Kontak PIC unit ini. 0 = penolakan dan banner memakai Front Office.
 
     AdminUnitCreate:
       type: object
@@ -3626,6 +3748,98 @@ components:
         description: { type: [string, 'null'], maxLength: 500 }
         sort_order: { type: integer, minimum: 0, maximum: 10000 }
         is_active: { type: boolean }
+
+    AdminUnitContact:
+      type: object
+      required: [id, label, sort_order, display]
+      description: Satu kontak PIC unit, seperti yang tampil di widget mahasiswa.
+      properties:
+        id: { type: string, format: uuid }
+        label:
+          type: string
+          description: Nama yang tampil, mis. "PIC BAAK". Unik per unit.
+        phone: { type: [string, 'null'] }
+        whatsapp: { type: [string, 'null'] }
+        email: { type: [string, 'null'] }
+        service_hours:
+          type: [string, 'null']
+          description: Kosong = tidak ditampilkan.
+        sort_order: { type: integer }
+        display:
+          type: string
+          description: |
+            Teks kontak persis seperti di widget (`ContactOut.contact`), mis.
+            "Telepon (0361) 256995 / WhatsApp +62 813-3982-2383".
+        keywords:
+          type: array
+          items: { type: string }
+          description: |
+            Kosong = selalu tampil untuk unit ini. Terisi = hanya tampil bila
+            pertanyaan mahasiswa menyebut salah satunya (utuh per kata, tanpa
+            membedakan huruf besar), mis. `["PLK"]` untuk Admin PLK di unit
+            Akademik. Tidak pernah tampil ke mahasiswa.
+        updated_at: { type: [string, 'null'], format: date-time }
+        updated_by:
+          type: [string, 'null']
+          description: Email superadmin yang terakhir mengubah.
+
+    AdminUnitContactCreate:
+      type: object
+      required: [label]
+      description: |
+        Minimal satu dari `phone`, `whatsapp`, `email` terisi; `""` sama dengan
+        null. Field tak dikenal ditolak.
+      properties:
+        label:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Satu baris, tanpa tautan.
+        phone:
+          type: [string, 'null']
+          maxLength: 40
+          description: |
+            Nomor Indonesia berawalan 0 atau +62, mis. `(0361) 256995`. Harus
+            terbaca utuh oleh pola nomor widget (client `kontak.ts`).
+        whatsapp:
+          type: [string, 'null']
+          maxLength: 40
+          description: Aturan sama dengan `phone`; tampil berlabel "WhatsApp".
+        email: { type: [string, 'null'], format: email, maxLength: 255 }
+        service_hours:
+          type: [string, 'null']
+          maxLength: 200
+          description: Satu baris, tanpa tautan.
+        sort_order:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 10000
+          description: Kosong = paling akhir di unit itu.
+        keywords:
+          type: array
+          maxItems: 20
+          items: { type: string, minLength: 2, maxLength: 100 }
+          description: |
+            Lihat `AdminUnitContact.keywords`. Spasi dirapikan; yang kosong dan
+            kembar (tanpa membedakan huruf besar) dibuang.
+
+    AdminUnitContactUpdate:
+      type: object
+      description: |
+        Hanya field yang dikirim yang diubah. `label` dan `sort_order` tidak
+        boleh null. Field tak dikenal ditolak.
+      properties:
+        label: { type: string, minLength: 1, maxLength: 200 }
+        phone: { type: [string, 'null'], maxLength: 40 }
+        whatsapp: { type: [string, 'null'], maxLength: 40 }
+        email: { type: [string, 'null'], format: email, maxLength: 255 }
+        service_hours: { type: [string, 'null'], maxLength: 200 }
+        sort_order: { type: integer, minimum: 0, maximum: 10000 }
+        keywords:
+          type: [array, 'null']
+          maxItems: 20
+          items: { type: string, minLength: 2, maxLength: 100 }
+          description: null atau `[]` = hapus semua kata kunci (kontak kembali selalu tampil).
 
     EmbedKeyInfo:
       type: object

@@ -39,8 +39,8 @@ from app.observability.costs import estimate_cost
 from app.rag import risk, sensitive
 from app.rag.chain import (
     DEFAULT_FALLBACK_CONTACT,
-    REFUSAL_TEMPLATE,
     SUPPORT_TEMPLATE,
+    refusal_text,
     render_contacts,
 )
 
@@ -367,7 +367,7 @@ async def tulis_percakapan(
             topik = risk.detect(pertanyaan)
             kontak = topik.contacts or (DEFAULT_FALLBACK_CONTACT,)
             latency, top_score = rng.randint(350, 950), rng.uniform(0.06, 0.31)
-            teks = REFUSAL_TEMPLATE.format(contacts=render_contacts(kontak))
+            teks = refusal_text(kontak)
             meta_llm = {
                 "llm_called": False,
                 "model": None,

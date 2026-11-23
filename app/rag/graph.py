@@ -58,8 +58,6 @@ from app.rag import sensitive as sensitive_module
 from app.rag import smalltalk as smalltalk_module
 from app.rag.chain import (
     DEFAULT_FALLBACK_CONTACT,
-    REFUSAL_TEMPLATE,
-    REFUSAL_UNIT_HINT,
     SUPPORT_TEMPLATE,
     OutcomeKind,
     PipelineOutcome,
@@ -67,12 +65,13 @@ from app.rag.chain import (
     _jawab,
     is_not_found,
     is_off_topic,
+    refusal_text,
     render_contacts,
     strip_markers,
 )
 from app.rag.citations import extract_citations, ringkas_sitasi_tanpa_halaman
-from app.rag.gate import REPLIES as GATE_REPLIES
 from app.rag.gate import GateLabel, GateVerdict, lolos
+from app.rag.gate import balasan as balasan_gerbang
 from app.rag.prompts import pesan_mahasiswa
 from app.rag.rewriter import HISTORY_WINDOW, Turn, format_history, needs_rewrite
 from app.rag.threshold import Decision, ThresholdDecision, ThresholdPolicy, evaluate
@@ -111,6 +110,11 @@ class PipelineDeps:
     """NIM penanya untuk tool data pribadi. Di sini, bukan di `PipelineState`:
     state terekam sebagai masukan/keluaran node (tab Graf, LangSmith), dan NIM
     tidak boleh ikut (`app.prodi`)."""
+    unit_contacts: tuple[Any, ...] = ()
+    """Kontak PIC unit pilihan mahasiswa (`risk.UnitContact`), dimuat pemanggil
+    dari tabel `unit_contacts`. Graf tidak membaca database sendiri; kosong
+    berarti kontak per topik risiko atau Front Office. Yang tampil disaring
+    per pertanyaan (`risk.pilih_kontak`): kata kunci kontak dan dosen PA."""
 
 
 class PipelineState(TypedDict, total=False):
@@ -208,7 +212,7 @@ def _hasil_blokir(state: PipelineState, verdict: GateVerdict) -> PipelineOutcome
     kind = (
         OutcomeKind.SMALLTALK if verdict.label is GateLabel.SMALLTALK else OutcomeKind.REJECTED
     )
-    text = verdict.reply
+    text = balasan_gerbang(verdict.label, state.get("unit"))
     if kind is OutcomeKind.SMALLTALK:
         # Gerbang hanya tahu "basa-basi"; nadanya dibaca dari pesannya sendiri,
         # supaya "sip, itu saja dulu" tidak dibalas sapaan pembuka.
@@ -364,31 +368,38 @@ def _pesan_tool(state: PipelineState) -> str:
     return pesan_mahasiswa(wrap_user_input(teks), state.get("unit"), state.get("profile"))
 
 
-async def refuse(state: PipelineState) -> dict:
+async def refuse(state: PipelineState, runtime: Rt) -> dict:
     """Penolakan FR-3. Tidak memanggil LLM."""
-    return {
-        "outcome": _penolakan(state, risk_module.detect(state["clean"]), llm_called=False)
-    }
+    assessment = risk_module.detect(state["clean"])
+    return {"outcome": _penolakan(state, runtime.context, assessment, llm_called=False)}
 
 
-def _kontak(state: PipelineState, assessment: risk_module.RiskAssessment) -> tuple[Any, ...]:
-    """Kontak PIC unit yang dipilih mahasiswa; tanpa itu, kontak per topik risiko."""
-    return risk_module.contacts_for_unit(state.get("unit")) or assessment.contacts
+def _kontak(
+    state: PipelineState, deps: PipelineDeps, assessment: risk_module.RiskAssessment
+) -> tuple[Any, ...]:
+    """Kontak PIC unit yang dipilih mahasiswa yang relevan dengan pertanyaannya;
+    tanpa itu, kontak per topik risiko (`risk.pilih_kontak`)."""
+    teks = state["clean"]
+    rewritten = (state.get("rewritten") or "").strip()
+    if rewritten:
+        teks = f"{teks}\n{rewritten}"
+    return risk_module.pilih_kontak(deps.unit_contacts, assessment, teks)
 
 
 def _penolakan(
-    state: PipelineState, assessment: risk_module.RiskAssessment, *, llm_called: bool
+    state: PipelineState,
+    deps: PipelineDeps,
+    assessment: risk_module.RiskAssessment,
+    *,
+    llm_called: bool,
 ) -> PipelineOutcome:
     """Satu bentuk penolakan, entah diputuskan threshold atau oleh LLM."""
     # Tanpa unit yang dipilih, semua unit terkait topik ditampilkan, bukan hanya
     # yang pertama: pertanyaan "deadline pembayaran UKT" menyangkut akademik DAN
     # keuangan sekaligus, dan mahasiswa yang ditolak tidak boleh dikirim ke
     # loket yang salah.
-    contacts = _kontak(state, assessment) or (DEFAULT_FALLBACK_CONTACT,)
-    text = REFUSAL_TEMPLATE.format(contacts=render_contacts(contacts))
-    unit = state.get("unit")
-    if unit is not None:
-        text += REFUSAL_UNIT_HINT.format(unit=unit)
+    contacts = _kontak(state, deps, assessment) or (DEFAULT_FALLBACK_CONTACT,)
+    text = refusal_text(contacts, state.get("unit"))
     return PipelineOutcome(
         kind=OutcomeKind.REFUSAL,
         text=text,
@@ -428,7 +439,7 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
     # [TIDAK_DITEMUKAN]: satu panggilan berbayar, dan penolakannya tercatat
     # `refusal_source = llm` padahal yang menolak adalah ambang.
     if not pakai_tool and state["decision"].decision is Decision.REFUSE:
-        return {"outcome": _penolakan(state, assessment, llm_called=False)}
+        return {"outcome": _penolakan(state, deps, assessment, llm_called=False)}
     if deps.on_stage is not None:
         await deps.on_stage("menyusun jawaban")
     lampiran: list[Any] = []
@@ -463,7 +474,7 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
         return {
             "outcome": PipelineOutcome(
                 kind=OutcomeKind.REJECTED,
-                text=GATE_REPLIES[GateLabel.OUT_OF_SCOPE],
+                text=balasan_gerbang(GateLabel.OUT_OF_SCOPE, state.get("unit")),
                 documents=tuple(documents),
                 decision=state["decision"],
                 sensitivity=state["sensitivity"],
@@ -476,7 +487,7 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
     # penolakan, bukan sebagai jawaban berisi "tidak menemukan" yang membawa
     # kartu sitasi dokumen yang tidak relevan dan tidak pernah sampai ke AD-4.
     if is_not_found(answer, tanpa_hal):
-        return {"outcome": _penolakan(state, assessment, llm_called=True)}
+        return {"outcome": _penolakan(state, deps, assessment, llm_called=True)}
     tanya_jawab = [
         doc.metadata.get("judul", "")
         for doc in documents
@@ -498,7 +509,7 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
             gate=state.get("gate"),
             rewritten_query=state.get("rewritten"),
             llm_called=True,
-            contacts=_kontak(state, assessment) if assessment.needs_escalation else (),
+            contacts=_kontak(state, deps, assessment) if assessment.needs_escalation else (),
             attachments=tuple(a for a in lampiran if a.source.casefold() in dikutip),
         )
     }

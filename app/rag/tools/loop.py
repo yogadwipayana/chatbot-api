@@ -24,8 +24,13 @@ from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from app.observability.rekaman import catat_panggilan
-from app.rag.chain import _PenahanPenanda
-from app.rag.prompts import NOT_FOUND_MARKER, TOOL_SYSTEM_PROMPT, format_context
+from app.rag.chain import _PenahanPenanda, _seragam, strip_markers
+from app.rag.prompts import (
+    NOT_FOUND_MARKER,
+    OFF_TOPIC_MARKER,
+    TOOL_SYSTEM_PROMPT,
+    format_context,
+)
 from app.rag.providers import PenyaringGalatGateway
 from app.rag.tools.base import (
     MAKS_PANJANG_ARGUMEN,
@@ -53,6 +58,25 @@ memicu puluhan permintaan ke SADS. Panggilan di atas batas tetap dibalas
 
 PESAN_BATAS = "DATA_TIDAK_TERSEDIA: batas panggilan alat per giliran tercapai."
 PESAN_ARGUMEN_RUSAK = "DATA_TIDAK_TERSEDIA: argumen panggilan alat tidak dapat dibaca."
+
+DORONGAN_T1 = (
+    "Catatan sistem, bukan dari mahasiswa: Anda membalas [TIDAK_DITEMUKAN] tanpa "
+    "mencoba alat. Periksa lagi aturan T1: bila salah satu alat dapat mengambil "
+    "data yang ditanyakan, panggil alat itu sekarang. Bila tidak ada alat yang "
+    "relevan, atau aturan T8 melarang memanggilnya, balas lagi HANYA dengan "
+    "[TIDAK_DITEMUKAN]."
+)
+"""Dikirim sekali bila model menolak tanpa mencoba satu alat pun (T1).
+
+T1 sudah melarang `[TIDAK_DITEMUKAN]` sebelum mencoba alat, tetapi model tetap
+melakukannya: "apa 9 sks pilihan yang perlu saya penuhi?" ditolak tanpa
+panggilan tool, lalu "apa saja 9 sks pilihan yang belum saya ambil" dijawab
+`get_nilai_saya` (log 2026-11-12). Dalam 30 hari sampai 2026-11-23, 13 dari 35
+penolakan LLM terjadi saat tool ter-bind, dan tidak satu pun mencoba tool.
+
+Berupa pesan pengguna, bukan pesan sistem kedua, karena tidak semua penyedia di
+balik gateway menerima pesan sistem di tengah percakapan. Teks mahasiswa selalu
+terbungkus `<pertanyaan_mahasiswa>` (FR-5), jadi catatan ini tetap terbedakan."""
 
 
 @dataclass(frozen=True)
@@ -208,7 +232,10 @@ async def run_tool_loop(
     jawabannya -- hilang dari trace.
 
     `penanya` hanya diteruskan ke tool ber-`pakai_penanya`; None = tanpa NIM
-    (uji coba admin), dan tool data pribadi membalas bahwa NIM tidak diketahui."""
+    (uji coba admin), dan tool data pribadi membalas bahwa NIM tidak diketahui.
+
+    Bila model menolak sebelum mencoba satu tool pun, ia didorong sekali
+    (`DORONGAN_T1`) dengan tool tetap ter-bind; dorongan tidak dihitung putaran."""
     by_name = {s.name: s for s in specs}
     messages: list[Any] = [
         SystemMessage(content=TOOL_SYSTEM_PROMPT.format(context=format_context(documents))),
@@ -217,8 +244,10 @@ async def run_tool_loop(
     hasil: list[ToolResult] = []
     jejak: list[dict[str, Any]] = []
     usage: dict | None = None
+    didorong = False
+    putaran = 0
 
-    for _ in range(max_rounds):
+    while putaran < max_rounds:
         gathered, teks = await _satu_giliran(
             llm_tools, messages, on_token=on_token, config=_config(buat_config)
         )
@@ -229,7 +258,17 @@ async def run_tool_loop(
         # yang kosong.
         rusak = list(getattr(gathered, "invalid_tool_calls", None) or [])
         if not panggilan and not rusak:
+            if not didorong and not jejak and _menolak_tanpa_mencoba(teks):
+                # Tidak menghabiskan putaran: dengan `max_rounds=1` dorongan
+                # yang menghabiskan putaran hanya menyisakan giliran tanpa
+                # tool. Penahan penanda tidak memancarkan apa pun dari balasan
+                # yang hanya berisi penanda, jadi mahasiswa tidak melihatnya.
+                didorong = True
+                logger.info("model menolak tanpa mencoba tool; didorong sekali (T1)")
+                messages.extend([gathered, HumanMessage(content=DORONGAN_T1)])
+                continue
             return _hasil_akhir(teks, hasil, usage, jejak)
+        putaran += 1
         if on_stage is not None:
             await on_stage("mengambil data akademik")
         messages.append(gathered)
@@ -279,6 +318,21 @@ async def run_tool_loop(
 
 def _config(buat_config: Callable[[], Any] | None) -> Any:
     return buat_config() if buat_config is not None else None
+
+
+def _menolak_tanpa_mencoba(teks: str) -> bool:
+    """Balasan yang hanya berisi `NOT_FOUND_MARKER`, seperti diminta aturan 3.
+
+    Jawaban parsial yang menyebut penanda di tengah teks tidak didorong: yang
+    tertulis tetap berguna, dan dorongan bisa membuat model membuangnya. Balasan
+    kosong juga tidak (`_hasil_akhir` tetap menjadikannya penolakan), begitu pula
+    `OFF_TOPIC_MARKER`: pertanyaan di luar urusan kampus tidak punya alat."""
+    seragam = _seragam(teks)
+    return (
+        NOT_FOUND_MARKER in seragam
+        and OFF_TOPIC_MARKER not in seragam
+        and not strip_markers(teks)
+    )
 
 
 def _hasil_akhir(

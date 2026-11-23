@@ -70,21 +70,41 @@ class PipelineOutcome:
 
 
 REFUSAL_TEMPLATE = (
-    "Maaf, saya tidak menemukan informasi ini di dokumen resmi yang saya miliki. "
-    "Supaya Anda tidak mendapat jawaban yang keliru, silakan tanyakan langsung ke:"
+    "Maaf, saya belum menemukan jawabannya di {cakupan}. "
+    "Coba tuliskan pertanyaan Anda dengan lebih rinci, atau agar jawabannya "
+    "pasti, tanyakan langsung ke:"
     "\n\n{contacts}"
 )
+"""`{cakupan}` diisi `refusal_text`: "dokumen yang saya miliki", atau "dokumen
+unit X" bila mahasiswa memilih unit. Cakupan disebut di kalimat pertama, bukan
+setelah daftar kontak -- kontak satu unit bisa empat baris, dan kalimat di
+bawahnya jatuh ke luar layar widget. Sengaja tidak menyebut "dokumen resmi",
+begitu pula label bubble-nya di client (keputusan copy 2026-11-23).
+
+"Belum menemukan", bukan "belum membahas hal ini", dan ajakan menulis lebih
+rinci (keputusan user, 2026-11-23): sebagian penolakan terjadi karena cara
+bertanya, bukan karena informasinya tidak ada. "Matakuliah ... syaratnya apa
+supaya bisa diambil?" ditolak, lalu dijawab begitu ditulis "mata kuliah"
+(log 2026-11-12). Kalimat yang menyatakan informasinya tidak ada membuat
+mahasiswa berhenti bertanya."""
 
 REFUSAL_UNIT_HINT = (
-    "\n\nPencarian tadi hanya di dokumen unit {unit}. Bila pertanyaan Anda "
-    "ditangani unit lain, ganti topik ke unit tersebut lalu tanyakan lagi."
+    "\n\nBila pertanyaan Anda ditangani unit lain, ganti topik lalu tanyakan lagi."
 )
-"""Tanpa ini, mahasiswa yang salah memilih unit hanya melihat "tidak menemukan"
-dan menyimpulkan informasinya memang tidak ada -- padahal yang membatasi adalah
-pilihannya sendiri.
+"""Tanpa ini, mahasiswa yang salah memilih unit menyimpulkan informasinya memang
+tidak ada -- padahal yang membatasi adalah pilihannya sendiri.
 
 Jangan menyarankan "semua unit": widget mahasiswa -- satu-satunya pengirim
 `unit` -- mewajibkan satu topik dipilih dan tidak punya pilihan semua unit."""
+
+
+def refusal_text(contacts, unit: str | None = None) -> str:
+    """Teks penolakan FR-3 lengkap dengan kontak, dan petunjuk ganti topik bila
+    mahasiswa memilih unit. Satu-satunya penyusun teks penolakan."""
+    cakupan = f"dokumen unit {unit}" if unit else "dokumen yang saya miliki"
+    teks = REFUSAL_TEMPLATE.format(cakupan=cakupan, contacts=render_contacts(contacts))
+    return teks + REFUSAL_UNIT_HINT if unit else teks
+
 
 DEFAULT_FALLBACK_CONTACT = risk_module.FRONT_OFFICE
 
@@ -226,6 +246,7 @@ async def run_pipeline(
     tool_registry: Any = None,
     tool_max_rounds: int = 2,
     nim: str | None = None,
+    unit_contacts: Sequence[Any] = (),
 ) -> PipelineOutcome:
     """Jalankan satu putaran tanya-jawab lewat graf `app.rag.graph`.
 
@@ -257,6 +278,9 @@ async def run_pipeline(
         nim: NIM penanya, hanya untuk tool data pribadi (docs/tool-call.md §11).
             Dibawa `PipelineDeps`, bukan state graf, supaya tidak ikut terekam
             sebagai masukan node atau trace. None = tanpa NIM (uji coba admin).
+        unit_contacts: kontak PIC `unit` (`risk.UnitContact`), dari
+            `SqlUnitDirectory.kontak_tampil`. Kosong = kontak per topik risiko,
+            lalu Front Office.
 
     `llm_call`, `rewrite_call`, dan `gate_call` disuntikkan agar test dapat
     membuktikan kapan layanan luar dipanggil dan kapan tidak, tanpa memanggil
@@ -275,6 +299,7 @@ async def run_pipeline(
         tool_registry=tool_registry,
         tool_max_rounds=tool_max_rounds,
         nim=nim,
+        unit_contacts=tuple(unit_contacts),
     )
     return await run_graph(
         question,

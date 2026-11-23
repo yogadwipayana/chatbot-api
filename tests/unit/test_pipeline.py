@@ -15,7 +15,7 @@ from app.rag.rewriter import Turn
 from app.rag.risk import RiskTopic, UnitContact
 from app.rag.threshold import Decision, ThresholdPolicy
 from app.security.sanitize import CLOSE_TAG, OPEN_TAG
-from tests.fixtures.fakes import FakeRetriever, RecordingRewriter, make_document
+from tests.fixtures.fakes import FakeRetriever, RecordingRewriter, kontak_pic, make_document
 
 POLICY = ThresholdPolicy(vector_threshold=0.35, lexical_threshold=0.05)
 
@@ -124,9 +124,14 @@ class TestPenolakan:
 
     async def test_penolakan_memakai_pic_unit_yang_dipilih(self, weak_retriever, llm):
         hasil = await run_pipeline(
-            "sesuatu", retriever=weak_retriever, llm_call=llm, policy=POLICY, unit="BAAK"
+            "sesuatu",
+            retriever=weak_retriever,
+            llm_call=llm,
+            policy=POLICY,
+            unit="BAAK",
+            unit_contacts=PIC_BAAK,
         )
-        assert hasil.contacts == risk_module.contacts_for_unit("BAAK")
+        assert hasil.contacts == PIC_BAAK
         assert "- PIC BAAK: WhatsApp +62 813-5346-2032" in hasil.text
         assert "Front Office" not in hasil.text
 
@@ -139,13 +144,19 @@ class TestPenolakan:
             llm_call=llm,
             policy=POLICY,
             unit="Keuangan",
+            unit_contacts=PIC_KEUANGAN,
         )
         assert hasil.kind is OutcomeKind.REFUSAL
-        assert hasil.contacts == risk_module.contacts_for_unit("Keuangan")
+        assert hasil.contacts == PIC_KEUANGAN
 
     async def test_unit_tanpa_pic_jatuh_ke_front_office(self, weak_retriever, llm):
         hasil = await run_pipeline(
-            "sesuatu", retriever=weak_retriever, llm_call=llm, policy=POLICY, unit="Prodi"
+            "sesuatu",
+            retriever=weak_retriever,
+            llm_call=llm,
+            policy=POLICY,
+            unit="Prodi",
+            unit_contacts=(),
         )
         assert hasil.contacts == (risk_module.FRONT_OFFICE,)
 
@@ -354,6 +365,17 @@ class TestQueryRewriting:
         assert "kalau telat gimana?" in llm.last_question
 
 
+PIC_BAAK = (kontak_pic("BAAK", "PIC BAAK", whatsapp="+62 813-5346-2032").untuk_tampil(),)
+PIC_KEUANGAN = (
+    kontak_pic("Keuangan", "Keuangan INSTIKI", whatsapp="+62 851-7426-1765").untuk_tampil(),
+)
+PIC_KEMAHASISWAAN = tuple(
+    kontak_pic("Kemahasiswaan", f"PIC {i}", whatsapp=f"+62 813-3936-510{i}").untuk_tampil()
+    for i in range(4)
+)
+"""Kontak PIC unit seperti yang dimuat router (`SqlUnitDirectory.kontak_tampil`)."""
+
+
 class TestEskalasiPadaJawaban:
     async def test_topik_berisiko_mengisi_kontak(self, strong_retriever, llm):
         hasil = await run_pipeline(
@@ -373,10 +395,10 @@ class TestEskalasiPadaJawaban:
             llm_call=llm,
             policy=POLICY,
             unit="Kemahasiswaan",
+            unit_contacts=PIC_KEMAHASISWAAN,
         )
         assert hasil.kind is OutcomeKind.ANSWER
-        assert hasil.contacts == risk_module.contacts_for_unit("Kemahasiswaan")
-        assert len(hasil.contacts) == 4
+        assert hasil.contacts == PIC_KEMAHASISWAAN
 
     async def test_pertanyaan_biasa_tanpa_kontak(self, strong_retriever, llm):
         hasil = await run_pipeline(
@@ -397,6 +419,7 @@ class TestEskalasiPadaJawaban:
             llm_call=llm,
             policy=POLICY,
             unit="BAAK",
+            unit_contacts=PIC_BAAK,
         )
         assert hasil.kind is OutcomeKind.ANSWER
         assert hasil.contacts == ()
@@ -553,6 +576,31 @@ class TestPilihanUnit:
         assert hasil.kind is OutcomeKind.REFUSAL
         assert "unit Prodi" in hasil.text
         assert "ganti topik" in hasil.text
+
+    async def test_penolakan_menyebut_unit_sebelum_kontak(self, weak_retriever, llm):
+        """Kontak satu unit bisa empat baris; cakupan yang ditulis setelahnya
+        jatuh ke luar layar widget dan tidak terbaca."""
+        hasil = await run_pipeline(
+            "cara bayar UKT",
+            retriever=weak_retriever,
+            llm_call=llm,
+            policy=POLICY,
+            unit="Prodi",
+        )
+        assert "dokumen unit Prodi" in hasil.text.split("\n", 1)[0]
+
+    @pytest.mark.parametrize("unit", [None, "Prodi"])
+    async def test_penolakan_tidak_menyebut_dokumen_resmi(self, weak_retriever, llm, unit):
+        """Keputusan copy 2026-11-23."""
+        hasil = await run_pipeline(
+            "cara bayar UKT",
+            retriever=weak_retriever,
+            llm_call=llm,
+            policy=POLICY,
+            unit=unit,
+        )
+        assert hasil.kind is OutcomeKind.REFUSAL
+        assert "dokumen resmi" not in hasil.text.lower()
 
     async def test_penolakan_tidak_menyarankan_pilihan_yang_tidak_ada(
         self, weak_retriever, llm

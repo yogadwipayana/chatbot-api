@@ -7,11 +7,8 @@ import pytest
 from app.rag.risk import (
     DEFAULT_CONTACTS,
     FRONT_OFFICE,
-    UNIT_ALIASES,
-    UNIT_CONTACTS,
     RiskTopic,
     UnitContact,
-    contacts_for_unit,
     detect,
 )
 
@@ -119,71 +116,6 @@ class TestKontakEskalasi:
         hasil = detect("cara pembayaran UKT", contacts={})
         assert RiskTopic.PEMBAYARAN in hasil.topics
         assert hasil.contacts == ()
-
-
-class TestKontakPerUnit:
-    """Kontak mengikuti unit (topik) yang dipilih mahasiswa di widget."""
-
-    @pytest.mark.parametrize(
-        "unit,nomor",
-        [
-            ("KEMAHASISWAAN", "+62 813-3936-5103"),
-            ("AKADEMIK", "+62 813-5346-2032"),
-            ("UNIT PELAYANAN SERTIFIKASI", "+62 813-3734-8654"),
-            ("PLK", "+62 851-1931-5346"),
-            ("KEUANGAN", "+62 851-7426-1765"),
-            ("FRONT OFFICE", "+62 813-3982-2383"),
-            # Nama sebelum penggantian 2026-11-18 (`UNIT_ALIASES`).
-            ("Kemahasiswaan", "+62 813-3936-5103"),
-            ("BAAK", "+62 813-5346-2032"),
-            ("UPS", "+62 813-3734-8654"),
-            ("Keuangan", "+62 851-7426-1765"),
-            ("FO", "+62 813-3982-2383"),
-        ],
-    )
-    def test_pic_utama_per_unit(self, unit, nomor):
-        assert nomor in contacts_for_unit(unit)[0].kontak
-
-    def test_akademik_membawa_pic_plk(self):
-        """Dokumen PLK dipindah ke AKADEMIK (2026-11-18), jadi PIC-nya ikut."""
-        assert [c.unit for c in contacts_for_unit("AKADEMIK")] == [
-            "PIC BAAK",
-            "Admin PLK INSTIKI",
-        ]
-
-    def test_alias_menunjuk_unit_yang_ada(self):
-        kunci = {nama.casefold() for nama in UNIT_CONTACTS}
-        for lama, baru in UNIT_ALIASES.items():
-            assert baru.casefold() in kunci, lama
-            assert lama.casefold() not in kunci, lama
-
-    def test_kemahasiswaan_membawa_pic_per_bidang(self):
-        kontak = contacts_for_unit("Kemahasiswaan")
-        assert [c.kontak for c in kontak[1:]] == [
-            "WhatsApp +62 812-3673-3230",
-            "WhatsApp +62 819-9843-9707",
-            "WhatsApp +62 812-3608-8993",
-        ]
-
-    def test_label_unik_dalam_satu_unit(self):
-        """Widget memakai label sebagai kunci baris dan kunci banner terakhir."""
-        for kontak in UNIT_CONTACTS.values():
-            assert len({c.unit for c in kontak}) == len(kontak)
-
-    def test_nomor_ponsel_berlabel_whatsapp(self):
-        """Tanpa label ini widget membuka nomornya lewat `tel:` (client `kontak.ts`)."""
-        for unit, kontak in UNIT_CONTACTS.items():
-            for c in kontak:
-                assert "WhatsApp +62 8" in c.kontak, unit
-
-    def test_nama_unit_tidak_peka_huruf_besar(self):
-        assert contacts_for_unit(" baak ") == contacts_for_unit("BAAK")
-        assert contacts_for_unit(" akademik ") == contacts_for_unit("AKADEMIK")
-
-    @pytest.mark.parametrize("unit", [None, "", "Prodi", "Fakultas", "A", "RPL"])
-    def test_unit_tanpa_pic_kosong(self, unit):
-        """Pemanggil yang memutuskan cadangannya (Front Office)."""
-        assert contacts_for_unit(unit) == ()
 
 
 class TestDeterminisme:

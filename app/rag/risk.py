@@ -4,13 +4,25 @@ Jawaban pada topik ini SELALU disertai kontak unit resmi. Deteksi berbasis
 kata kunci, bukan LLM: hasilnya harus dapat diaudit dan tidak boleh berubah
 diam-diam saat model diganti.
 
-Kontak yang ditampilkan mengikuti unit (topik) yang dipilih mahasiswa:
-`UNIT_CONTACTS` memuat PIC per unit dari daftar "Kontak PIC per bidang"
-(2026-10-12), dengan kunci nama unit di tabel `units`; nama lama unit yang
-diganti dari dashboard dicatat di `UNIT_ALIASES`.
-Unit yang belum punya PIC di daftar itu (Prodi, Fakultas) dan pertanyaan tanpa
-unit (Uji coba admin "Semua unit") jatuh ke `DEFAULT_CONTACTS` per topik, yang
-semuanya masih Front Office INSTIKI.
+Kontak yang ditampilkan mengikuti unit (topik) yang dipilih mahasiswa: PIC per
+unit disimpan di tabel `unit_contacts` dan dikelola superadmin dari halaman Unit
+di dashboard (`app.units`; isi awalnya daftar "Kontak PIC per bidang",
+2026-10-12). Router chat memuatnya sebelum pipeline berjalan.
+Unit yang belum punya PIC (Prodi, Fakultas) dan pertanyaan tanpa unit (Uji coba
+admin "Semua unit") jatuh ke `DEFAULT_CONTACTS` per topik, yang semuanya masih
+Front Office INSTIKI. Cadangan ini sengaja tetap di kode: ia tidak boleh ikut
+hilang bila tabel kontak kosong.
+
+Tidak semua kontak unit cocok untuk setiap pertanyaan (`pilih_kontak`, 2026-11-23):
+
+- Kontak berkata kunci hanya tampil bila pertanyaannya menyebut salah satu kata
+  kuncinya. Admin PLK di unit Akademik hanya untuk urusan PLK; urusan surat
+  dan administrasi lain cukup ke BAAK sebagai pintu pertama, supaya mahasiswa
+  tidak salah kontak.
+- Pengambilan mata kuliah diarahkan ke dosen Pembimbing Akademik (`DOSEN_PA`):
+  mata kuliah di KRS ditentukan dengan persetujuan dosen PA (Buku Pedoman
+  Akademik FTI §4.7). Dosen PA berbeda untuk tiap mahasiswa, jadi tidak ada
+  nomor yang dapat disimpan di tabel kontak.
 
 Alamat email per unit yang dulu ada di sini (akademik@, keuangan@,
 kemahasiswaan@) tidak pernah tercantum di sumber mana pun; banner yang menyebut
@@ -21,8 +33,10 @@ yang tidak berasal dari kampus.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import lru_cache
 
 
 class RiskTopic(StrEnum):
@@ -35,12 +49,16 @@ class RiskTopic(StrEnum):
 
 @dataclass(frozen=True)
 class UnitContact:
-    """Isi banner eskalasi FE-3."""
+    """Isi banner eskalasi FE-3. Kontak PIC dari database memakai bentuk yang
+    sama (`app.units.ContactRecord.untuk_tampil`)."""
 
     unit: str
     jam_layanan: str
     """Kosong bila kampus belum menetapkannya; tampilan melewatinya."""
     kontak: str
+    kata_kunci: tuple[str, ...] = ()
+    """Kosong = selalu tampil untuk unitnya. Terisi = hanya bila pertanyaan
+    menyebut salah satunya (`pilih_kontak`). Tidak pernah tampil ke mahasiswa."""
 
 
 # Pola per topik. Tuple ke-2 menandai apakah pola case-sensitive.
@@ -108,64 +126,8 @@ FRONT_OFFICE = UnitContact(
 )
 
 
-def _pic(nama: str, nomor: str) -> UnitContact:
-    """Nomor di daftar PIC adalah nomor ponsel; label "WhatsApp" yang membuat
-    widget membukanya di WhatsApp, bukan di aplikasi telepon."""
-    return UnitContact(unit=nama, jam_layanan="", kontak=f"WhatsApp {nomor}")
-
-
-_PIC_BAAK = _pic("PIC BAAK", "+62 813-5346-2032")
-_PIC_PLK = _pic("Admin PLK INSTIKI", "+62 851-1931-5346")
-
-UNIT_CONTACTS: dict[str, tuple[UnitContact, ...]] = {
-    # Kuncinya nama unit di tabel `units` (pilihan topik di widget), tidak peka
-    # huruf besar. Unit yang diganti namanya dari dashboard harus diganti juga
-    # di sini, dan nama lamanya dipindah ke `UNIT_ALIASES`; kalau tidak,
-    # kontaknya jatuh ke Front Office (dashboard mencatat peringatannya di Log
-    # aplikasi, lihat `app.routers.admin_units`).
-    # AKADEMIK = BAAK yang diganti nama 2026-11-18; dokumen PLK ikut dipindah
-    # ke sana, jadi PIC PLK ikut tampil.
-    "AKADEMIK": (_PIC_BAAK, _PIC_PLK),
-    "KEMAHASISWAAN": (
-        _pic("PIC Kemahasiswaan", "+62 813-3936-5103"),
-        _pic("Bidang Pengembangan Karakter Mahasiswa (Ibu Asti)", "+62 812-3673-3230"),
-        _pic("Bidang Prestasi Mahasiswa (Pak Redy)", "+62 819-9843-9707"),
-        _pic("Beasiswa (Ibu Suci Ariantini)", "+62 812-3608-8993"),
-    ),
-    "UNIT PELAYANAN SERTIFIKASI": (_pic("Layanan Pendidikan (UPS)", "+62 813-3734-8654"),),
-    "PLK": (_PIC_PLK,),
-    "KEUANGAN": (_pic("Keuangan INSTIKI", "+62 851-7426-1765"),),
-    "FRONT OFFICE": (FRONT_OFFICE,),
-}
-"""Kontak PIC per unit, dalam urutan tampil."""
-
-UNIT_ALIASES: dict[str, str] = {
-    # Nama lama -> kunci `UNIT_CONTACTS` (penggantian nama 2026-11-18). Giliran
-    # lama, test, dan penggantian nama kembali tetap mendapat PIC yang sama.
-    "BAAK": "AKADEMIK",
-    "UPS": "UNIT PELAYANAN SERTIFIKASI",
-    "FO": "FRONT OFFICE",
-}
-"""Nama unit lama yang masih dikenali `contacts_for_unit`."""
-
-
-def contacts_for_unit(unit: str | None) -> tuple[UnitContact, ...]:
-    """Kontak PIC unit yang dipilih mahasiswa; kosong bila unit itu belum punya."""
-    if not unit:
-        return ()
-    kunci = unit.strip().casefold()
-    for lama, baru in UNIT_ALIASES.items():
-        if lama.casefold() == kunci:
-            kunci = baru.casefold()
-            break
-    for nama, kontak in UNIT_CONTACTS.items():
-        if nama.casefold() == kunci:
-            return kontak
-    return ()
-
-
 DEFAULT_CONTACTS: dict[RiskTopic, UnitContact] = {
-    # Dipakai bila unit yang dipilih tidak punya entri di `UNIT_CONTACTS`.
+    # Dipakai bila unit yang dipilih tidak punya kontak di `unit_contacts`.
     # Satu entri per topik walau isinya sama: begitu kampus menetapkan unit
     # penanggung jawab per topik, cukup ganti entri topik itu.
     RiskTopic.DEADLINE: FRONT_OFFICE,
@@ -210,3 +172,92 @@ def detect(
             seen.append(contact)
 
     return RiskAssessment(topics=matched, contacts=tuple(seen))
+
+
+# --- Kontak mana yang relevan untuk pertanyaan ini ------------------------------
+
+DOSEN_PA = UnitContact(
+    unit="Dosen Pembimbing Akademik (PA) Anda",
+    jam_layanan="",
+    kontak="hubungi langsung, karena mata kuliah di KRS diambil dengan persetujuan dosen PA",
+)
+"""Tanpa nomor: dosen PA berbeda untuk tiap mahasiswa, dan SADS tidak
+menyediakannya. Dasarnya Buku Pedoman Akademik FTI §4.7 ("Penentuan mata
+kuliah dalam KRS ... dilakukan oleh mahasiswa dengan persetujuan dosen
+Pembimbing Akademik") dan bagian registrasi akademiknya (pengesahan KRS oleh
+dosen PA), halaman 14 di indeks."""
+
+_AMBIL = r"(?:ambil|mengambil|diambil|ngambil|pengambilan|kontrak|mengontrak|dikontrak)"
+"""Kata kerja yang boleh berjarak beberapa kata dari mata kuliahnya: "ambil
+berapa sks", "mata kuliah apa yang bisa saya ambil"."""
+
+_UBAH = (
+    r"(?:tambah|menambah|nambah|penambahan|drop|ngedrop|batal|membatalkan|pembatalan"
+    r"|ganti|mengganti|penggantian|mengulang|pengulangan)"
+)
+"""Kata kerja yang harus langsung diikuti mata kuliahnya. "ganti jadwal mata
+kuliah" atau "ujian ulang" bukan urusan dosen PA."""
+
+_MK = r"(?:mata\s*kuliah|matkul|makul|mk|sks)(?:nya)?"
+
+_POLA_DOSEN_PA: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(pola, re.IGNORECASE)
+    for pola in (
+        rf"\b{_AMBIL}(?:nya)?(?:\s+[\w-]+){{0,3}}?\s+{_MK}\b",
+        rf"\b{_MK}(?:\s+[\w-]+){{0,6}}?\s+{_AMBIL}(?:nya)?\b",
+        rf"\b{_UBAH}\s+{_MK}\b",
+        r"\bperwalian\b",
+        r"\b(?:konsultasi|persetujuan|pengesahan|acc)\s+(?:krs|rencana\s+studi)\b",
+        r"\bkrs(?:\s+[\w-]+){0,3}?\s+(?:di)?(?:acc|setujui|disetujui|sahkan|disahkan)\b",
+        r"\bsks\s+maks(?:imal|imum)?\b",
+        r"\bmaks(?:imal|imum)?\s+sks\b",
+        r"\bbeban\s+studi\b",
+    )
+)
+
+
+def butuh_dosen_pa(teks: str) -> bool:
+    """Pertanyaan soal pengambilan mata kuliah (KRS, perwalian, beban SKS)."""
+    return any(pola.search(teks) for pola in _POLA_DOSEN_PA)
+
+
+@lru_cache(maxsize=256)
+def _pola_kata_kunci(kata: str) -> re.Pattern[str]:
+    """Utuh per kata, tanpa membedakan huruf besar, spasi di dalamnya longgar:
+    "PLK" tidak cocok di "kaplk", "luar  kampus" sama dengan "luar kampus"."""
+    isi = r"\s+".join(re.escape(bagian) for bagian in kata.split())
+    return re.compile(rf"(?<!\w){isi}(?!\w)", re.IGNORECASE)
+
+
+def menyebut(teks: str, kata_kunci: Iterable[str]) -> bool:
+    return any(kata.strip() and _pola_kata_kunci(kata).search(teks) for kata in kata_kunci)
+
+
+def pilih_kontak(
+    kontak_unit: Iterable[UnitContact],
+    assessment: RiskAssessment,
+    teks: str,
+) -> tuple[UnitContact, ...]:
+    """Kontak untuk penolakan dan banner eskalasi; kosong = pemanggil memakai
+    Front Office.
+
+    1. Kontak unit berkata kunci hanya ikut bila `teks` menyebut salah satunya.
+    2. Pengambilan mata kuliah: dosen PA lebih dulu, menggantikan kontak umum
+       unit (mis. BAAK). Kontak berkata kunci yang cocok tetap ikut -- ia lebih
+       spesifik. Bila pertanyaannya juga topik berisiko (tenggat, biaya, sanksi,
+       DO, syarat lulus), kontak umum tetap ikut: dosen PA tidak memutuskan
+       batas KRS atau KRS yang terkunci karena tagihan.
+    3. Selain itu kontak unit yang relevan, atau kontak per topik risiko bila
+       unit tidak punya.
+
+    `teks` = pertanyaan, ditambah tulisan ulang dari riwayat bila ada, supaya
+    "syaratnya apa?" sesudah bertanya soal PLK tetap dianggap urusan PLK.
+    """
+    relevan = tuple(k for k in kontak_unit if not k.kata_kunci or menyebut(teks, k.kata_kunci))
+    if not butuh_dosen_pa(teks):
+        return relevan or assessment.contacts
+    hasil = [DOSEN_PA, *(k for k in relevan if k.kata_kunci)]
+    if assessment.needs_escalation:
+        umum = tuple(k for k in relevan if not k.kata_kunci) or assessment.contacts
+        hasil.extend(k for k in umum if k not in hasil)
+    return tuple(hasil)

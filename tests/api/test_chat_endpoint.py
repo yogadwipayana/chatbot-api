@@ -10,7 +10,8 @@ import pytest
 from app.db.models import DocumentType
 from app.observability import tracing
 from app.rag.chain import OutcomeKind
-from app.rag.risk import KONTAK_FRONT_OFFICE
+from app.rag.risk import DOSEN_PA, KONTAK_FRONT_OFFICE
+from tests.fixtures.fakes import kontak_pic
 
 NIM = "2401010101"
 SESI = {"session_id": "sesi-uji-12345", "nim": NIM}
@@ -220,6 +221,73 @@ class TestPenolakan:
         data = make_client([]).post("/api/chat", json=payload).json()
         assert data["kind"] == OutcomeKind.REFUSAL
         assert api_llm.calls == []
+
+    @pytest.mark.parametrize("path", ["/api/chat", "/api/chat/stream"])
+    def test_kontak_pic_unit_dari_database(self, make_client, weak_documents, payload, path):
+        """Kontak PIC dimuat dari `unit_contacts` (FakeUnitDirectory) untuk unit
+        pilihan mahasiswa, di kedua endpoint."""
+        r = make_client(weak_documents).post(path, json={**payload, "unit": "keuangan"})
+        data = pesan_akhir(r) if path.endswith("stream") else r.json()
+        assert data["contacts"] == [
+            {
+                "unit": "Keuangan INSTIKI",
+                "service_hours": "",
+                "contact": "WhatsApp +62 851-7426-1765",
+            }
+        ]
+        assert "- Keuangan INSTIKI: WhatsApp +62 851-7426-1765" in data["text"]
+        assert "Front Office" not in data["text"]
+
+    def test_unit_tanpa_kontak_memakai_front_office(
+        self, make_client, weak_documents, payload
+    ):
+        r = make_client(weak_documents).post("/api/chat", json={**payload, "unit": "Prodi"})
+        data = r.json()
+        assert [c["contact"] for c in data["contacts"]] == [KONTAK_FRONT_OFFICE]
+
+    @pytest.mark.parametrize(
+        "pertanyaan,label",
+        [
+            ("cara membuat surat keterangan aktif kuliah?", ["PIC BAAK"]),
+            ("syarat ikut PLK apa saja?", ["PIC BAAK", "Admin PLK INSTIKI"]),
+            (
+                "pendaftaran pembelajaran di luar kampus kapan?",
+                ["PIC BAAK", "Admin PLK INSTIKI"],
+            ),
+        ],
+    )
+    def test_kontak_berkata_kunci_hanya_untuk_urusannya(
+        self, make_client, weak_documents, payload, units, pertanyaan, label
+    ):
+        """Nomor PLK di unit Akademik hanya untuk urusan PLK; selebihnya BAAK
+        sebagai pintu pertama, supaya mahasiswa tidak salah kontak (2026-11-23)."""
+        units.contacts.append(
+            kontak_pic(
+                "BAAK",
+                "Admin PLK INSTIKI",
+                whatsapp="+62 851-1931-5346",
+                sort_order=2,
+                keywords=("PLK", "pembelajaran di luar kampus"),
+            )
+        )
+        body = {**payload, "unit": "BAAK", "question": pertanyaan}
+        data = make_client(weak_documents).post("/api/chat", json=body).json()
+        assert data["kind"] == OutcomeKind.REFUSAL
+        assert [c["unit"] for c in data["contacts"]] == label
+        assert ("+62 851-1931-5346" in data["text"]) is (len(label) == 2)
+
+    @pytest.mark.parametrize("path", ["/api/chat", "/api/chat/stream"])
+    def test_pengambilan_mata_kuliah_ke_dosen_pa(
+        self, make_client, weak_documents, payload, path
+    ):
+        body = {**payload, "unit": "BAAK", "question": "berapa sks yang bisa saya ambil?"}
+        r = make_client(weak_documents).post(path, json=body)
+        data = pesan_akhir(r) if path.endswith("stream") else r.json()
+        assert data["contacts"] == [
+            {"unit": DOSEN_PA.unit, "service_hours": "", "contact": DOSEN_PA.kontak}
+        ]
+        assert "PIC BAAK" not in data["text"]
+        assert f"- {DOSEN_PA.unit}: {DOSEN_PA.kontak}" in data["text"]
 
 
 class TestPertanyaanSensitif:

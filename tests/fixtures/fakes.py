@@ -22,14 +22,18 @@ from app.embed_keys import EDITABLE_FIELDS as EMBED_EDITABLE_FIELDS
 from app.embed_keys import KunciSematan, bentuk_sah, buat_kunci
 from app.security.killswitch import KillSwitch
 from app.units import (
-    EDITABLE_FIELDS as UNIT_EDITABLE_FIELDS,
-)
-from app.units import (
+    CONTACT_EDITABLE_FIELDS,
+    ContactRecord,
+    DuplicateContactError,
     DuplicateUnitError,
     UnitInfo,
     UnitRecord,
     bentrok,
     cocokkan,
+    label_bentrok,
+)
+from app.units import (
+    EDITABLE_FIELDS as UNIT_EDITABLE_FIELDS,
 )
 
 
@@ -389,11 +393,47 @@ def _urutan(unit: UnitRecord) -> tuple[int, str]:
     return (unit.sort_order, unit.name)
 
 
+def kontak_pic(
+    unit: str,
+    label: str,
+    *,
+    phone: str | None = None,
+    whatsapp: str | None = None,
+    email: str | None = None,
+    service_hours: str | None = None,
+    sort_order: int = 1,
+    keywords: Sequence[str] = (),
+) -> ContactRecord:
+    """Satu baris `unit_contacts` untuk test."""
+    return ContactRecord(
+        id=uuid.uuid4(),
+        unit=unit,
+        label=label,
+        phone=phone,
+        whatsapp=whatsapp,
+        email=email,
+        service_hours=service_hours,
+        sort_order=sort_order,
+        updated_at=datetime.now(UTC),
+        keywords=tuple(keywords),
+    )
+
+
+KONTAK_BAAK = kontak_pic("BAAK", "PIC BAAK", whatsapp="+62 813-5346-2032")
+KONTAK_KEUANGAN = kontak_pic("Keuangan", "Keuangan INSTIKI", whatsapp="+62 851-7426-1765")
+"""Isi awal `FakeUnitDirectory.contacts`, sama dengan isi migrasi 0017 untuk unit itu."""
+
+
 class FakeUnitDirectory:
     """Pengganti `SqlUnitDirectory`: daftar unit di memori, aturan cocok yang sama."""
 
-    def __init__(self, names: Sequence[str] = UNIT_RESMI) -> None:
+    def __init__(
+        self,
+        names: Sequence[str] = UNIT_RESMI,
+        contacts: Sequence[ContactRecord] = (KONTAK_BAAK, KONTAK_KEUANGAN),
+    ) -> None:
         self.records = [UnitRecord(n, None, i, True) for i, n in enumerate(names, start=1)]
+        self.contacts: list[ContactRecord] = [k for k in contacts if k.unit in names]
         self.faq: dict[str, list[str]] = {}
         """unit -> pertanyaan entri tanya jawab, terbaru lebih dulu."""
         self.diminta: list[tuple[str | None, int]] = []
@@ -415,11 +455,15 @@ class FakeUnitDirectory:
     async def resolve(self, name: str | None) -> str | None:
         return cocokkan(self.units, name)
 
+    def _dengan_jumlah(self, unit: UnitRecord) -> UnitRecord:
+        return replace(unit, contact_count=sum(k.unit == unit.name for k in self.contacts))
+
     async def semua(self) -> list[UnitRecord]:
-        return sorted(self.records, key=_urutan)
+        return [self._dengan_jumlah(u) for u in sorted(self.records, key=_urutan)]
 
     async def ambil(self, name: str) -> UnitRecord | None:
-        return next((u for u in self.records if u.name == name), None)
+        unit = next((u for u in self.records if u.name == name), None)
+        return self._dengan_jumlah(unit) if unit else None
 
     async def buat(
         self, *, name: str, description: str | None, sort_order: int | None
@@ -440,8 +484,69 @@ class FakeUnitDirectory:
         if baru != name and bentrok(self.records, baru, kecuali=name):
             raise DuplicateUnitError(baru)
         unit = replace(lama, **{k: v for k, v in changes.items() if k in UNIT_EDITABLE_FIELDS})
-        self.records[self.records.index(lama)] = unit
+        tersimpan = next(u for u in self.records if u.name == name)
+        self.records[self.records.index(tersimpan)] = unit
+        # ON UPDATE CASCADE dari `unit_contacts.unit`.
+        self.contacts = [replace(k, unit=baru) if k.unit == name else k for k in self.contacts]
         return unit
+
+    # --- Kontak PIC -------------------------------------------------------
+
+    async def kontak(self, unit: str) -> list[ContactRecord]:
+        return sorted(
+            (k for k in self.contacts if k.unit == unit), key=lambda k: (k.sort_order, k.label)
+        )
+
+    async def kontak_tampil(self, unit: str | None):
+        if not unit:
+            return ()
+        return tuple(k.untuk_tampil() for k in await self.kontak(unit))
+
+    async def ambil_kontak(self, unit: str, contact_id: uuid.UUID) -> ContactRecord | None:
+        return next((k for k in self.contacts if k.unit == unit and k.id == contact_id), None)
+
+    async def tambah_kontak(self, unit: str, data: dict[str, Any], by: str | None):
+        if label_bentrok(await self.kontak(unit), data["label"]):
+            raise DuplicateContactError(data["label"])
+        urutan = data.get("sort_order")
+        if urutan is None:
+            urutan = max((k.sort_order for k in await self.kontak(unit)), default=0) + 1
+        kontak = ContactRecord(
+            id=uuid.uuid4(),
+            unit=unit,
+            **{k: data.get(k) for k in CONTACT_EDITABLE_FIELDS if k != "sort_order"},
+            sort_order=urutan,
+            updated_at=datetime.now(UTC),
+            updated_by=by,
+        )
+        self.contacts.append(kontak)
+        return kontak
+
+    async def ubah_kontak(
+        self, unit: str, contact_id: uuid.UUID, changes: dict[str, Any], by: str | None
+    ) -> ContactRecord | None:
+        lama = await self.ambil_kontak(unit, contact_id)
+        if lama is None:
+            return None
+        if "label" in changes and label_bentrok(
+            await self.kontak(unit), changes["label"], kecuali=contact_id
+        ):
+            raise DuplicateContactError(changes["label"])
+        baru = replace(
+            lama,
+            **{k: v for k, v in changes.items() if k in CONTACT_EDITABLE_FIELDS},
+            updated_at=datetime.now(UTC),
+            updated_by=by,
+        )
+        self.contacts[self.contacts.index(lama)] = baru
+        return baru
+
+    async def hapus_kontak(self, unit: str, contact_id: uuid.UUID) -> bool:
+        lama = await self.ambil_kontak(unit, contact_id)
+        if lama is None:
+            return False
+        self.contacts.remove(lama)
+        return True
 
 
 class FakeEmbedKeyStore:

@@ -7,10 +7,20 @@ membandingkan field wajib keduanya berdasarkan nama.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from typing import Literal
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from app.admin.permissions import AdminRole
 from app.db.models import DocumentType
@@ -548,6 +558,8 @@ class AdminUnit(BaseModel):
     is_active: bool
     document_count: int
     account_count: int
+    contact_count: int
+    """Kontak PIC unit ini. Nol = penolakan dan banner memakai Front Office."""
 
 
 class AdminUnitCreate(BaseModel):
@@ -582,6 +594,205 @@ class AdminUnitUpdate(BaseModel):
     @model_validator(mode="after")
     def _field_wajib_tidak_boleh_null(self) -> AdminUnitUpdate:
         for nama in ("name", "sort_order", "is_active"):
+            if nama in self.model_fields_set and getattr(self, nama) is None:
+                raise ValueError(f"{nama} tidak boleh kosong")
+        return self
+
+
+# --- Kontak PIC per unit (khusus superadmin) -------------------------------
+
+NOMOR_TELEPON = re.compile(r"\(?(?:\+62[\s-]?|0)\d{2,4}\)?[\s.-]?\d{3,4}(?:[\s.-]?\d{2,4})?")
+"""Sama persis dengan `NOMOR` di client `src/lib/kontak.ts`.
+
+Nomor yang disimpan harus terbaca utuh oleh pola itu, dari awal sampai akhir.
+Kalau tidak, widget hanya menautkan sebagiannya -- atau tidak sama sekali -- dan
+mahasiswa yang mengetuknya menelepon nomor yang salah."""
+
+_URL = re.compile(r"://|\bwww\.", re.IGNORECASE)
+
+
+NAMA_ISIAN_KONTAK = {
+    "label": "Nama kontak",
+    "phone": "Telepon",
+    "whatsapp": "WhatsApp",
+    "service_hours": "Jam layanan",
+}
+"""Pesan `value_error` tampil apa adanya di dashboard, tanpa nama kolom."""
+
+
+def _nomor(v: str | None, field: str) -> str | None:
+    if v is None:
+        return None
+    v = " ".join(v.split())
+    if not v:
+        return None
+    cocok = NOMOR_TELEPON.match(v)
+    if cocok is None or cocok.end() != len(v):
+        raise ValueError(
+            f"{NAMA_ISIAN_KONTAK[field]} harus satu nomor Indonesia berawalan 0 atau +62, "
+            "mis. +62 812-3456-7890 atau (0361) 256995"
+        )
+    return v
+
+
+def _teks_kontak(v: str | None, field: str) -> str | None:
+    """Label dan jam layanan: satu baris, tanpa tautan.
+
+    Keduanya masuk ke teks penolakan yang ditampilkan widget dengan tautan
+    aktif (`RichText`), dan menjadi satu baris daftar "- label (jam): kontak"."""
+    if v is None:
+        return None
+    if "\n" in v or "\r" in v:
+        raise ValueError(f"{NAMA_ISIAN_KONTAK[field]} harus satu baris")
+    v = " ".join(v.split())
+    if _URL.search(v):
+        raise ValueError(f"{NAMA_ISIAN_KONTAK[field]} tidak boleh memuat tautan")
+    return v or None
+
+
+def _kosong_jadi_null(v: object) -> object:
+    """Isian yang dikosongkan di dashboard terkirim sebagai "", bukan null."""
+    return None if isinstance(v, str) and not v.strip() else v
+
+
+MAKS_KATA_KUNCI = 20
+MAKS_PANJANG_KATA_KUNCI = 100
+"""Sama dengan `unit_contacts.keywords` (`varchar(100)[]`)."""
+
+
+def _kata_kunci(v: list[str] | None) -> list[str]:
+    """Rapikan spasi, buang yang kosong dan kembar (tanpa membedakan huruf besar).
+
+    Kata kunci hanya dicocokkan dengan pertanyaan (`app.rag.risk.pilih_kontak`),
+    tidak pernah tampil ke mahasiswa. Satu huruf ditolak: "a" akan cocok dengan
+    hampir semua pertanyaan dan kontaknya tampil di mana-mana."""
+    hasil: list[str] = []
+    for kata in v or []:
+        if "\n" in kata or "\r" in kata:
+            raise ValueError("Kata kunci harus satu baris")
+        kata = " ".join(kata.split())
+        if not kata:
+            continue
+        if len(kata) < 2:
+            raise ValueError(f"Kata kunci '{kata}' terlalu pendek (minimal 2 huruf)")
+        if len(kata) > MAKS_PANJANG_KATA_KUNCI:
+            raise ValueError(
+                f"Kata kunci maksimal {MAKS_PANJANG_KATA_KUNCI} karakter: '{kata[:30]}...'"
+            )
+        if kata.casefold() not in {k.casefold() for k in hasil}:
+            hasil.append(kata)
+    if len(hasil) > MAKS_KATA_KUNCI:
+        raise ValueError(f"Kata kunci maksimal {MAKS_KATA_KUNCI}")
+    return hasil
+
+
+class AdminUnitContact(BaseModel):
+    """Satu kontak PIC unit, seperti yang tampil di widget mahasiswa."""
+
+    id: UUID
+    label: str
+    phone: str | None = None
+    whatsapp: str | None = None
+    email: str | None = None
+    service_hours: str | None = None
+    sort_order: int
+    display: str
+    """Teks kontak persis seperti di widget, mis. "WhatsApp +62 813-5346-2032"."""
+    keywords: list[str] = []
+    """Kosong = selalu tampil untuk unit ini; terisi = hanya bila pertanyaan
+    menyebut salah satunya."""
+    updated_at: datetime | None = None
+    updated_by: str | None = None
+
+
+class AdminUnitContactCreate(BaseModel):
+    """Minimal satu dari `phone`, `whatsapp`, `email` terisi."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    label: str = Field(min_length=1, max_length=200)
+    phone: str | None = Field(default=None, max_length=40)
+    whatsapp: str | None = Field(default=None, max_length=40)
+    email: EmailStr | None = Field(default=None, max_length=255)
+    service_hours: str | None = Field(default=None, max_length=200)
+    sort_order: int | None = Field(default=None, ge=0, le=10000)
+    """Kosong = diletakkan paling akhir di unit itu."""
+    keywords: list[str] = Field(default_factory=list)
+    """Kosong = selalu tampil. Terisi = hanya bila pertanyaan menyebut salah
+    satunya, mis. ["PLK"] untuk Admin PLK di unit Akademik."""
+
+    @field_validator("keywords", mode="before")
+    @classmethod
+    def _null_kata_kunci(cls, v: object) -> object:
+        return [] if v is None else v
+
+    @field_validator("keywords")
+    @classmethod
+    def _cek_kata_kunci(cls, v: list[str]) -> list[str]:
+        return _kata_kunci(v)
+
+    @field_validator("phone", "whatsapp", "email", "service_hours", mode="before")
+    @classmethod
+    def _kosong(cls, v: object) -> object:
+        return _kosong_jadi_null(v)
+
+    @field_validator("phone", "whatsapp")
+    @classmethod
+    def _cek_nomor(cls, v: str | None, info: ValidationInfo) -> str | None:
+        return _nomor(v, info.field_name or "phone")
+
+    @field_validator("label", "service_hours")
+    @classmethod
+    def _cek_teks(cls, v: str | None, info: ValidationInfo) -> str | None:
+        return _teks_kontak(v, info.field_name or "label")
+
+    @model_validator(mode="after")
+    def _minimal_satu_kanal(self) -> AdminUnitContactCreate:
+        if not self.label:
+            raise ValueError("Nama kontak tidak boleh kosong")
+        if not (self.phone or self.whatsapp or self.email):
+            raise ValueError("Isi minimal satu dari WhatsApp, telepon, atau email")
+        return self
+
+
+class AdminUnitContactUpdate(BaseModel):
+    """Hanya field yang dikirim yang diubah. Mengosongkan kanal boleh selama
+    minimal satu kanal tetap terisi sesudahnya (diperiksa router)."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    label: str | None = Field(default=None, min_length=1, max_length=200)
+    phone: str | None = Field(default=None, max_length=40)
+    whatsapp: str | None = Field(default=None, max_length=40)
+    email: EmailStr | None = Field(default=None, max_length=255)
+    service_hours: str | None = Field(default=None, max_length=200)
+    sort_order: int | None = Field(default=None, ge=0, le=10000)
+    keywords: list[str] | None = None
+    """null atau [] = hapus semua kata kunci (kontak kembali selalu tampil)."""
+
+    @field_validator("phone", "whatsapp", "email", "service_hours", mode="before")
+    @classmethod
+    def _kosong(cls, v: object) -> object:
+        return _kosong_jadi_null(v)
+
+    @field_validator("phone", "whatsapp")
+    @classmethod
+    def _cek_nomor(cls, v: str | None, info: ValidationInfo) -> str | None:
+        return _nomor(v, info.field_name or "phone")
+
+    @field_validator("label", "service_hours")
+    @classmethod
+    def _cek_teks(cls, v: str | None, info: ValidationInfo) -> str | None:
+        return _teks_kontak(v, info.field_name or "label")
+
+    @field_validator("keywords")
+    @classmethod
+    def _cek_kata_kunci(cls, v: list[str] | None) -> list[str]:
+        return _kata_kunci(v)
+
+    @model_validator(mode="after")
+    def _field_wajib_tidak_boleh_null(self) -> AdminUnitContactUpdate:
+        for nama in ("label", "sort_order"):
             if nama in self.model_fields_set and getattr(self, nama) is None:
                 raise ValueError(f"{nama} tidak boleh kosong")
         return self

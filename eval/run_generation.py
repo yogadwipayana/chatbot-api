@@ -88,10 +88,11 @@ def build_record(case: GenerationCase, outcome: PipelineOutcome, latency_ms: int
 
 async def jalankan(dataset: Path, keluaran: Path) -> list[dict]:
     from app.config import get_settings
-    from app.db.session import engine
+    from app.db.session import SessionLocal, engine
     from app.deps import LLMCall, build_gate_call, build_retriever
     from app.rag.chain import run_pipeline
     from app.routers.chat import policy_from
+    from app.units import SqlUnitDirectory
 
     settings = get_settings()
     kasus = load_cases(dataset)
@@ -101,6 +102,11 @@ async def jalankan(dataset: Path, keluaran: Path) -> list[dict]:
     hasil: list[dict] = []
     try:
         for i, kas in enumerate(kasus, start=1):
+            # Kontak PIC unit dari dashboard, sama seperti router chat: tanpa ini
+            # setiap penolakan berunit menyebut Front Office, bukan PIC unitnya.
+            async with SessionLocal() as session:
+                units = SqlUnitDirectory(session)
+                kontak_unit = await units.kontak_tampil(await units.resolve(kas.unit))
             mulai = time.perf_counter()
             outcome = await run_pipeline(
                 kas.question,
@@ -110,6 +116,7 @@ async def jalankan(dataset: Path, keluaran: Path) -> list[dict]:
                 gate_call=gate,
                 policy=policy_from(settings),
                 unit=kas.unit,
+                unit_contacts=kontak_unit,
             )
             rekaman = build_record(kas, outcome, round((time.perf_counter() - mulai) * 1000))
             hasil.append(rekaman)

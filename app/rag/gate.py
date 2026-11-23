@@ -119,7 +119,7 @@ CRITERIA: dict[str, str] = {
 
 REPLIES: dict[GateLabel, str] = {
     GateLabel.SMALLTALK: (
-        "Halo! Saya PANDU, asisten administrasi akademik INSTIKI. Silakan tanyakan urusan "
+        "Halo! Saya PANDU, asisten administrasi INSTIKI. Silakan tanyakan urusan "
         "administrasi Anda -- jawaban saya bersumber dari dokumen resmi kampus."
     ),
     GateLabel.OUT_OF_SCOPE: (
@@ -133,12 +133,48 @@ REPLIES: dict[GateLabel, str] = {
     ),
     GateLabel.MALICIOUS: (
         "Maaf, permintaan tersebut tidak dapat saya proses. Saya hanya membantu "
-        "pertanyaan administrasi akademik berdasarkan dokumen resmi kampus."
+        "pertanyaan administrasi kampus berdasarkan dokumen resmi."
     ),
 }
-"""Tidak ada yang menyebut alasan klasifikasi. Pesan untuk `malicious` sengaja
+"""Balasan saat mahasiswa belum memilih topik (Uji coba admin, klien API lain).
+Widget mahasiswa selalu mengirim topik, jadi di sana `REPLIES_TOPIK` yang
+tampil untuk label yang ada di dalamnya (`balasan`).
+
+Tidak ada yang menyebut alasan klasifikasi. Pesan untuk `malicious` sengaja
 sama datarnya dengan penolakan biasa: memberi tahu bahwa injeksi terdeteksi
 hanya mengajari cara merumuskannya ulang."""
+
+REPLIES_TOPIK: dict[GateLabel, str] = {
+    GateLabel.OUT_OF_SCOPE: (
+        "Maaf, PANDU hanya menjawab pertanyaan seputar administrasi kampus. Topik "
+        "yang Anda pilih saat ini adalah {unit}, jadi silakan ajukan pertanyaan "
+        "seputar layanan topik tersebut. Bila urusan Anda ditangani unit lain, "
+        "ganti topik terlebih dahulu."
+    ),
+    GateLabel.NONSENSE: (
+        "Maaf, saya belum memahami pesan tersebut. Silakan tulis pertanyaan Anda "
+        "seputar {unit} dalam kalimat lengkap."
+    ),
+}
+"""Pengganti `REPLIES` bila mahasiswa sudah memilih topik di widget.
+
+Contoh di `REPLIES` (KRS, UKT, cuti, syarat kelulusan) semuanya urusan BAAK dan
+Keuangan. Mahasiswa yang bertanya di topik Unit Pelayanan Sertifikasi lalu
+disodori contoh itu justru diarahkan ke pertanyaan yang tidak akan ditemukan di
+dokumen topiknya (laporan 2026-11-23, "hehe heha" di topik UPS). Contoh per
+unit sengaja tidak ditulis: nama unit dapat diubah dari dashboard, jadi daftar
+contoh berkunci nama akan diam-diam usang. Yang disebut cukup topiknya sendiri."""
+
+
+def balasan(label: GateLabel, unit: str | None = None) -> str:
+    """Balasan untuk pesan yang dihentikan dengan label ini.
+
+    Menyebut topik pilihan mahasiswa bila ada dan label ini punya varian di
+    `REPLIES_TOPIK`; selain itu `REPLIES` apa adanya."""
+    topik = (unit or "").strip()
+    if topik and label in REPLIES_TOPIK:
+        return REPLIES_TOPIK[label].format(unit=topik)
+    return REPLIES.get(label, "")
 
 
 @dataclass(frozen=True)

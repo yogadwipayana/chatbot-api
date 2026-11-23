@@ -18,6 +18,7 @@ from app.rag.gate import (
     GatePolicy,
     GateSource,
     GateVerdict,
+    balasan,
     build_request,
 )
 from app.rag.prompts import OFF_TOPIC_MARKER, SYSTEM_PROMPT
@@ -67,6 +68,16 @@ class TestPipeline:
         assert hasil.kind is OutcomeKind.REJECTED
         assert hasil.text == REPLIES[GateLabel.OUT_OF_SCOPE]
         assert hasil.llm_called is True
+
+    async def test_menyebut_topik_pilihan_bukan_contoh_akademik(self, strong_retriever):
+        """Laporan 2026-11-23: "hehe heha" di topik UPS dibalas contoh KRS/UKT/cuti."""
+        hasil = await tanya(
+            strong_retriever, OFF_TOPIC_MARKER, unit="UNIT PELAYANAN SERTIFIKASI"
+        )
+        assert hasil.kind is OutcomeKind.REJECTED
+        assert hasil.text == balasan(GateLabel.OUT_OF_SCOPE, "UNIT PELAYANAN SERTIFIKASI")
+        assert "UNIT PELAYANAN SERTIFIKASI" in hasil.text
+        assert "KRS" not in hasil.text
 
     async def test_tanpa_sitasi_dan_tanpa_kontak(self, strong_retriever):
         respons = to_response(await tanya(strong_retriever, OFF_TOPIC_MARKER))

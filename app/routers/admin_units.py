@@ -1,22 +1,43 @@
-"""Kelola daftar unit layanan (tabel `units`, khusus superadmin).
+"""Kelola daftar unit layanan dan kontak PIC-nya (khusus superadmin).
 
 Daftar ini menentukan menu unit chatbot, isian unit di seluruh dashboard, dan
 pembatasan akses staf. Karena itu unit tidak dihapus -- hanya dinonaktifkan --
-dan penggantian nama mengalir ke dokumen dan akun lewat `ON UPDATE CASCADE`.
+dan penggantian nama mengalir ke dokumen, akun, dan kontak lewat
+`ON UPDATE CASCADE`.
+
+Kontak PIC (tabel `unit_contacts`) tampil di banner eskalasi dan teks
+penolakan widget mahasiswa (FE-3) begitu disimpan, tanpa deploy. Kontak
+berkata kunci hanya tampil bila pertanyaannya menyebut salah satu kata kunci
+itu (`app.rag.risk.pilih_kontak`). Jangan mengisinya dengan kontak yang tidak
+berasal dari kampus.
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.admin.permissions import AdminRole
 from app.deps import CurrentAdminDep, UnitDirectoryDep, require_role
-from app.rag.risk import contacts_for_unit
-from app.schemas.admin import AdminUnit, AdminUnitCreate, AdminUnitUpdate
+from app.schemas.admin import (
+    AdminUnit,
+    AdminUnitContact,
+    AdminUnitContactCreate,
+    AdminUnitContactUpdate,
+    AdminUnitCreate,
+    AdminUnitUpdate,
+)
 from app.schemas.common import Error
-from app.units import DuplicateUnitError, UnitRecord
+from app.units import (
+    CONTACT_CHANNELS,
+    ContactRecord,
+    DuplicateContactError,
+    DuplicateUnitError,
+    UnitRecord,
+)
 
 audit = logging.getLogger("app.audit")
 
@@ -28,6 +49,8 @@ router = APIRouter(
 )
 
 TIDAK_DITEMUKAN = "Unit tidak ditemukan."
+KONTAK_TIDAK_DITEMUKAN = "Kontak tidak ditemukan."
+TANPA_KANAL = "Isi minimal satu dari WhatsApp, telepon, atau email."
 
 
 def unit_out(unit: UnitRecord) -> AdminUnit:
@@ -38,7 +61,45 @@ def unit_out(unit: UnitRecord) -> AdminUnit:
         is_active=unit.is_active,
         document_count=unit.document_count,
         account_count=unit.account_count,
+        contact_count=unit.contact_count,
     )
+
+
+def contact_out(kontak: ContactRecord) -> AdminUnitContact:
+    return AdminUnitContact(
+        id=kontak.id,
+        label=kontak.label,
+        phone=kontak.phone,
+        whatsapp=kontak.whatsapp,
+        email=kontak.email,
+        service_hours=kontak.service_hours,
+        sort_order=kontak.sort_order,
+        display=kontak.display,
+        keywords=list(kontak.keywords),
+        updated_at=kontak.updated_at,
+        updated_by=kontak.updated_by,
+    )
+
+
+def _ringkas(kontak: ContactRecord) -> str:
+    """Isi kontak untuk log audit: teks yang tampil, dan kata kuncinya bila ada."""
+    if not kontak.keywords:
+        return kontak.display
+    return f"{kontak.display} [kata kunci: {', '.join(kontak.keywords)}]"
+
+
+def _label_bentrok(label: str) -> HTTPException:
+    return HTTPException(
+        status.HTTP_409_CONFLICT,
+        f"Kontak '{label}' sudah ada di unit ini (huruf besar-kecil tidak dibedakan).",
+    )
+
+
+async def _unit_ada(units: Any, name: str) -> UnitRecord:
+    unit = await units.ambil(name)
+    if unit is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, TIDAK_DITEMUKAN)
+    return unit
 
 
 def _bentrok(nama: str) -> HTTPException:
@@ -100,14 +161,104 @@ async def update_unit(
     if unit is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, TIDAK_DITEMUKAN)
     audit.warning("Unit %s diubah oleh %s: %s", name, actor.email, changes)
-    if "name" in changes and contacts_for_unit(name) and not contacts_for_unit(unit.name):
-        # Kontak PIC dikunci dengan nama unit di kode; tanpa catatan ini mahasiswa
-        # diam-diam mendapat Front Office (T69, 2026-11-18).
-        audit.warning(
-            "Kontak PIC unit %s tidak ikut ke nama baru %s: penolakan dan kontak "
-            "unit ini memakai Front Office sampai UNIT_CONTACTS di "
-            "app/rag/risk.py diperbarui",
-            name,
-            unit.name,
-        )
     return unit_out(unit)
+
+
+# --- Kontak PIC -----------------------------------------------------------------
+
+
+@router.get(
+    "/{name}/contacts",
+    response_model=list[AdminUnitContact],
+    responses={404: {"model": Error}},
+)
+async def list_unit_contacts(name: str, units: UnitDirectoryDep) -> list[AdminUnitContact]:
+    """Kontak PIC unit dalam urutan tampil di widget."""
+    await _unit_ada(units, name)
+    return [contact_out(k) for k in await units.kontak(name)]
+
+
+@router.post(
+    "/{name}/contacts",
+    status_code=status.HTTP_201_CREATED,
+    response_model=AdminUnitContact,
+    responses={404: {"model": Error}, 409: {"model": Error}, 422: {"model": Error}},
+)
+async def create_unit_contact(
+    name: str,
+    payload: AdminUnitContactCreate,
+    actor: CurrentAdminDep,
+    units: UnitDirectoryDep,
+) -> AdminUnitContact:
+    """Langsung tampil di widget untuk unit ini, menggantikan Front Office bila
+    sebelumnya unit ini belum punya kontak."""
+    await _unit_ada(units, name)
+    data = payload.model_dump()
+    try:
+        kontak = await units.tambah_kontak(name, data, by=actor.email)
+    except DuplicateContactError as exc:
+        raise _label_bentrok(payload.label) from exc
+    audit.warning(
+        "Kontak %s unit %s ditambah oleh %s: %s",
+        kontak.label,
+        name,
+        actor.email,
+        _ringkas(kontak),
+    )
+    return contact_out(kontak)
+
+
+@router.patch(
+    "/{name}/contacts/{contact_id}",
+    response_model=AdminUnitContact,
+    responses={404: {"model": Error}, 409: {"model": Error}, 422: {"model": Error}},
+)
+async def update_unit_contact(
+    name: str,
+    contact_id: uuid.UUID,
+    payload: AdminUnitContactUpdate,
+    actor: CurrentAdminDep,
+    units: UnitDirectoryDep,
+) -> AdminUnitContact:
+    """Hanya field yang dikirim yang diubah; `null` atau "" mengosongkan kanal."""
+    await _unit_ada(units, name)
+    lama = await units.ambil_kontak(name, contact_id)
+    if lama is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, KONTAK_TIDAK_DITEMUKAN)
+    changes = payload.model_dump(exclude_unset=True)
+    if not any(changes.get(k, getattr(lama, k)) for k in CONTACT_CHANNELS):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, TANPA_KANAL)
+    try:
+        kontak = await units.ubah_kontak(name, contact_id, changes, by=actor.email)
+    except DuplicateContactError as exc:
+        raise _label_bentrok(changes.get("label", lama.label)) from exc
+    if kontak is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, KONTAK_TIDAK_DITEMUKAN)
+    audit.warning(
+        "Kontak %s unit %s diubah oleh %s: %s -> %s",
+        lama.label,
+        name,
+        actor.email,
+        _ringkas(lama),
+        _ringkas(kontak),
+    )
+    return contact_out(kontak)
+
+
+@router.delete(
+    "/{name}/contacts/{contact_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={404: {"model": Error}},
+)
+async def delete_unit_contact(
+    name: str, contact_id: uuid.UUID, actor: CurrentAdminDep, units: UnitDirectoryDep
+) -> Response:
+    """Unit yang kehilangan kontak terakhirnya kembali memakai Front Office."""
+    await _unit_ada(units, name)
+    lama = await units.ambil_kontak(name, contact_id)
+    if lama is None or not await units.hapus_kontak(name, contact_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, KONTAK_TIDAK_DITEMUKAN)
+    audit.warning(
+        "Kontak %s unit %s dihapus oleh %s: %s", lama.label, name, actor.email, _ringkas(lama)
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

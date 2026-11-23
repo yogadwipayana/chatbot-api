@@ -104,6 +104,7 @@ async def chat(
 ) -> ChatResponse:
     """Jawaban sekali kirim. Dipakai kotak uji coba admin (AD-6) dan test."""
     unit = await unit_terdaftar(units, payload.unit) if payload.unit else None
+    kontak_unit = await units.kontak_tampil(unit)
     profil = profil_dari_nim(payload.nim)
     riwayat = await riwayat_tepercaya(payload.history, payload.session_id, jawaban_terkirim)
     mulai = time.perf_counter()
@@ -136,6 +137,7 @@ async def chat(
                 tool_registry=tool_registry,
                 tool_max_rounds=settings.tools_max_rounds,
                 nim=payload.nim,
+                unit_contacts=kontak_unit,
             )
             akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
 
@@ -186,6 +188,7 @@ async def chat_stream(
     profil = profil_dari_nim(payload.nim)
     # Di sini, bukan di dalam aliran: sesi database permintaan ini belum tentu
     # masih terbuka saat generator berjalan.
+    kontak_unit = await units.kontak_tampil(unit)
     riwayat = await riwayat_tepercaya(payload.history, payload.session_id, jawaban_terkirim)
     mulai = time.perf_counter()
     run_id = id_giliran()
@@ -238,6 +241,7 @@ async def chat_stream(
                             tool_registry=tool_registry,
                             tool_max_rounds=settings.tools_max_rounds,
                             nim=payload.nim,
+                            unit_contacts=kontak_unit,
                         )
                         akhiri_jejak(akar, kind=str(outcome.kind), text=outcome.text)
 
