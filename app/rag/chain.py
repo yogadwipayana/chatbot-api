@@ -14,6 +14,7 @@ dibalas kutipan pasal tata cara DO.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -103,6 +104,41 @@ def render_contacts(contacts) -> str:
     return "\n".join(baris)
 
 
+_HOMOGLIF = str.maketrans(
+    {
+        # Huruf Kiril dan Yunani yang tampak sama dengan huruf Latin penanda.
+        # Model pernah membalas "[TIDAK_DITEMUKAN]" dengan T, A, K Kiril (T72,
+        # 2026-11-18); tanpa pemetaan ini teks itu lolos sebagai jawaban dan
+        # tampil apa adanya ke mahasiswa. Ditulis sebagai kode titik supaya
+        # sumbernya tetap ASCII.
+        0x0410: "A", 0x0412: "B", 0x0415: "E", 0x041A: "K", 0x041C: "M",
+        0x041D: "H", 0x041E: "O", 0x0420: "P", 0x0421: "C", 0x0422: "T",
+        0x0423: "Y", 0x0425: "X", 0x0406: "I", 0x0408: "J", 0x0405: "S",
+        0x0500: "D", 0x04AE: "Y", 0x04C0: "I",
+        0x0391: "A", 0x0392: "B", 0x0395: "E", 0x0396: "Z", 0x0397: "H",
+        0x0399: "I", 0x039A: "K", 0x039C: "M", 0x039D: "N", 0x039F: "O",
+        0x03A1: "P", 0x03A4: "T", 0x03A5: "Y", 0x03A7: "X",
+        # Karakter tak terlihat yang dapat menyelip di tengah penanda.
+        0x200B: None, 0x200C: None, 0x200D: None, 0x2060: None, 0xFEFF: None,
+    }
+)  # fmt: skip
+
+
+def _seragam(teks: str) -> str:
+    """Bentuk pembanding penanda: NFKC (kurung dan huruf lebar penuh) lalu
+    homoglif ke Latin. Hanya untuk deteksi; teks ini tidak pernah ditampilkan."""
+    return unicodedata.normalize("NFKC", teks).translate(_HOMOGLIF)
+
+
+_KURUNG_BUKA = "[" + chr(0xFF3B)
+_KURUNG_TUTUP = "]" + chr(0xFF3D)
+_CALON_PENANDA = re.compile(
+    f"[{re.escape(_KURUNG_BUKA)}][^{re.escape(_KURUNG_BUKA + _KURUNG_TUTUP)}\n]{{1,40}}"
+    f"[{re.escape(_KURUNG_TUTUP)}]"
+)
+"""Teks berkurung yang mungkin penanda, termasuk yang ditulis dengan homoglif."""
+
+
 _NOT_FOUND_PROSE = re.compile(
     r"\btidak\s+(?:menemukan|ditemukan|tercantum)\b|\btidak\s+ada\s+informasi\b",
     re.IGNORECASE,
@@ -120,7 +156,7 @@ def is_not_found(answer: str, tanpa_halaman: dict[str, int] | None = None) -> bo
     """
     if extract_citations(answer, tanpa_halaman):
         return False
-    return NOT_FOUND_MARKER in answer or bool(_NOT_FOUND_PROSE.search(answer))
+    return NOT_FOUND_MARKER in _seragam(answer) or bool(_NOT_FOUND_PROSE.search(answer))
 
 
 def is_off_topic(answer: str, tanpa_halaman: dict[str, int] | None = None) -> bool:
@@ -131,7 +167,9 @@ def is_off_topic(answer: str, tanpa_halaman: dict[str, int] | None = None) -> bo
     """
     # `tanpa_halaman`: sumber tak berhalaman (tanya jawab, kartu tool) yang dikutip
     # `[Judul]`; tanpa daftar ini kutipannya tidak terbaca sebagai sitasi.
-    return OFF_TOPIC_MARKER in answer and not extract_citations(answer, tanpa_halaman)
+    return OFF_TOPIC_MARKER in _seragam(answer) and not extract_citations(
+        answer, tanpa_halaman
+    )
 
 
 def rejection_source(outcome: PipelineOutcome) -> str | None:
@@ -159,11 +197,14 @@ MARKERS = (NOT_FOUND_MARKER, OFF_TOPIC_MARKER)
 
 
 def strip_markers(answer: str) -> str:
-    """Buang penanda yang tersisa di jawaban parsial; mahasiswa tidak perlu melihatnya."""
-    if not any(marker in answer for marker in MARKERS):
+    """Buang penanda yang tersisa di jawaban parsial; mahasiswa tidak perlu melihatnya.
+
+    Penanda berhomoglif ikut dibuang (`_seragam`), dari teks aslinya."""
+    if not any(marker in _seragam(answer) for marker in MARKERS):
         return answer
-    for marker in MARKERS:
-        answer = answer.replace(marker, "")
+    for cocok in reversed(list(_CALON_PENANDA.finditer(answer))):
+        if _seragam(cocok.group()) in MARKERS:
+            answer = answer[: cocok.start()] + answer[cocok.end() :]
     return answer.strip()
 
 
@@ -294,7 +335,7 @@ class _PenahanPenanda:
             await self.on_token(potongan)
             return
         self.tertahan += potongan
-        awal = self.tertahan.lstrip()
+        awal = _seragam(self.tertahan.lstrip())
         if any(m.startswith(awal) or awal.startswith(m) for m in MARKERS):
             return
         self.lepas = True

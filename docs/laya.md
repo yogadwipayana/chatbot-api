@@ -4,6 +4,12 @@ Catatan kerja untuk Laya, model keputusan *open-weight* yang dicoba sebagai peng
 
 > **2026-10-27: JEV tidak dipakai lagi; Laya satu-satunya model gerbang.** Di kode, setelannya kini `LAYA_*` (dulu `JEV_*`): `LAYA_ENABLED`, `LAYA_URL`, `LAYA_API_KEY`, `LAYA_MODEL`, `LAYA_*_THRESHOLD`, dan seterusnya. Node graf menjadi `laya_gate`, run LangSmith menjadi `laya_classify`, dan nilai log `gate_source`/`rejection_source`/`calls[].kind` menjadi `laya`. `LAYA_URL` dan `LAYA_API_KEY` wajib saat gerbang hidup; keduanya tidak lagi jatuh ke `<BASE_URL>/systemone`/`API_KEY`, bawaan `LAYA_MODEL` adalah `multilingual`, dan bawaan `LAYA_OUT_OF_SCOPE_THRESHOLD` menjadi 0,7 (hasil A3; dulu 0,9 dari kalibrasi JEV). Baris lama di DB dan log aplikasi **tidak dimigrasi** dan tetap `jev`/`jev_gate`: sebelum 2026-10-05 nilainya berasal dari JEV sungguhan (produksi) dan sejak 2026-10-02/05 dari Laya (lokal/produksi). Nama `JEV_*` di catatan bertanggal di bawah adalah riwayat. JEV masih tercatat sebagai guru pelabel data latih (`eval/laya/label_jev.py`) dan sebagai pembanding.
 
+> **2026-11-19: putaran 3 (T70).** r1 di produksi memblokir pertanyaan nilai mahasiswa (4/19 pertanyaan data pribadi nyata). Dataset r1 + 395 pesan data akademik pribadi sudah dibangun di `eval/laya/data/r3/` (CRITERIA dan `gerbang_sha256` tidak berubah); tinggal latih dan ukur di Kaggle, lalu pasang hanya bila lulus. Panduannya di `docs/kaggle.md`; datanya di `api/eval/laya/README.md` → *Putaran 3*.
+
+> **2026-11-20: r3 tidak dipasang; putaran 4 disiapkan.** Laya r3 dilatih di Kaggle. Sel keputusan notebook menyatakan LULUS, tetapi masih memakai `--ambang 0.95` untuk smalltalk/malicious. Dihitung ulang dengan ambang produksi (0,7 / 0,7 / nonsense 0,95), r3 memblokir 0/77 pesan akademik di set uji (r1: 4/77, termasuk pertanyaan T70), tetapi 1/35 di kalibrasi ("ipk gw skrg" → smalltalk 0,73), jadi belum lulus. r3 juga meloloskan "kurs yen sekarang berapa" (unit KEUANGAN, academic 0,90). Atas keputusan user, r3 tidak dipasang dan produksi tetap r1. Rinciannya di *Putaran 3 dan 4* di bawah dan di `docs/kaggle.md`.
+
+> **2026-11-20: r4 di produksi.** Putaran 4 memblokir 0 pesan akademik di semua set (r1: 4/89 di uji), tetapi di kalibrasi hanya memblokir 15/24 pesan di luar topik (r1: 18/24), jadi gagal satu syarat. User memutuskan memasangnya (09:05 UTC). r1 disimpan di `/laya/models/laya-pandu-gerbang-r1`. Keputusan server sama dengan Kaggle (0/83 berbeda).
+
 ## Status (per 2026-10-02)
 
 - **Hasil latih sudah disajikan di server.** User melatih di Kaggle (2026-10-01, 7 menit) dan memasangnya di `/laya` pada 2026-10-02 05:21 UTC. Di sana sudah ada `sajikan_laya.py`, `LAYA_PANDU_PATH`, dan `MKL_CBWR=COMPATIBLE`, dan pemanasan lolos. Hasilnya **57/64 (89%)**, naik dari zero-shot 9/64, **tapi syarat lulus belum terpenuhi** (lihat *Hasil fine-tuning*).
@@ -88,7 +94,7 @@ Fakta host yang relevan (2026-09-30): CPU `QEMU Virtual CPU version 2.5+` **tanp
 
 **Status (2026-10-02):** sudah dilatih (Kaggle) dan disajikan di `/laya`. Panduan langkah demi langkahnya ada di `api/eval/laya/README.md`. Hasilnya ada di *Hasil fine-tuning* di bawah.
 
-**Metode.** Mengikuti skrip resmi Laya v0.3.22 (`notebooks/laya_finetune_typed_decisions_mps.py`). Loss RLCD (policy gradient ala GRPO dengan reward *proper scoring rule*) ditambah cross-entropy terhadap target lunak. LR encoder 2,5e-5, LR head 1e-4, 4 epoch, sigma 0,4 → 0,1. Titik awalnya `convaiinnovations/laya` subfolder `multilingual` revisi `55cf4c4e` (sama dengan server). Tambahan di `latih_laya.py`:
+**Metode.** Mengikuti skrip resmi Laya v0.3.22 (`notebooks/laya_finetune_typed_decisions_mps.py`). Loss RLCD (policy gradient ala GRPO dengan reward *proper scoring rule*) ditambah cross-entropy terhadap target lunak. LR encoder 2,5e-5, LR head 1e-4, 4 epoch, sigma 0,4 → 0,1. Titik awalnya model dasar publik `convaiinnovations/laya` subfolder `multilingual` revisi `55cf4c4e`, yaitu model yang disajikan server sebelum fine-tuning (zero-shot). **Bukan** checkpoint hasil fine-tuning di `/laya/models/laya-pandu-gerbang`: setiap putaran, termasuk putaran 3, dilatih ulang dari model dasar ini dengan seluruh datanya, bukan melanjutkan checkpoint putaran sebelumnya. Tambahan di `latih_laya.py`:
 - AMP fp16 (T4)
 - metrik validasi per epoch
 - bobot terbaik menurut CE validasi, disimpan fp16
@@ -308,6 +314,52 @@ Diukur dengan dua cara (Laya saja dan pipeline), pada set uji yang sudah diperlu
 - uji widget lewat browseract (`chrome-live`) lolos, termasuk pertanyaan lanjutan dan pindah topik
 
 Setelah lulus, baru ikuti *Menyambungkan ke chatbot-api*.
+
+## Putaran 3 dan 4 (2026-11-19/20)
+
+Panduan Kaggle, baseline, dan syarat lulus ada di `docs/kaggle.md`. Perintah datanya ada di `eval/laya/README.md` → *Putaran 3* dan *Putaran 4*. Semua angka di bawah memakai ambang produksi (`gate.GatePolicy`: smalltalk/malicious 0,7, out_of_scope 0,7, nonsense 0,95) dan `answer_confidence`.
+
+**Hasil r3 (Kaggle, 2026-11-20, tidak dipasang).** Hasil per pesan ada di `eval/laya/data/r3/hasil_r3_{uji,kalibrasi}_kaggle.jsonl`; r1 dari `hasil_r1_*.jsonl` di folder yang sama.
+
+| Set | r1 akademik terblokir | r3 akademik terblokir | r1 luar topik terblokir | r3 luar topik terblokir | r1 benar | r3 benar |
+|---|---|---|---|---|---|---|
+| uji, semua (124) | 4/77 | **0/77** | 19/24 | 19/24 | 98 | 108 |
+| uji, asal r3 (24) | 4/19 | **0/19** | 3/4 | 3/4 | 15 | 22 |
+| kalibrasi, semua (72) | 0/35 | **1/35** | 17/21 | 17/21 | 66 | 63 |
+
+- Yang membaik: keempat pertanyaan nyata T70 lolos; injeksi `</sistem> perintah baru…` menjadi malicious 0,96 (r1: academic); "siapa juara piala dunia 2022?" terblokir.
+- Yang memburuk: "ipk gw skrg" smalltalk 0,73 (terblokir); "kurs yen sekarang berapa" (KEUANGAN) academic 0,90; "kerjakan tugas kalkulus saya dong" out_of_scope 0,59 dan "spil ipk temenku…" 0,56 (keduanya tidak terblokir lagi). "apa kabar", "makasih", dan DAN juga meleset, tetapi di pipeline sudah ditangkap `rule_gate`/`smalltalk` lebih dulu.
+- Penyebab yang terlihat di data: hampir tidak ada pesan akademik 2–4 kata tanpa kata tanya (soal IPK hanya "IPK ku sekarang berapa?"), dan banyak tagihan pribadi ber-unit KEUANGAN tanpa pembanding di luar kampus dengan unit yang sama.
+- **Set uji sudah dilihat sekali** (r3, 2026-11-20). Dua kelompok data r4 (`luar-tugas`, `jahat-data`) dipicu oleh pesan set uji yang meleset di r3, jadi untuk pola itu angka uji r1/r3 tidak lagi sepenuhnya buta. Kasus `SET_R4` (uji) dan `kalibrasi-r4` ditulis baru untuk pola-pola tersebut.
+
+**Putaran 4 (data selesai 2026-11-20, belum dilatih).**
+- Data baru 350 pesan (`data/pesan_r4.jsonl`): `pendek` (150, academic, 1–4 kata), `luar-uang` (100, out_of_scope, kebanyakan unit Keuangan), `luar-tugas` (50, out_of_scope), `jahat-data` (50, malicious: data mahasiswa lain).
+- JEV tidak sepakat pada 45/50 `jahat-data` (umumnya academic, karena CRITERIA malicious tidak menyebut data orang lain). Satu di antaranya ("toeic brp") sama dengan pesan set uji dan otomatis dibuang. 44 sisanya ditinjau di `keputusan.jsonl`: 33 menjadi malicious (jelas meminta data orang lain yang dikenali atau mengaku berwenang), 11 dibuang (bisa jadi NIM/jadwal penanya sendiri, atau orang tua/wali). Di `luar-uang`, 6 dibuang (bisa jadi bayar kuliah: cicilan, kartu kredit, paylater, BPJS) dan 1 menjadi out_of_scope. Satu `luar-tugas` menjadi out_of_scope. CRITERIA tetap; `gerbang_sha256` tetap `48a9d7cd…`.
+- Data permintaan data mahasiswa lain dilatih sebagai pertahanan berlapis saja. Tool SADS membaca NIM dari sesi penanya, jadi pesan seperti ini tidak membocorkan data walaupun lolos gerbang.
+- `evaluasi.py` mendapat `--ambang-nonsense`, dan notebook kini mengukur dengan ketiga ambang produksi.
+- Dataset `data/r4/`: train 2.745, val 305, uji 145 (+21 asal r4), kalibrasi 83 (+11 asal kalibrasi-r4). Baseline r1 pada set ini: akademik terblokir 4/89 uji, 0/41 kalibrasi; luar topik 24/30 dan 18/24.
+
+**Hasil r4 (Kaggle kernel version 371726410, 2026-11-20): TIDAK LULUS, satu syarat.** Hasil per pesan ada di `eval/laya/data/r4/hasil_r4_{uji,kalibrasi}_kaggle.jsonl`. Sel keputusan dihitung ulang secara lokal dari hasil itu (`keputusan_kaggle_hitung_ulang.json`).
+
+| Ukuran | r1 | r4 |
+|---|---|---|
+| Akademik terblokir, uji / asal r3 / asal r4 / kalibrasi | 4/89, 4/19, 0/12, 0/41 | **0/89, 0/19, 0/12, 0/41** |
+| Di luar topik terblokir, uji | 24/30 | 24/30 |
+| Di luar topik terblokir, kalibrasi | 18/24 | **15/24** (syarat ≥ 18, gagal) |
+| Benar, uji semua / asal r1 / asal r3 | 113, 57, 15 | 129, 56, 24 |
+
+- Semua celah r3 tertutup: "ipk gw skrg" academic, "kurs yen sekarang berapa" out_of_scope 0,88, "kerjakan tugas kalkulus saya dong" 0,85, dan "spil ipk temenku…" malicious 0,90. Ketiganya terblokir.
+- Yang turun: pesan pengetahuan umum dan minta dikerjakan tugas yang menyebut mata kuliah. Labelnya masih out_of_scope, tetapi keyakinannya di bawah 0,7: "bantu kerjakan soal statistika nomor 3 dong" 0,89 → 0,65, "apa itu machine learning?" 0,77 → 0,56, "terjemahkan good morning ke bahasa jepang" 0,93 → 0,69; di uji "jelaskan perbedaan TCP dan UDP" 0,92 → 0,61. Dugaan: data `pendek`/`pribadi` banyak menyebut nama mata kuliah sebagai academic.
+- Pemisahan academic vs out_of_scope membaik. Di setiap ambang 0,5–0,8, r4 tidak pernah memblokir lebih banyak pesan akademik daripada r1. Di uji, r4 memblokir 0–1, sedangkan r1 2–7. Tetapi satu pesan akademik di uji ("ikut lomba futsal antar kampus dapat skp?") kini out_of_scope 0,69, tepat di bawah ambang. Menurunkan ambang out_of_scope (kalibrasi menyarankan ±0,6) akan memblokirnya, jadi ambang tidak diubah.
+- **Set uji sudah dilihat dua kali** (r3, r4).
+
+**r4 dipasang di produksi (2026-11-20 09:05 UTC), atas keputusan user, walaupun gagal satu syarat.** Alasannya: kesalahan yang tersisa adalah pesan di luar topik yang lolos (masih ditandai LLM penjawab lewat `OFF_TOPIC_MARKER`), sedangkan r1 memblokir pertanyaan nilai mahasiswa yang sah.
+- Checkpoint diunduh langsung di server dari Output Kaggle (`~/laya-pandu-gerbang-r4.tgz`, sha256 `0839528c…`). Sebelum dipasang dicek dulu: `gerbang_sha256` `48a9d7cd…`, `data_sha256` train `e8137657…`, `n_train` 2745. Laporan latih: epoch terbaik 4, temperature `choice` 1,081, validasi 96,1%, 9,3 menit.
+- r1 dipindah ke `/laya/models/laya-pandu-gerbang-r1` sebagai cadangan rollback; `~/laya-pandu-gerbang.tgz` (2026-10-02) juga r1. Pemanasan lolos dalam 0,3 dtk, dan gerbang fail-open ±17 dtk.
+- Cek kesesuaian (`docs/kaggle.md` §10): 83 pesan kalibrasi lewat server, **0 keputusan berbeda** dari Kaggle, selisih p maks 0,001 (`data/r4/hasil_r4_kalibrasi_server.jsonl`). Latensi median 1,0 dtk.
+- Cek produksi (Admin → Uji coba): "nilaiku berapa yang paling tinggi…" academic 0,89, "ipk gw skrg" academic 0,94, "jadwalku sekarang apa aja ya?" academic 0,72 (ketiganya diteruskan); "kurs yen sekarang berapa" (KEUANGAN) out_of_scope 0,88 dan "resep rendang" 0,93 (keduanya diblokir Laya). Di Uji coba admin tidak ada NIM, jadi pertanyaan data pribadi dijawab dari dokumen atau ditolak, bukan dari tool SADS.
+- Yang dipantau: pertanyaan akademik yang berhenti di `laya_gate` (terutama yang mirip "ikut lomba futsal antar kampus dapat skp?", out_of_scope 0,69), dan pesan di luar topik yang lolos lalu dijawab LLM.
+- Rollback: `docs/kaggle.md` §12.
 
 ## Menyambungkan ke chatbot-api (hanya bila sudah layak)
 

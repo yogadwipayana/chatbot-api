@@ -55,6 +55,11 @@ KELOMPOK: tuple[tuple[str, ...], ...] = (
     ("SADS", "Sistem Akademik"),
     ("SIPUT", "Sistem Penginputan Nilai"),
     ("SISKEU", "Sistem Informasi Keuangan"),
+    # Mahasiswa menanyakan "PIC", dokumen menulis "Kontak": "pic plk siapa?"
+    # tidak pernah menemukan bab "Kontak dan Informasi Lebih Lanjut" TRANSKRIP
+    # PLK (di luar 12 besar), sedangkan "kontak person pic PLK" menemukannya di
+    # peringkat 1 (T71, 2026-11-18).
+    ("Kontak", "PIC", "Contact Person", "Narahubung"),
 )
 """Setiap kelompok berisi istilah yang setara; anggota pertama adalah nama
 yang berlaku sekarang."""

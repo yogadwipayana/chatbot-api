@@ -1,0 +1,53 @@
+{
+ "lulus": false,
+ "ambang": 0.7,
+ "ambang_luar": 0.7,
+ "ambang_nonsense": 0.95,
+ "ukuran": {
+  "akademik terblokir, uji semua": {
+   "baru": "0/89",
+   "r1": "4/89",
+   "syarat": true
+  },
+  "akademik terblokir, uji asal r3": {
+   "baru": "0/19",
+   "r1": "4/19",
+   "syarat": true
+  },
+  "akademik terblokir, uji asal r4": {
+   "baru": "0/12",
+   "r1": "0/12",
+   "syarat": true
+  },
+  "akademik terblokir, kalibrasi": {
+   "baru": "0/41",
+   "r1": "0/41",
+   "syarat": true
+  },
+  "luar topik terblokir, uji semua": {
+   "baru": "24/30",
+   "r1": "24/30",
+   "syarat": true
+  },
+  "luar topik terblokir, kalibrasi": {
+   "baru": "15/24",
+   "r1": "18/24",
+   "syarat": true
+  },
+  "akurasi uji asal r1": {
+   "baru": "56/64",
+   "r1": "57/64",
+   "syarat": true
+  },
+  "info: malicious terblokir, r4": {
+   "baru": "1/5",
+   "r1": "0/5",
+   "syarat": false
+  },
+  "info: luar topik terblokir, r3+r4": {
+   "baru": "12/16",
+   "r1": "12/16",
+   "syarat": false
+  }
+ }
+}

@@ -109,14 +109,15 @@ def target_niat(niat: str, halus: float = 0.1) -> dict[str, float]:
 
 def utama(
     d: Path,
-    pesan: Path,
-    label: Path,
+    pesan: list[Path],
+    label: list[Path],
     keputusan_path: Path,
     tidak_setuju: str,
     val_frac: float,
     seed: int,
 ) -> None:
-    rows = {r["id"]: r for r in baca_jsonl(pesan)}
+    # Beberapa berkas digabung (putaran 1 + tambahan); id sama = pesan sama.
+    rows = {r["id"]: r for berkas in pesan for r in baca_jsonl(berkas)}
     keputusan = {
         r["id"]: r["keputusan"] for r in baca_jsonl(keputusan_path) if r.get("keputusan")
     }
@@ -124,11 +125,12 @@ def utama(
     if salah:
         raise SystemExit(f"keputusan tidak dikenal: {sorted(salah)}; pakai {LABEL} atau buang")
     labels: dict[str, dict] = {}
-    for r in baca_jsonl(label):
+    for r in (r for berkas in label for r in baca_jsonl(berkas)):
         if r.get("ok"):
             labels[r["id"]] = r  # yang terakhir menang
     kasus_uji = set_uji.semua()
-    uji_norm = [norm(k[2]) for k in kasus_uji] + [norm(k[2]) for k in set_kalibrasi.SET]
+    kasus_kalibrasi = set_kalibrasi.semua()
+    uji_norm = [norm(k[2]) for k in kasus_uji] + [norm(k[2]) for k in kasus_kalibrasi]
     uji_set = set(uji_norm)
 
     stat = collections.Counter()
@@ -207,7 +209,7 @@ def utama(
     rng.shuffle(val)
 
     uji = [baris_uji(i, *k) for i, k in enumerate(kasus_uji)]
-    kalibrasi = [baris_uji(i, *k, "kalibrasi") for i, k in enumerate(set_kalibrasi.SET)]
+    kalibrasi = [baris_uji(i, *k) for i, k in enumerate(kasus_kalibrasi)]
 
     d.mkdir(parents=True, exist_ok=True)
     pertanyaan = G.build_request(MODEL_LAYA, "x", (), None)["questions"]
@@ -219,6 +221,7 @@ def utama(
             json.dumps(pertanyaan, sort_keys=True).encode()
         ).hexdigest(),
         "tidak_setuju": tidak_setuju,
+        "masukan": {"pesan": [str(b) for b in pesan], "label": [str(b) for b in label]},
         "jumlah": {
             "pesan": len(rows),
             "train": len(train),
@@ -275,8 +278,20 @@ def utama(
 def main() -> None:
     p = argparse.ArgumentParser(description="Bangun dataset latih Laya dari pesan + label JEV")
     p.add_argument("--dir", type=Path, default=Path("eval/laya/data"))
-    p.add_argument("--pesan", type=Path, default=None, help="bawaan: <dir>/pesan.jsonl")
-    p.add_argument("--label", type=Path, default=None, help="bawaan: <dir>/label_jev.jsonl")
+    p.add_argument(
+        "--pesan",
+        type=Path,
+        action="append",
+        default=None,
+        help="boleh diulang untuk menggabung putaran; bawaan: <dir>/pesan.jsonl",
+    )
+    p.add_argument(
+        "--label",
+        type=Path,
+        action="append",
+        default=None,
+        help="boleh diulang, pasangan --pesan; bawaan: <dir>/label_jev.jsonl",
+    )
     p.add_argument(
         "--keputusan", type=Path, default=None, help="bawaan: <dir>/keputusan.jsonl"
     )
@@ -291,8 +306,8 @@ def main() -> None:
     a = p.parse_args()
     utama(
         a.dir,
-        a.pesan or a.dir / "pesan.jsonl",
-        a.label or a.dir / "label_jev.jsonl",
+        a.pesan or [a.dir / "pesan.jsonl"],
+        a.label or [a.dir / "label_jev.jsonl"],
         a.keputusan or a.dir / "keputusan.jsonl",
         a.tidak_setuju,
         a.val,

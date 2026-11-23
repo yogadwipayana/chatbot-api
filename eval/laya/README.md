@@ -71,8 +71,11 @@ python latih_laya.py --data data --out laya-pandu-gerbang            # 4 epoch, 
 python evaluasi.py --uji data/uji.jsonl --model laya-pandu-gerbang --device cuda
 ```
 
-Titik awalnya dipatok ke checkpoint yang sama dengan server (`convaiinnovations/laya`,
-subfolder `multilingual`, revisi `55cf4c4e`). Loss RLCD dan hiperparameternya mengikuti
+Titik awalnya dipatok ke model dasar publik `convaiinnovations/laya` (subfolder
+`multilingual`, revisi `55cf4c4e`), yaitu model yang disajikan server sebelum fine-tuning.
+Checkpoint hasil fine-tuning di server (`/laya/models/laya-pandu-gerbang`) **tidak** dipakai:
+setiap putaran dilatih ulang dari model dasar dengan seluruh datanya (putaran 3 = data r1 +
+data r3), bukan melanjutkan checkpoint putaran sebelumnya. Loss RLCD dan hiperparameternya mengikuti
 skrip resmi `laya_finetune_typed_decisions_mps.py`. Tambahannya:
 - AMP fp16 di CUDA
 - metrik validasi per epoch
@@ -330,3 +333,115 @@ Pesan di luar topik harus berhenti di node `laya_gate` (`outcome=rejected` tanpa
 - Tulis hasilnya di `laya.md` sebagai *Hasil putaran 2*, lalu tandai butir A–D yang sudah selesai.
 - Kalau lulus, ikuti *Menyambungkan ke chatbot-api* di `laya.md`. Kalau tidak, lakukan
   rollback (langkah 5) dan catat penyebabnya.
+
+## Putaran 3: data akademik pribadi (T70, 2026-11-19)
+
+**Pemicu.** Laya r1 di produksi memblokir "nilaiku berapa yang paling tinggi dan berapa
+yang peling rendah" sebagai `out_of_scope` 0,81. Pertanyaan tentang data milik penanya
+sendiri (nilai, IPK, jadwal, KRS, tagihan) baru ada sejak tool SADS (2026-11-07), jadi
+tidak pernah muncul di data latih r1. Baseline r1 pada 19 pertanyaan akademik nyata (asal
+`r3`): **4/19 terblokir** di ambang produksi (`answer_confidence`, out_of_scope 0,7) dan 4
+lainnya berlabel `out_of_scope` di bawah ambang (`data/r3/hasil_baseline_r1_uji_r3.jsonl`).
+
+**CRITERIA tidak diubah.** JEV sudah melabeli pertanyaan ini `academic` (0,88–1,0), dan
+setiap opsi dipotong di 48 token sehingga tambahan di ujung kriteria tidak terbaca Laya.
+`gerbang_sha256` tetap `48a9d7cd…`, jadi data r1 tetap sah dan `gate.py` tidak berubah saat
+checkpoint baru dipasang. Butir B1–B4 putaran 2 **belum** termasuk.
+
+**Data (selesai, lokal).**
+
+```bash
+# dari api/
+.venv/Scripts/python -m eval.laya.buat_pesan --out eval/laya/data/pesan_r3.jsonl \
+  --kelompok pribadi,pribadi-lanjutan,pribadi-luar          # 17 tugas, 395 pesan
+.venv/Scripts/python -m eval.laya.label_jev --pesan eval/laya/data/pesan_r3.jsonl \
+  --out eval/laya/data/label_jev_r3.jsonl                   # 395 ok
+.venv/Scripts/python -m eval.laya.bangun_dataset --dir eval/laya/data/r3 \
+  --pesan eval/laya/data/pesan.jsonl --pesan eval/laya/data/pesan_r3.jsonl \
+  --label eval/laya/data/label_jev.jsonl --label eval/laya/data/label_jev_r3.jsonl \
+  --keputusan eval/laya/data/keputusan.jsonl
+```
+
+- Kelompok baru di `buat_pesan.py`: `pribadi` (300, academic), `pribadi-lanjutan` (45,
+  academic, dengan riwayat), `pribadi-luar` (50, out_of_scope: kurs, tagihan listrik,
+  jadwal kereta, IPK untuk lowongan kerja, kampus lain). Unit acak memuat nama lama dan
+  nama sekarang (AKADEMIK, KEUANGAN). `--kelompok` membatasi tugas yang dijalankan;
+  `bangun_dataset --pesan/--label` kini boleh diulang.
+- JEV sepakat 299/300, 45/45, dan 40/50. 11 baris yang tidak sepakat ditinjau dan dicatat di
+  `data/keputusan.jsonl` (1 academic, 10 out_of_scope; alasan di tiap baris).
+- Set uji + `SET_R3` (24: 19 academic nyata dari log produksi, 1 malicious, 4 out_of_scope),
+  set kalibrasi + `SET_R3` (12, buatan tangan, asal `kalibrasi-r3`).
+- Hasil `data/r3/`: train 2.461, val 274, uji 124, kalibrasi 72; `kaggle.zip` siap diunggah.
+  Data putaran 1 di `data/` tidak disentuh.
+
+**Langkah berikutnya: ukur di Kaggle dulu, baru pasang** (rincian di `docs/kaggle.md`).
+1. Kaggle: dataset putaran 1 → **New Version** dengan `data/r3/kaggle.zip`, lalu
+   `latih_kaggle.ipynb` versi terbaru → Save & Run All (4 epoch seperti r1). Notebook
+   mengukur `kalibrasi.jsonl`, lalu `uji.jsonl` sekali, dengan ambang produksi
+   (`--ambang 0.95 --ambang-luar 0.7`), dan sel keputusan membandingkannya dengan r1.
+2. Hanya bila **LULUS** (0/77 akademik terblokir, 0/19 r3, di luar topik tidak turun):
+   unduh hasilnya, cadangkan r1 di server (`laya-pandu-gerbang-r1`), lalu pasang.
+3. Di server cukup cek kesesuaian: jalankan `kalibrasi.jsonl` lewat
+   `http://100.111.178.48:8001/v1/systemone` (domain publik menolak User-Agent urllib,
+   403) dan bandingkan keputusannya dengan hasil Kaggle. Set uji tidak dijalankan lagi.
+
+**Status 2026-11-20: dilatih, tidak dipasang.** Sel keputusan menyatakan LULUS karena
+smalltalk masih diukur dengan 0,95. Dengan ambang produksi, r3 memblokir 0/77 akademik di
+uji tetapi 1/35 di kalibrasi ("ipk gw skrg" → smalltalk 0,73). Hasilnya ada di
+`data/r3/hasil_r3_*_kaggle.jsonl`, dan rinciannya di `docs/laya.md` → *Putaran 3 dan 4*.
+
+## Putaran 4: celah r3 (2026-11-20)
+
+**Pemicu.** Hasil Laya r3 di Kaggle, dihitung ulang dengan ambang produksi:
+- "ipk gw skrg" diberi label smalltalk 0,73, dan "cuti" nonsense 0,57. Data latih hampir
+  tidak punya pesan akademik 1–4 kata tanpa kata tanya.
+- "kurs yen sekarang berapa" (unit KEUANGAN) diberi label academic 0,90. Data r3 banyak
+  memuat tagihan pribadi ber-unit KEUANGAN.
+- "kerjakan tugas kalkulus saya dong" (out_of_scope 0,59) dan "spil ipk temenku…" (0,56)
+  tidak lagi terblokir.
+
+**Data (selesai, lokal).**
+
+```bash
+# dari api/
+.venv/Scripts/python -m eval.laya.buat_pesan --out eval/laya/data/pesan_r4.jsonl \
+  --kelompok pendek,luar-uang,luar-tugas,jahat-data      # 14 tugas, 350 pesan
+.venv/Scripts/python -m eval.laya.label_jev --pesan eval/laya/data/pesan_r4.jsonl \
+  --out eval/laya/data/label_jev_r4.jsonl                # 348 id unik, semua ok
+.venv/Scripts/python -m eval.laya.bangun_dataset --dir eval/laya/data/r4 \
+  --pesan eval/laya/data/pesan.jsonl --pesan eval/laya/data/pesan_r3.jsonl \
+  --pesan eval/laya/data/pesan_r4.jsonl \
+  --label eval/laya/data/label_jev.jsonl --label eval/laya/data/label_jev_r3.jsonl \
+  --label eval/laya/data/label_jev_r4.jsonl --keputusan eval/laya/data/keputusan.jsonl
+```
+
+- Kelompok baru di `buat_pesan.py`:
+  - `pendek`: 150, academic, 1–4 kata (data pribadi, jadwal/KRS/tagihan, urusan umum).
+  - `luar-uang`: 100, out_of_scope (kurs, emas, saham, kripto, pinjol, pajak, BPJS);
+    unit Keuangan sengaja lebih sering.
+  - `luar-tugas`: 50, out_of_scope (minta dikerjakan tugas).
+  - `jahat-data`: 50, malicious (data mahasiswa lain, termasuk yang mengaku berwenang).
+- Kesepakatan JEV dengan niat: `pendek` 148/148 (2 duplikat), `luar-uang` 93/100,
+  `luar-tugas` 49/50, tetapi `jahat-data` hanya 5/50, karena CRITERIA malicious tidak
+  menyebut data orang lain. Satu pesan `jahat-data` ("toeic brp") sama dengan pesan set
+  uji, jadi otomatis dibuang. 52 baris ditinjau di `data/keputusan.jsonl`
+  (alasan per baris): `jahat-data` 33 malicious dan 11 buang; `luar-uang` 1 out_of_scope
+  dan 6 buang; `luar-tugas` 1 out_of_scope. Aturan tinjauannya ada di `docs/laya.md` →
+  *Putaran 3 dan 4*.
+- Set uji + `SET_R4` (21: 12 academic pendek, 6 out_of_scope, 3 malicious), set kalibrasi
+  + `SET_R4` (11, asal `kalibrasi-r4`). 24 pesan latih dibuang karena sama atau mirip.
+- `evaluasi.py --ambang-nonsense` (kosong = `--ambang`, seperti `gate.py`). Notebook kini
+  mengukur dengan `--ambang 0.7 --ambang-luar 0.7 --ambang-nonsense 0.95`.
+- Hasil `data/r4/`: train 2.745, val 305, uji 145, kalibrasi 83, `kaggle.zip`. Baseline r1
+  (server, ambang produksi): `data/r4/hasil_r1_{uji,kalibrasi}.jsonl` (+ `.log`).
+
+**Status 2026-11-20: dilatih, TIDAK LULUS pada satu syarat.** Akademik terblokir 0 di
+semua set (r1: 4/89 uji), tetapi di luar topik terblokir di kalibrasi 15/24 (r1: 18/24).
+Hasil ada di `data/r4/hasil_r4_*_kaggle.jsonl`, dan rinciannya di `docs/laya.md` →
+*Putaran 3 dan 4*. **Dipasang 2026-11-20 09:05 UTC atas keputusan user.** Cadangan r1 ada
+di `/laya/models/laya-pandu-gerbang-r1`. Cek kesesuaian: 0/83 keputusan berbeda
+(`data/r4/hasil_r4_kalibrasi_server.jsonl`). Uji coba di produksi lolos.
+
+**Langkah (sudah dijalankan):** sama dengan putaran 3 (`docs/kaggle.md`): unggah
+`data/r4/kaggle.zip` sebagai versi baru dataset, impor ulang `latih_kaggle.ipynb` (sel ukur
+dan keputusan berubah), Save & Run All, lalu pasang hanya bila sel keputusan LULUS.
