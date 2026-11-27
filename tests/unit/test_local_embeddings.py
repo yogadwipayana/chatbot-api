@@ -82,23 +82,22 @@ class TestPadding:
             pad([0.1] * 5, 4)
 
 
-class TestJalurBiaya:
+class TestJalurPemakaian:
     async def test_query_lewat_awalan_query(self, e5, encoder):
         hasil = await embed_with_usage(e5, ["kapan KRS"], sebagai_query=True)
         assert encoder.masukan == [["query: kapan KRS"]]
-        assert hasil.biaya_usd == 0.0
+        assert hasil.tokens is None
 
     async def test_dokumen_lewat_awalan_passage(self, e5, encoder):
         await embed_with_usage(e5, ["isi"])
         assert encoder.masukan == [["passage: isi"]]
 
-    async def test_embed_query_mencatat_biaya_nol_bukan_tidak_diketahui(self, e5):
-        """None di AD-5 berarti "berbiaya tetapi tak terhitung" -- salah untuk model lokal."""
+    async def test_embed_query_mencatat_panggilan_tanpa_token(self, e5):
+        """Model lokal tidak melaporkan token; panggilannya tetap terhitung."""
         embed = EmbedQuery(e5, "intfloat/multilingual-e5-small")
         v = await embed("kapan KRS")
         assert len(v) == 8
         assert embed.panggilan == 1
-        assert embed.biaya_usd == 0.0
         assert embed.tokens is None
 
 

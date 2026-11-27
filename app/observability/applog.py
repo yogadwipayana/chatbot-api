@@ -27,7 +27,6 @@ from typing import Any
 
 from langchain_core.callbacks import AsyncCallbackHandler
 
-from app.observability.costs import try_estimate_cost
 from app.observability.logstore import LogStore, waktu_iso
 from app.observability.rekaman import ACARA_PANGGILAN
 
@@ -258,7 +257,6 @@ def ringkas_node(node: str, keluaran: Any) -> dict[str, Any]:
             "label": _nilai(g.label),
             "confidence": g.confidence,
             "blocked": g.blocked,
-            "cost_usd": g.cost_usd,
             "error": g.error,
         }
     if node == "rewrite":
@@ -730,12 +728,6 @@ def _ratakan(daftar: list[_Panggilan]) -> list[_Panggilan]:
 
 
 def _panggilan_keluar(p: _Panggilan) -> dict[str, Any]:
-    biaya = None
-    if p.model and p.usage:
-        masuk, keluar = p.usage.get("input_tokens"), p.usage.get("output_tokens")
-        if masuk is not None and keluar is not None:
-            estimasi = try_estimate_cost(p.model, int(masuk), int(keluar))
-            biaya = estimasi.usd if estimasi else None
     return {
         "id": p.id,
         "parent_id": p.induk,
@@ -748,7 +740,6 @@ def _panggilan_keluar(p: _Panggilan) -> dict[str, Any]:
         "error": p.galat,
         "model": p.model,
         "usage": p.usage,
-        "cost_usd": biaya,
         "input": p.masukan,
         "output": p.keluaran,
     }
@@ -807,16 +798,10 @@ class Giliran:
     def _detail_generate(self) -> dict[str, Any]:
         model = getattr(self.llm_call, "model", None)
         usage = getattr(self.llm_call, "usage", None) or {}
-        masuk, keluar = usage.get("input_tokens"), usage.get("output_tokens")
-        biaya = None
-        if model and masuk is not None and keluar is not None:
-            estimasi = try_estimate_cost(model, int(masuk), int(keluar))
-            biaya = estimasi.usd if estimasi else None
         detail: dict[str, Any] = {
             "model": model,
-            "input_tokens": masuk,
-            "output_tokens": keluar,
-            "cost_usd": biaya,
+            "input_tokens": usage.get("input_tokens"),
+            "output_tokens": usage.get("output_tokens"),
         }
         # Nama tool saja, tanpa argumen: kolom ini tampil di rincian giliran
         # bahkan saat LOG_NODE_IO mati, dan argumen bisa memuat teks mahasiswa.

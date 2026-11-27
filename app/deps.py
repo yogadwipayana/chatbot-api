@@ -430,33 +430,24 @@ class EmbedQuery:
     permintaan, jadi satu instans hanya melayani satu permintaan dan angkanya
     tidak tertukar antar permintaan yang berjalan bersamaan.
 
-    Angkanya diakumulasi, bukan ditimpa. Saat ini satu putaran hanya memanggil
-    retrieval sekali (`app/rag/chain.py`), tetapi penambahan seperti multi-query
-    akan memanggilnya lagi -- dan menimpa berarti diam-diam melaporkan biaya
-    panggilan terakhir saja.
+    Angkanya diakumulasi, bukan ditimpa: satu putaran bisa memanggil embedding
+    lebih dari sekali, dan menimpa berarti diam-diam melaporkan panggilan
+    terakhir saja.
     """
 
     def __init__(self, embeddings: Any, model: str) -> None:
         self._embeddings = embeddings
         self.model = model
-        """Model yang DIMINTA, bukan yang dilaporkan penyedia: inilah yang cocok
-        dengan `EMBED_MODEL` dan dengan kunci di `costs.PRICES_PER_MTOK`. Gateway
-        proyek ini menjawab `text-embedding-3-small` untuk permintaan
-        `openrouter/openai/text-embedding-3-small`, dan nama pendek itu tidak
-        terdaftar -- memakainya justru membuat tarifnya tidak ketemu."""
+        """Model yang DIMINTA (`EMBED_MODEL`), bukan yang dilaporkan penyedia."""
         self.model_dilaporkan: str | None = None
         """Diisi hanya bila penyedia menyebut model yang berbeda dari yang
-        diminta. Gateway boleh memetakan ulang nama model ke model lain yang
-        tarifnya jauh berbeda; itu harus terlihat, bukan tersamar."""
+        diminta. Gateway boleh memetakan ulang nama model ke model lain; itu
+        harus terlihat, bukan tersamar."""
         self.panggilan = 0
         """Berapa kali embedding benar-benar dipanggil. Membedakan "tidak pernah
         dipanggil" (FR-7 dan smalltalk berhenti sebelum retrieval) dari "dipanggil
-        tetapi endpoint tidak melaporkan pemakaian" -- yang pertama memang tidak
-        berbiaya, yang kedua berbiaya tetapi tidak terhitung."""
+        tetapi endpoint tidak melaporkan pemakaian"."""
         self.tokens: int | None = None
-        self.biaya_usd: float | None = None
-        self.biaya_sumber: str | None = None
-        self.is_byok: bool | None = None
 
     async def __call__(self, text: str) -> list[float]:
         from app.rag.providers import embed_with_usage
@@ -467,27 +458,10 @@ class EmbedQuery:
         return hasil.vectors[0]
 
     def _catat(self, hasil: Any) -> None:
-        from app.observability.costs import SUMBER_ESTIMASI, biaya_embedding
-
         if hasil.model and hasil.model != self.model:
             self.model_dilaporkan = hasil.model
-        if hasil.is_byok is not None:
-            self.is_byok = hasil.is_byok
-        if hasil.tokens is None and hasil.biaya_usd is None:
-            return
         if hasil.tokens is not None:
             self.tokens = (self.tokens or 0) + hasil.tokens
-
-        biaya, sumber = biaya_embedding(self.model, hasil.tokens, hasil.biaya_usd)
-        if biaya is None:
-            return
-        if self.biaya_sumber is not None and self.biaya_sumber != sumber:
-            # Total yang mencampur biaya asli penyedia dengan taksiran kita,
-            # secara keseluruhan, tetap sebuah taksiran. Klaim yang lebih lemah
-            # yang menang -- melabelinya "provider" akan melebihkan keyakinan.
-            sumber = SUMBER_ESTIMASI
-        self.biaya_usd = (self.biaya_usd or 0.0) + biaya
-        self.biaya_sumber = sumber
 
 
 def build_retriever(settings: SettingsDep) -> Any:
@@ -527,8 +501,8 @@ class LLMCall:
 
     FastAPI membangun dependency ulang untuk setiap permintaan, jadi satu
     instans hanya melayani satu permintaan dan `usage` tidak tertukar antar
-    permintaan yang berjalan bersamaan. Pemakaian token dibutuhkan estimasi
-    biaya AD-5 (FR-8).
+    permintaan yang berjalan bersamaan. Pemakaian token dicatat di
+    `messages.meta` (FR-8).
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -567,7 +541,7 @@ class LLMCall:
         Dipakai `/api/chat/stream` (FE-1). Potongan tetap dijumlahkan menjadi
         satu pesan utuh karena `usage_metadata` hanya ada pada hasil penjumlahan
         itu -- potongan per potongan tidak membawanya, dan tanpa penjumlahan
-        estimasi biaya AD-5 hilang untuk setiap jawaban yang dialirkan.
+        jumlah token hilang untuk setiap jawaban yang dialirkan.
         """
         from app.rag.prompts import answer_prompt, format_context
         from app.rag.providers import PenyaringGalatGateway, build_llm
@@ -605,8 +579,7 @@ class LLMCall:
 
         Mengembalikan (jawaban_utuh, dokumen_sumber_tool) dan mencatat `usage`
         gabungan semua giliran LLM ke `self.usage`, sama seperti `__call__`,
-        supaya estimasi biaya AD-5 tetap tercatat (dengan catatan akunting token
-        gateway tidak presisi -- ai-gateway-facts)."""
+        supaya jumlah token tetap tercatat."""
         from app.rag.providers import build_llm
         from app.rag.tools.loop import run_tool_loop
 

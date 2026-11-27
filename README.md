@@ -44,8 +44,6 @@ Chat dan embedding memakai satu endpoint OpenAI-compatible:
 - Saat `BASE_URL` diisi, embedding dikirim sebagai teks mentah
   (`check_embedding_ctx_length=False`); default LangChain mengirim token ID
   yang ditolak banyak endpoint non-OpenAI.
-- Model chat baru perlu tarifnya di `app/observability/costs.py` agar estimasi
-  biaya (AD-5) berjalan.
 
 ## Tracing LangSmith (FR-8)
 
@@ -62,7 +60,7 @@ ternyata tidak pernah dikirim.
 - **Kolom itu `NULL` saat tracing mati**, dan memang harus begitu: ID yang
   dicatat tanpa trace yang terkirim hanya menghasilkan tautan buntu di AD-4.
 - **`session_id` ikut di setiap run**, bukan hanya di akar, supaya trace satu
-  percakapan dapat dikelompokkan sebagai thread dan biayanya dijumlahkan.
+  percakapan dapat dikelompokkan sebagai thread dan tokennya dijumlahkan.
 - **`LANGSMITH_ENDPOINT`** hanya perlu diisi untuk region Eropa atau instans
   self-hosted.
 - Variabel `LANGCHAIN_TRACING` / `LANGCHAIN_TRACING_V2` yang tertinggal di
@@ -223,7 +221,7 @@ python -m scripts.export_openapi -o /tmp/live.yaml
 | `app/rag/chain.py` | Bentuk hasil + titik masuk `run_pipeline` | §7 |
 | `app/ingestion/` | Loader, chunker, embedder, pipeline | FR-1 |
 | `app/storage/` | Penyimpanan objek: disk lokal / S3 / R2 | FR-1, FE-2 |
-| `app/observability/` | LangSmith + estimasi biaya | FR-8 |
+| `app/observability/` | LangSmith, log percakapan, log aplikasi | FR-8 |
 | `app/security/` | Sanitasi, rate limit, kill switch, auth | FR-9, AD-1 |
 | `eval/` | Recall@k, MRR, kalibrasi ambang, RAGAS | §3, §14 |
 
@@ -269,7 +267,6 @@ Perlu diganti sebelum rilis — semuanya bergantung pada Fase 0 PRD §13:
   diarahkan ke dosen PA (`risk.DOSEN_PA`)
 - `app/rag/sensitive.py` → `CRISIS_CONTACTS`, `DISTRESS_CONTACTS`: verifikasi nomor
 - `ThresholdPolicy` default (0.35 / 0.05): ganti dengan hasil kalibrasi empiris
-- `app/observability/costs.py` → `PRICES_PER_MTOK`: perbarui dari halaman harga resmi
 - `FTS_CONFIG = "indonesian"`: pastikan tersedia di instans target
   (`SELECT cfgname FROM pg_ts_config`) — kalau tidak ada, seluruh jalur FTS
   gagal diam-diam. Test integrasi memeriksa ini.
@@ -454,9 +451,8 @@ Beberapa hal yang tidak terlihat dari kontrak:
 - Uji coba admin (AD-6) tidak dicatat dan tidak tunduk pada kill switch.
 - Pengelompokan AD-4 (`app/admin/grouping.py`) memakai kemiripan kata setelah
   kata tanya dibuang, bukan embedding, dan tanpa impor pihak ketiga.
-- Estimasi biaya AD-5 hanya menghitung model yang tarifnya ada di
-  `PRICES_PER_MTOK`. Jawaban dari model tanpa tarif dilaporkan sebagai
-  `messages_without_cost_estimate`, bukan sebagai biaya nol.
+- Tidak ada estimasi biaya (dihapus 2026-11-27): chat, embedding, dan Laya
+  di-host sendiri. Jumlah token tetap dicatat di `messages.meta`.
 - Endpoint mahasiswa publik tanpa login, jadi dapat dipanggil langsung lewat
   Postman atau skrip. Yang menahannya (`app/security/ratelimit.py`,
   `app/security/batas_harian.py`, `app/deps.py`):

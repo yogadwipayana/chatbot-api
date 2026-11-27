@@ -35,7 +35,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import get_settings
 from app.observability.chatlog import SENSITIVE_PLACEHOLDER
-from app.observability.costs import estimate_cost
 from app.rag import risk, sensitive
 from app.rag.chain import (
     DEFAULT_FALLBACK_CONTACT,
@@ -356,7 +355,6 @@ async def tulis_percakapan(
                 "model": MODEL_CONTOH,
                 "input_tokens": token_masuk,
                 "output_tokens": token_keluar,
-                "llm_cost_usd": estimate_cost(MODEL_CONTOH, token_masuk, token_keluar).usd,
             }
             daftar_topik, tingkat = [x.value for x in topik.topics], "none"
         elif jenis == "refusal":
@@ -373,7 +371,6 @@ async def tulis_percakapan(
                 "model": None,
                 "input_tokens": None,
                 "output_tokens": None,
-                "llm_cost_usd": None,
             }
             daftar_topik, tingkat = [x.value for x in topik.topics], "none"
         else:
@@ -387,7 +384,6 @@ async def tulis_percakapan(
                 "model": None,
                 "input_tokens": None,
                 "output_tokens": None,
-                "llm_cost_usd": None,
             }
             daftar_topik, tingkat = [], penilaian.level.value
 

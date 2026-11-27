@@ -17,7 +17,6 @@ from urllib.parse import urlsplit
 
 from app.config import Settings, get_settings
 from app.db.models import EMBEDDING_DIM
-from app.observability.costs import biaya_embedding
 from app.rag.providers import build_embeddings, build_llm, embed_with_usage
 
 
@@ -110,36 +109,15 @@ async def cek_embedding(settings: Settings) -> bool:
 
 
 def _lapor_pemakaian(settings: Settings, hasil) -> None:
-    """Angka yang akan masuk laporan biaya AD-5, bukan syarat lulus.
+    """Laporan pemakaian yang akan masuk `messages.meta`, bukan syarat lulus.
 
     Endpoint yang tidak melaporkan pemakaian tetap sah dipakai -- yang hilang
-    hanya ketelitian angkanya, dan itu harus terlihat di sini daripada muncul
-    sebagai biaya nol di dashboard.
+    hanya jumlah tokennya di log.
     """
     if hasil.model and hasil.model != settings.embed_model:
-        # Gateway boleh memetakan nama model; tarif keduanya bisa berbeda jauh.
+        # Gateway boleh memetakan nama model ke model lain.
         baris("dilaporkan", f"{hasil.model} (diminta: {settings.embed_model})")
-    if hasil.is_byok:
-        baris("byok", "ya -- `cost` adalah ongkos platform, bukan belanja ke penyedia hulu")
-
-    if hasil.tokens is None:
-        baris("pemakaian", "tidak dilaporkan endpoint")
-        print(
-            "  Catatan: biaya embedding akan ditaksir dari costs.PRICES_PER_MTOK, "
-            "atau kosong bila tarifnya belum terdaftar."
-        )
-        return
-
-    baris("token", hasil.tokens)
-    biaya, sumber = biaya_embedding(settings.embed_model, hasil.tokens, hasil.biaya_usd)
-    if biaya is None:
-        baris("biaya", "tidak diketahui")
-        print(
-            f"  Catatan: tarif '{settings.embed_model}' belum ada di "
-            "costs.PRICES_PER_MTOK dan endpoint tidak melaporkan biaya."
-        )
-        return
-    baris("biaya", f"${biaya:.10f} ({sumber})")
+    baris("token", hasil.tokens if hasil.tokens is not None else "tidak dilaporkan endpoint")
 
 
 async def jalankan() -> int:

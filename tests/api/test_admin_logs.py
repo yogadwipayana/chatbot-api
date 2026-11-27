@@ -234,6 +234,7 @@ class TestRekamanDanGraf:
                     "error": None,
                     "model": "m",
                     "usage": {"input_tokens": 1},
+                    # Rekaman lama (sebelum 2026-11-27) masih memuat `cost_usd`.
                     "cost_usd": None,
                     "input": [{"role": "human", "content": "x"}],
                     "output": {"content": "y"},
@@ -247,6 +248,7 @@ class TestRekamanDanGraf:
         assert body["turn_id"] == "t9"
         assert body["nodes"][0]["output"] == {"clean": "kapan KRS?"}
         assert body["calls"][0]["kind"] == "llm"
+        assert "cost_usd" not in body["calls"][0]
 
     def test_tanpa_rekaman_404(self, client, terisi, superadmin):
         r = client.get("/api/admin/logs/turns/t1/trace", headers=superadmin)

@@ -19,7 +19,6 @@ from typing import Any
 
 from sqlalchemy import text
 
-from app.observability.costs import try_estimate_cost
 from app.prodi import ProfilMahasiswa
 from app.rag.chain import OutcomeKind, PipelineOutcome, refusal_source, rejection_source
 
@@ -67,8 +66,6 @@ class ChatLogEntry:
     baru dihentikan saat vonis blokir tiba."""
     embed_model: str | None = None
     embed_tokens: int | None = None
-    embed_biaya_usd: float | None = None
-    embed_biaya_sumber: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
     """Jejak panggilan tool giliran ini (docs/tool-call.md §13): tiap entri
     berisi nama tool, argumen (mentah dari model), ok, dan latency_ms. None bila
@@ -79,18 +76,6 @@ def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
     """Isi kolom `messages.meta` untuk baris jawaban (FR-6, FR-8)."""
     outcome = entry.outcome
     usage = entry.usage or {}
-    input_tokens = usage.get("input_tokens")
-    output_tokens = usage.get("output_tokens")
-
-    biaya: float | None = None
-    if (
-        outcome.llm_called
-        and entry.model
-        and input_tokens is not None
-        and output_tokens is not None
-    ):
-        estimasi = try_estimate_cost(entry.model, int(input_tokens), int(output_tokens))
-        biaya = estimasi.usd if estimasi else None
 
     # Prodi dan angkatan tidak dicatat untuk pesan FR-7, sama seperti isinya:
     # rincian per kohort di statistik AD-5 tidak memuat pesan konseling. NIM
@@ -108,30 +93,24 @@ def build_meta(entry: ChatLogEntry) -> dict[str, Any]:
         "sensitivity": outcome.sensitivity.level.value if outcome.sensitivity else None,
         "llm_called": outcome.llm_called,
         "model": entry.model if outcome.llm_called else None,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "llm_cost_usd": biaya,
+        # Token tetap dicatat walau semua model self-hosted dan tidak berbiaya
+        # per token: angka ini yang menunjukkan beban GPU per jawaban.
+        "input_tokens": usage.get("input_tokens"),
+        "output_tokens": usage.get("output_tokens"),
         "rewritten_query": outcome.rewritten_query,
         "unit": entry.unit,
         "program_code": profil.prodi.code if profil else None,
         "intake_year": profil.angkatan if profil else None,
         "nim": entry.nim,
-        # Biaya meng-embed pertanyaan mahasiswa. Dipisah dari `llm_cost_usd`, bukan
-        # dijumlahkan ke dalamnya: `llm_cost_usd` sudah berarti "biaya LLM" di
-        # seluruh baris lama dan di `app/admin/stats.py`, dan mengubah artinya
-        # diam-diam membuat baris sebelum dan sesudah hari ini tidak sebanding.
         "embed_called": entry.embed_dipanggil,
         "embed_model": entry.embed_model if entry.embed_dipanggil else None,
         "embed_tokens": entry.embed_tokens,
-        "embed_cost_usd": entry.embed_biaya_usd,
-        "embed_cost_source": entry.embed_biaya_sumber,
         # Gerbang Laya atau saringan aturan (`gate_source`). `gate_label` terisi
         # juga untuk pesan yang diteruskan Laya, supaya ambangnya dapat
         # dikalibrasi dari log, bukan ditebak.
         "gate_label": outcome.gate.label.value if outcome.gate else None,
         "gate_confidence": outcome.gate.confidence if outcome.gate else None,
         "gate_error": outcome.gate.error if outcome.gate else None,
-        "gate_cost_usd": outcome.gate.cost_usd if outcome.gate else None,
         "gate_source": outcome.gate.source.value if outcome.gate else None,
         # `llm` = LLM penjawab membalas OFF_TOPIC_MARKER walau gerbang meloloskan.
         "rejection_source": rejection_source(outcome),

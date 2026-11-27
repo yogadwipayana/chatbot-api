@@ -90,7 +90,7 @@ class TestNodeRecorder:
 
     async def test_vonis_laya_tercatat(self, strong_retriever, llm):
         async def gerbang(q, riwayat, unit=None):
-            return GateVerdict(GateLabel.NONSENSE, 0.97, blocked=True, cost_usd=0.0002)
+            return GateVerdict(GateLabel.NONSENSE, 0.97, blocked=True)
 
         _, rec = await jalankan(
             "resep rendang padang", strong_retriever, llm, gate_call=gerbang
@@ -104,7 +104,6 @@ class TestNodeRecorder:
             "label": "nonsense",
             "confidence": 0.97,
             "blocked": True,
-            "cost_usd": 0.0002,
             "error": None,
         }
 
@@ -129,7 +128,7 @@ class TestCatatGiliran:
     def test_status_ok_dan_detail_generate(self):
         sink = FakeLogSink()
         llm = RecordingLLM()
-        llm.model = "cx/gpt-5.5"
+        llm.model = "vl/qwen3.6-27b"
         llm.usage = {"input_tokens": 1000, "output_tokens": 100}
         with catat_giliran(sink, endpoint="chat", session_id="s", unit="Keuangan") as g:
             assert turn_id_var.get() == g.turn_id
@@ -154,8 +153,9 @@ class TestCatatGiliran:
         assert baris["unit"] == "Keuangan"
         [n] = sink.of("node")
         assert n["turn_id"] == g.turn_id
-        assert n["detail"]["model"] == "cx/gpt-5.5"
-        assert n["detail"]["cost_usd"] == pytest.approx(0.008)
+        assert n["detail"]["model"] == "vl/qwen3.6-27b"
+        assert (n["detail"]["input_tokens"], n["detail"]["output_tokens"]) == (1000, 100)
+        assert "cost_usd" not in n["detail"]
 
     def test_galat_dicatat_dan_diteruskan(self, caplog):
         sink = FakeLogSink()

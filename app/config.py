@@ -79,9 +79,9 @@ class Settings(BaseSettings):
 
     langchain-openai hanya menyalakan ini sendiri untuk endpoint resmi OpenAI;
     dengan `BASE_URL` terisi defaultnya mati, dan tanpa itu `usage_metadata`
-    kosong sehingga seluruh jawaban streaming kehilangan estimasi biaya AD-5.
-    Matikan hanya bila gateway menolak `stream_options` -- jawabannya tetap
-    utuh, yang hilang hanya angka biayanya."""
+    kosong sehingga seluruh jawaban streaming kehilangan jumlah tokennya.
+    Matikan hanya bila endpoint menolak `stream_options` -- jawabannya tetap
+    utuh, yang hilang hanya angka tokennya."""
     llm_timeout_seconds: float = Field(default=60.0, gt=0)
     """Batas tunggu satu permintaan LLM, termasuk jeda antar potongan saat
     streaming. Tanpa nilai ini klien OpenAI menunggu sampai 600 detik per

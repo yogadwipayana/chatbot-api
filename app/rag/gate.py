@@ -209,7 +209,6 @@ class GateVerdict:
     confidence: float
     blocked: bool
     probabilities: dict[str, float] = field(default_factory=dict)
-    cost_usd: float | None = None
     error: str | None = None
     """Terisi bila Laya gagal dipanggil; saat itu pesan selalu diteruskan."""
     source: GateSource = GateSource.LAYA
@@ -268,13 +267,11 @@ def parse_response(data: Any, policy: GatePolicy) -> GateVerdict:
         keyakinan = jawaban.get("confidence", probabilitas.get(label.value, 0.0))
     keyakinan = float(keyakinan)
     ambang = policy.threshold_for(label)
-    biaya = (data.get("usage") or {}).get("cost")
     return GateVerdict(
         label=label,
         confidence=keyakinan,
         blocked=ambang is not None and keyakinan >= ambang,
         probabilities=probabilitas,
-        cost_usd=float(biaya) if isinstance(biaya, int | float) else None,
     )
 
 
@@ -293,7 +290,6 @@ def _jejak_keluaran(verdict: GateVerdict) -> dict:
         "confidence": verdict.confidence,
         "blocked": verdict.blocked,
         "probabilities": verdict.probabilities,
-        "cost_usd": verdict.cost_usd,
         "error": verdict.error,
     }
 

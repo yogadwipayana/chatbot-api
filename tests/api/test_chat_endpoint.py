@@ -550,7 +550,7 @@ class TestPencatatan:
         """Metadata thread harus menempel pada SETIAP run, bukan hanya akarnya.
 
         Child run tanpa `session_id` terlewat saat trace difilter per percakapan
-        dan saat token serta biaya satu percakapan dijumlahkan (AD-5).
+        dan saat token satu percakapan dijumlahkan.
         """
         client.post(path, json=payload)
         assert api_llm.session_id == payload["session_id"]
@@ -592,7 +592,7 @@ class TestGerbangLaya:
         from tests.fixtures.fakes import FakeRetriever
 
         async def gate(question, history=(), unit=None):
-            return GateVerdict(GateLabel.NONSENSE, 0.97, blocked=True, cost_usd=0.00002)
+            return GateVerdict(GateLabel.NONSENSE, 0.97, blocked=True)
 
         self.retriever = FakeRetriever(strong_documents)
         return make_client(strong_documents, retriever=self.retriever, gate=gate)
@@ -606,14 +606,14 @@ class TestGerbangLaya:
         assert body["top_score"] is None
         assert not api_llm.called
 
-    def test_label_dan_biaya_gerbang_tercatat(self, gated_client, payload, chat_logger):
+    def test_label_gerbang_tercatat(self, gated_client, payload, chat_logger):
         from app.observability.chatlog import build_meta
 
         gated_client.post("/api/chat", json={**payload, "question": "resep rendang padang"})
         meta = build_meta(chat_logger.entries[-1])
         assert meta["kind"] == "rejected"
         assert meta["gate_label"] == "nonsense"
-        assert meta["gate_cost_usd"] == 0.00002
+        assert "gate_cost_usd" not in meta
         assert meta["llm_called"] is False
 
     def test_stream_juga_rejected(self, gated_client, payload):

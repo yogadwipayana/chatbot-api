@@ -46,22 +46,6 @@ _PESAN_SQL = text(
         count(*) FILTER (
             WHERE m.role = 'assistant' AND m.meta->>'kind' = 'rejected'
         ) AS rejected,
-        coalesce(
-            sum((m.meta->>'llm_cost_usd')::float) FILTER (WHERE m.role = 'assistant'), 0
-        ) AS biaya,
-        coalesce(
-            sum((m.meta->>'embed_cost_usd')::float) FILTER (WHERE m.role = 'assistant'), 0
-        ) AS biaya_embed,
-        count(*) FILTER (
-            WHERE m.role = 'assistant'
-              AND m.meta->>'llm_called' = 'true'
-              AND m.meta->>'llm_cost_usd' IS NULL
-        ) AS tanpa_biaya,
-        count(*) FILTER (
-            WHERE m.role = 'assistant'
-              AND m.meta->>'embed_called' = 'true'
-              AND m.meta->>'embed_cost_usd' IS NULL
-        ) AS embed_tanpa_biaya,
         percentile_cont(0.95) WITHIN GROUP (ORDER BY m.latency_ms)
             FILTER (WHERE m.role = 'assistant' AND m.latency_ms IS NOT NULL) AS p95
     FROM messages m
@@ -129,89 +113,6 @@ _PROFIL_SQL = text(
     GROUP BY 1, 2
     """
 )
-
-_BIAYA_SQL = text(
-    f"""
-    SELECT
-        count(*) FILTER (WHERE m.meta->>'llm_called' = 'true') AS jumlah_panggilan,
-        coalesce(sum((m.meta->>'input_tokens')::bigint)
-            FILTER (WHERE m.meta->>'llm_called' = 'true'), 0) AS input_tokens,
-        coalesce(sum((m.meta->>'output_tokens')::bigint)
-            FILTER (WHERE m.meta->>'llm_called' = 'true'), 0) AS output_tokens,
-        coalesce(sum((m.meta->>'llm_cost_usd')::double precision)
-            FILTER (WHERE m.meta->>'llm_called' = 'true'), 0) AS biaya_llm,
-        count(*) FILTER (
-            WHERE m.meta->>'llm_called' = 'true' AND m.meta->>'llm_cost_usd' IS NULL
-        ) AS llm_tanpa_biaya,
-        count(*) FILTER (WHERE m.meta->>'embed_called' = 'true') AS jumlah_embed,
-        coalesce(sum((m.meta->>'embed_tokens')::bigint)
-            FILTER (WHERE m.meta->>'embed_called' = 'true'), 0) AS embed_tokens,
-        coalesce(sum((m.meta->>'embed_cost_usd')::double precision)
-            FILTER (WHERE m.meta->>'embed_called' = 'true'), 0) AS biaya_embed,
-        count(*) FILTER (
-            WHERE m.meta->>'embed_called' = 'true'
-              AND m.meta->>'embed_cost_usd' IS NULL
-        ) AS embed_tanpa_biaya
-    FROM messages m
-    WHERE m.role = 'assistant' AND {_rentang("m.created_at")}
-    """
-)
-
-_BIAYA_MODEL_SQL = text(
-    f"""
-    SELECT * FROM (
-        SELECT 'llm_chat' AS type,
-            coalesce(nullif(m.meta->>'model', ''), 'Tidak diketahui') AS model,
-            count(*) AS call_count,
-            coalesce(sum((m.meta->>'input_tokens')::bigint), 0) AS input_tokens,
-            coalesce(sum((m.meta->>'output_tokens')::bigint), 0) AS output_tokens,
-            coalesce(sum((m.meta->>'input_tokens')::bigint), 0)
-              + coalesce(sum((m.meta->>'output_tokens')::bigint), 0) AS tokens,
-            coalesce(sum((m.meta->>'llm_cost_usd')::double precision), 0) AS cost_usd
-        FROM messages m
-        WHERE m.role = 'assistant' AND m.meta->>'llm_called' = 'true'
-          AND {_rentang("m.created_at")}
-        GROUP BY 2
-        UNION ALL
-        SELECT 'embedding_chat' AS type,
-            coalesce(nullif(m.meta->>'embed_model', ''), 'Tidak diketahui') AS model,
-            count(*) AS call_count, 0 AS input_tokens, 0 AS output_tokens,
-            coalesce(sum((m.meta->>'embed_tokens')::bigint), 0) AS tokens,
-            coalesce(sum((m.meta->>'embed_cost_usd')::double precision), 0) AS cost_usd
-        FROM messages m
-        WHERE m.role = 'assistant' AND m.meta->>'embed_called' = 'true'
-          AND {_rentang("m.created_at")}
-        GROUP BY 2
-    ) rincian
-    ORDER BY cost_usd DESC, model
-    """
-)
-
-_BIAYA_HARIAN_SQL = text(
-    f"""
-    WITH semua AS (
-        SELECT (m.created_at AT TIME ZONE :tz)::date AS tanggal,
-            (CASE WHEN m.meta->>'llm_called' = 'true' THEN 1 ELSE 0 END)
-              + (CASE WHEN m.meta->>'embed_called' = 'true' THEN 1 ELSE 0 END) AS call_count,
-            coalesce((m.meta->>'input_tokens')::bigint, 0)
-              + coalesce((m.meta->>'output_tokens')::bigint, 0) AS llm_tokens,
-            coalesce((m.meta->>'embed_tokens')::bigint, 0) AS embed_tokens,
-            coalesce((m.meta->>'llm_cost_usd')::double precision, 0) AS llm_cost_usd,
-            coalesce((m.meta->>'embed_cost_usd')::double precision, 0) AS embedding_cost_usd
-        FROM messages m
-        WHERE m.role = 'assistant' AND {_rentang("m.created_at")}
-    )
-    SELECT tanggal AS "date", sum(call_count) AS call_count,
-        sum(llm_tokens) AS llm_tokens, sum(embed_tokens) AS embed_tokens,
-        sum(llm_cost_usd) AS llm_cost_usd,
-        sum(embedding_cost_usd) AS embedding_cost_usd,
-        sum(llm_cost_usd + embedding_cost_usd) AS cost_usd
-    FROM semua
-    GROUP BY tanggal
-    ORDER BY 1
-    """
-)
-
 
 async def today(session: AsyncSession, timezone: str) -> date:
     return (
@@ -305,49 +206,6 @@ async def compute_stats(
         "unanswered_ratio": ratio(tak_terjawab, pesan["pertanyaan"]),
         "daily_volume": [dict(r) for r in volume],
         "top_topics": [dict(r) for r in topik],
-        # Sama dengan total di halaman Biaya (`compute_costs`): LLM chat +
-        # embedding. Gerbang Laya tidak dihitung karena di-host sendiri;
-        # `gate_cost_usd` hanya terisi pada baris lama (sebelum 2026-10-06) saat
-        # gerbang masih memakai model berbayar lewat gateway.
-        "running_cost_usd": round(float(pesan["biaya"]) + float(pesan["biaya_embed"]), 6),
-        "messages_without_cost_estimate": pesan["tanpa_biaya"] + pesan["embed_tanpa_biaya"],
         "latency_p95_ms": round(pesan["p95"]) if pesan["p95"] is not None else None,
         **rincian_profil(profil),
-    }
-
-
-async def compute_costs(
-    session: AsyncSession, *, since: date, until: date, timezone: str
-) -> dict[str, Any]:
-    p = {"tz": timezone, "since": since, "until": until}
-    ringkasan = (await session.execute(_BIAYA_SQL, p)).mappings().one()
-    model = (await session.execute(_BIAYA_MODEL_SQL, p)).mappings().all()
-    harian = (await session.execute(_BIAYA_HARIAN_SQL, p)).mappings().all()
-    input_tokens = int(ringkasan["input_tokens"])
-    output_tokens = int(ringkasan["output_tokens"])
-    embed_chat_tokens = int(ringkasan["embed_tokens"])
-    biaya_llm = float(ringkasan["biaya_llm"])
-    biaya_embed = float(ringkasan["biaya_embed"])
-    return {
-        "since": since,
-        "until": until,
-        "llm_call_count": int(ringkasan["jumlah_panggilan"]),
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "total_tokens": input_tokens + output_tokens + embed_chat_tokens,
-        "cost_usd": round(biaya_llm + biaya_embed, 8),
-        "llm_cost_usd": round(biaya_llm, 8),
-        "chat_embed_tokens": embed_chat_tokens,
-        "chat_embed_cost_usd": round(biaya_embed, 8),
-        "chat_embed_count": int(ringkasan["jumlah_embed"]),
-        "llm_calls_without_cost": int(ringkasan["llm_tanpa_biaya"]),
-        "chat_embeds_without_cost": int(ringkasan["embed_tanpa_biaya"]),
-        "model_breakdown": [
-            {**dict(row), "cost_usd": round(float(row["cost_usd"]), 8)} for row in model
-        ],
-        "daily_costs": [
-            {key: round(float(value), 8) if key.endswith("_usd") else value
-             for key, value in dict(row).items()}
-            for row in harian
-        ],
     }

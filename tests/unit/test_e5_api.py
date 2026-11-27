@@ -3,7 +3,7 @@
 Endpoint hanya menerima teks dan mengembalikan vektor apa adanya. Awalan e5 dan
 padding ke kolom 1024 dimensi harus dipasang di sisi kita -- di jalur LangChain
 (`aembed_*`, dipakai ingestion dan re-index) maupun di jalur yang memanggil klien
-langsung untuk membaca biaya (`embed_with_usage`, dipakai setiap pertanyaan).
+langsung untuk membaca jumlah token (`embed_with_usage`, dipakai setiap pertanyaan).
 Kegagalan di salah satunya tidak menghasilkan galat: retrieval hanya memburuk.
 """
 
@@ -74,7 +74,7 @@ class TestJalurLangChain:
         assert len(vektor) == EMBEDDING_DIM
 
 
-class TestJalurBiaya:
+class TestJalurPemakaian:
     async def test_pertanyaan_berawalan_query_dan_dipad(self, e5):
         hasil = await embed_with_usage(e5, ["kapan KRS dibuka?"], sebagai_query=True)
         kirim = e5.async_client.panggilan[0]
@@ -82,7 +82,6 @@ class TestJalurBiaya:
         assert "dimensions" not in kirim
         assert len(hasil.vectors[0]) == EMBEDDING_DIM
         assert hasil.tokens == 7
-        assert hasil.biaya_usd == pytest.approx(1e-08)
 
     async def test_dokumen_berawalan_passage(self, e5):
         await embed_with_usage(e5, ["isi dokumen"])

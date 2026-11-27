@@ -146,7 +146,6 @@ class CallTrace(BaseModel):
     error: str | None
     model: str | None
     usage: dict[str, Any] | None
-    cost_usd: float | None
     input: Any = None
     output: Any = None
 

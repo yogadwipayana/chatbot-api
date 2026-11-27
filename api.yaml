@@ -1232,14 +1232,14 @@ paths:
   /api/admin/stats:
     get:
       tags: [admin-ops]
-      summary: Statistik penggunaan dan biaya
+      summary: Statistik penggunaan
       operationId: admin_stats
       x-status: implemented
       x-min-role: admin
       security: [{ bearerAuth: [] }]
       description: |
-        AD-5. Termasuk `running_cost_usd` -- PRD §12 menandai biaya API
-        membengkak sebagai risiko dengan dampak layanan mati mendadak.
+        AD-5. Estimasi biaya dihapus 2026-11-27: seluruh model (chat, embedding,
+        Laya) di-host sendiri, jadi tidak ada biaya per token.
 
         `total_conversations` disajikan sebagai konteks, bukan sebagai ukuran
         keberhasilan. PRD §3 menetapkannya sebagai anti-metrik.
@@ -1263,36 +1263,6 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '422':
           description: Rentang tanggal tidak sah (terbalik atau terlalu panjang)
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-
-  /api/admin/costs:
-    get:
-      tags: [admin-ops]
-      summary: Rincian biaya dan token
-      operationId: admin_costs
-      x-status: implemented
-      x-min-role: admin
-      security: [{ bearerAuth: [] }]
-      description: Menghitung penggunaan token dan estimasi biaya dari kolom `messages.meta`.
-      parameters:
-        - name: since
-          in: query
-          schema: { type: string, format: date }
-        - name: until
-          in: query
-          schema: { type: string, format: date }
-      responses:
-        '200':
-          description: Rincian biaya
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Costs' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '422':
-          description: Rentang tanggal tidak sah
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -3149,8 +3119,6 @@ components:
         - unanswered_ratio
         - daily_volume
         - top_topics
-        - running_cost_usd
-        - messages_without_cost_estimate
         - latency_p95_ms
         - questions_with_profile
         - program_breakdown
@@ -3186,20 +3154,6 @@ components:
           type: array
           maxItems: 10
           items: { $ref: '#/components/schemas/TopicCount' }
-        running_cost_usd:
-          type: number
-          description: |
-            Estimasi dari token terpakai, bukan dari API penagihan. LLM chat + embedding,
-            sama dengan total `GET /api/admin/costs`. Gerbang Laya tidak dihitung: ia
-            berjalan di Laya yang di-host sendiri.
-        messages_without_cost_estimate:
-          type: integer
-          minimum: 0
-          description: |
-            Jawaban yang memanggil LLM tetapi modelnya belum punya tarif di
-            `app/observability/costs.py`. Lebih dari nol berarti
-            `running_cost_usd` KURANG dari biaya sebenarnya -- tampilkan
-            sebagai peringatan, jangan sebagai biaya nol.
         latency_p95_ms:
           type: [integer, 'null']
           description: |
@@ -3247,56 +3201,6 @@ components:
         intake_year: { type: integer }
         question_count: { type: integer, minimum: 0 }
         refusal_count: { type: integer, minimum: 0 }
-
-    CostByModel:
-      type: object
-      required: [type, model, call_count, input_tokens, output_tokens, tokens, cost_usd]
-      properties:
-        type:
-          type: string
-          enum: [llm_chat, embedding_chat]
-        model: { type: string }
-        call_count: { type: integer, minimum: 0 }
-        input_tokens: { type: integer, minimum: 0 }
-        output_tokens: { type: integer, minimum: 0 }
-        tokens: { type: integer, minimum: 0 }
-        cost_usd: { type: number, minimum: 0 }
-
-    DailyCost:
-      type: object
-      required: [date, call_count, llm_tokens, embed_tokens, llm_cost_usd, embedding_cost_usd, cost_usd]
-      properties:
-        date: { type: string, format: date }
-        call_count: { type: integer, minimum: 0 }
-        llm_tokens: { type: integer, minimum: 0 }
-        embed_tokens: { type: integer, minimum: 0 }
-        llm_cost_usd: { type: number, minimum: 0 }
-        embedding_cost_usd: { type: number, minimum: 0 }
-        cost_usd: { type: number, minimum: 0 }
-
-    Costs:
-      type: object
-      required: [since, until, llm_call_count, input_tokens, output_tokens, total_tokens, cost_usd, llm_cost_usd, chat_embed_tokens, chat_embed_cost_usd, chat_embed_count, llm_calls_without_cost, chat_embeds_without_cost, model_breakdown, daily_costs]
-      properties:
-        since: { type: string, format: date }
-        until: { type: string, format: date }
-        llm_call_count: { type: integer, minimum: 0 }
-        input_tokens: { type: integer, minimum: 0 }
-        output_tokens: { type: integer, minimum: 0 }
-        total_tokens: { type: integer, minimum: 0 }
-        cost_usd: { type: number, minimum: 0 }
-        llm_cost_usd: { type: number, minimum: 0 }
-        chat_embed_tokens: { type: integer, minimum: 0 }
-        chat_embed_cost_usd: { type: number, minimum: 0 }
-        chat_embed_count: { type: integer, minimum: 0 }
-        llm_calls_without_cost: { type: integer, minimum: 0 }
-        chat_embeds_without_cost: { type: integer, minimum: 0 }
-        model_breakdown:
-          type: array
-          items: { $ref: '#/components/schemas/CostByModel' }
-        daily_costs:
-          type: array
-          items: { $ref: '#/components/schemas/DailyCost' }
 
     LogSummary:
       type: object
@@ -3448,7 +3352,7 @@ components:
 
     CallTrace:
       type: object
-      required: [id, parent_id, position, name, kind, started_at, duration_ms, status, error, model, usage, cost_usd]
+      required: [id, parent_id, position, name, kind, started_at, duration_ms, status, error, model, usage]
       properties:
         id: { type: string }
         parent_id: { type: [string, 'null'], description: Panggilan induk; null bila langsung di bawah node. }
@@ -3461,7 +3365,6 @@ components:
         error: { type: [string, 'null'] }
         model: { type: [string, 'null'] }
         usage: { type: [object, 'null'], additionalProperties: true }
-        cost_usd: { type: [number, 'null'] }
         input: {}
         output: {}
 

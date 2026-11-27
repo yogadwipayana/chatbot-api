@@ -54,7 +54,7 @@ def build_llm(settings: Settings, *, streaming: bool = True) -> Any:
         # resmi OpenAI: begitu `base_url` terisi, defaultnya mati karena banyak
         # endpoint tiruan tidak mendukung `stream_options`. Tanpa nilai eksplisit
         # di sini, setiap jawaban yang dialirkan kehilangan `usage_metadata` --
-        # dan biaya AD-5 diam-diam menjadi null untuk seluruh chat mahasiswa.
+        # dan jumlah token diam-diam menjadi null untuk seluruh chat mahasiswa.
         kwargs["stream_usage"] = settings.llm_stream_usage
     if settings.base_url:
         kwargs["base_url"] = settings.base_url
@@ -218,21 +218,10 @@ class EmbedResult:
     vectors: list[list[float]]
     tokens: int | None
     """`usage.prompt_tokens`. None bila endpoint tidak melaporkannya."""
-    biaya_usd: float | None
-    """`usage.cost` -- biaya sebenarnya menurut penyedia, bukan taksiran kita.
-
-    Bukan bagian spesifikasi OpenAI: gateway seperti OpenRouter menambahkannya,
-    endpoint lain tidak. None berarti "tidak dilaporkan", bukan "gratis" --
-    pemanggil jatuh ke `costs.biaya_embedding` untuk menaksirnya sendiri.
-    """
     model: str | None
     """Nama model menurut respons. Boleh berbeda dari yang diminta: gateway
-    proyek ini menjawab `text-embedding-3-small` untuk permintaan
-    `openrouter/openai/text-embedding-3-small`."""
-    is_byok: bool | None
-    """True bila kunci API penyedia hulu milik sendiri. Saat itu `cost` berarti
-    ongkos platform, bukan belanja ke penyedia hulu -- dua angka yang tidak
-    boleh dijumlahkan begitu saja."""
+    proyek ini menjawab `multilingual-e5-small` untuk permintaan
+    `intfloat/multilingual-e5-small`."""
 
 
 async def embed_with_usage(
@@ -247,8 +236,8 @@ async def embed_with_usage(
 
     `aembed_documents`/`aembed_query` hanya mengembalikan vektor: antarmuka
     `Embeddings` LangChain tidak punya kanal usage seperti `usage_metadata` milik
-    chat model, sehingga `response["usage"]` -- termasuk jumlah token dan biaya
-    yang dilaporkan penyedia -- dibuang begitu saja. Fungsi ini memanggil klien
+    chat model, sehingga `response["usage"]` -- termasuk jumlah token yang
+    dilaporkan penyedia -- dibuang begitu saja. Fungsi ini memanggil klien
     yang sama persis seperti langchain-openai, lalu menyimpan bagian yang dibuang.
 
     `texts` tidak dipecah menjadi beberapa batch: satu panggilan menghasilkan
@@ -257,23 +246,22 @@ async def embed_with_usage(
     batch -- lihat `app.ingestion.embedder.BATCH_SIZE`.
     """
     if getattr(embeddings, "lokal", False):
-        # Model di server sendiri: tidak ada tagihan, jadi biayanya nol -- bukan
-        # None, yang di AD-5 berarti "berbiaya tetapi tidak terhitung".
+        # Model di proses ini (sentence-transformers): tidak ada laporan token.
         if sebagai_query:
             vektor = [await embeddings.aembed_query(t) for t in texts]
         else:
             vektor = await embeddings.aembed_documents(list(texts))
-        return EmbedResult(vektor, None, 0.0, embeddings.model, None)
+        return EmbedResult(vektor, None, embeddings.model)
 
     if getattr(embeddings, "check_embedding_ctx_length", True):
         # Jalur "len-safe" langchain-openai men-tokenisasi dengan tiktoken lalu
         # mengirim token ID, dan memecah sendiri teks yang melebihi batas konteks.
-        # Menirunya di sini berarti menyalin logika itu; kehilangan angka biaya
+        # Menirunya di sini berarti menyalin logika itu; kehilangan jumlah token
         # lebih murah daripada dua implementasi yang bisa berbeda diam-diam.
         # `build_embeddings` mematikannya untuk setiap BASE_URL, jadi jalur ini
         # hanya terpakai pada endpoint resmi OpenAI.
         vektor = await embeddings.aembed_documents(list(texts))
-        return EmbedResult(vektor, None, None, None, None)
+        return EmbedResult(vektor, None, None)
 
     params: dict[str, Any] = {"model": embeddings.model}
     if embeddings.dimensions is not None:
@@ -299,9 +287,7 @@ async def embed_with_usage(
     return EmbedResult(
         vectors=vektor,
         tokens=_bilangan(usage.get("prompt_tokens", usage.get("total_tokens")), int),
-        biaya_usd=_bilangan(usage.get("cost"), float),
         model=response.get("model") or None,
-        is_byok=usage.get("is_byok") if isinstance(usage.get("is_byok"), bool) else None,
     )
 
 

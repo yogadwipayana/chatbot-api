@@ -475,8 +475,6 @@ async def catat(
             embed_dipanggil=bool(getattr(embed, "panggilan", 0)),
             embed_model=getattr(embed, "model", None),
             embed_tokens=getattr(embed, "tokens", None),
-            embed_biaya_usd=getattr(embed, "biaya_usd", None),
-            embed_biaya_sumber=getattr(embed, "biaya_sumber", None),
         )
     )
 

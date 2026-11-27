@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import uuid
 
-import pytest
 from sqlalchemy.dialects import postgresql
 
 from app.observability.chatlog import (
@@ -13,14 +12,17 @@ from app.observability.chatlog import (
     build_meta,
     retrieved_chunk_ids,
 )
-from app.observability.costs import estimate_cost
 from app.prodi import ProfilMahasiswa, cari_prodi
 from app.rag.chain import OutcomeKind, PipelineOutcome, run_pipeline
 from tests.fixtures.fakes import make_document
 
 USAGE = {"input_tokens": 1000, "output_tokens": 200}
-CHAT_MODEL = "cx/gpt-5.5"
+CHAT_MODEL = "vl/qwen3.6-27b"
 PROFIL = ProfilMahasiswa(prodi=cari_prodi("1010"), angkatan=2024)
+
+KUNCI_BIAYA = {"llm_cost_usd", "embed_cost_usd", "embed_cost_source", "gate_cost_usd"}
+"""Dihapus 2026-11-27: semua model self-hosted, tidak ada biaya per token.
+Baris lama di database masih memuatnya; baris baru tidak boleh."""
 
 
 def entri(outcome: PipelineOutcome, **kw) -> ChatLogEntry:
@@ -30,7 +32,7 @@ def entri(outcome: PipelineOutcome, **kw) -> ChatLogEntry:
 
 
 class TestMeta:
-    async def test_jawaban_mencatat_topik_model_dan_biaya(self, strong_retriever, llm):
+    async def test_jawaban_mencatat_topik_model_dan_token(self, strong_retriever, llm):
         outcome = await run_pipeline(
             "kapan deadline pembayaran UKT?", retriever=strong_retriever, llm_call=llm
         )
@@ -40,18 +42,19 @@ class TestMeta:
         assert {"deadline", "pembayaran"} <= set(meta["topics"])
         assert meta["escalated"] is True
         assert meta["model"] == CHAT_MODEL
-        assert meta["llm_cost_usd"] == pytest.approx(estimate_cost(CHAT_MODEL, 1000, 200).usd)
+        assert (meta["input_tokens"], meta["output_tokens"]) == (1000, 200)
 
-    async def test_model_tanpa_tarif_biayanya_none_bukan_nol(self, strong_retriever, llm):
-        """AD-5 menghitung pesan seperti ini sebagai peringatan."""
+    async def test_tidak_ada_kolom_biaya(self, strong_retriever, llm):
         outcome = await run_pipeline("kapan KRS?", retriever=strong_retriever, llm_call=llm)
-        meta = build_meta(entri(outcome, model="penyedia/model-belum-terdaftar", usage=USAGE))
-        assert meta["llm_called"] is True
-        assert meta["llm_cost_usd"] is None
+        meta = build_meta(
+            entri(outcome, model=CHAT_MODEL, usage=USAGE, embed_dipanggil=True, embed_tokens=9)
+        )
+        assert not KUNCI_BIAYA & meta.keys()
 
-    async def test_tanpa_data_token_biayanya_none(self, strong_retriever, llm):
+    async def test_tanpa_data_token_tokennya_none(self, strong_retriever, llm):
         outcome = await run_pipeline("kapan KRS?", retriever=strong_retriever, llm_call=llm)
-        assert build_meta(entri(outcome, model=CHAT_MODEL))["llm_cost_usd"] is None
+        meta = build_meta(entri(outcome, model=CHAT_MODEL))
+        assert (meta["input_tokens"], meta["output_tokens"]) == (None, None)
 
     async def test_unit_pilihan_mahasiswa_tercatat(self, weak_retriever, llm):
         """Membedakan penolakan karena salah pilih unit dari dokumen yang memang
@@ -62,13 +65,12 @@ class TestMeta:
         assert build_meta(entri(outcome, unit="Prodi"))["unit"] == "Prodi"
         assert build_meta(entri(outcome))["unit"] is None
 
-    async def test_penolakan_tidak_berbiaya_dan_tanpa_model(self, weak_retriever, llm):
+    async def test_penolakan_tanpa_model(self, weak_retriever, llm):
         outcome = await run_pipeline("kapan KRS?", retriever=weak_retriever, llm_call=llm)
         meta = build_meta(entri(outcome, model=CHAT_MODEL, usage=USAGE))
         assert meta["kind"] == "refusal"
         assert meta["llm_called"] is False
         assert meta["model"] is None
-        assert meta["llm_cost_usd"] is None
 
     async def test_sensitif_tanpa_topik(self, strong_retriever, llm):
         outcome = await run_pipeline(
@@ -100,58 +102,40 @@ class TestMeta:
 
 
 class TestSapaan:
-    async def test_tanpa_model_dan_tanpa_biaya(self, strong_retriever, llm):
+    async def test_tanpa_model(self, strong_retriever, llm):
         outcome = await run_pipeline("halo", retriever=strong_retriever, llm_call=llm)
         meta = build_meta(entri(outcome, model=CHAT_MODEL, usage=USAGE))
         assert meta["kind"] == OutcomeKind.SMALLTALK
         assert meta["llm_called"] is False
-        assert meta["llm_cost_usd"] is None
+        assert meta["model"] is None
         assert meta["escalated"] is False
 
 
-class TestBiayaEmbedding:
-    """Biaya meng-embed pertanyaan mahasiswa (AD-5).
-
-    Kecil per putaran -- belasan token -- tetapi tetap biaya, dan yang tidak
-    tercatat tidak bisa diawasi.
-    """
+class TestPemakaianEmbedding:
+    """Pemakaian embedding pertanyaan mahasiswa: dipanggil atau tidak, dan tokennya."""
 
     EMBED = {
         "embed_dipanggil": True,
-        "embed_model": "openrouter/openai/text-embedding-3-small",
+        "embed_model": "intfloat/multilingual-e5-small",
         "embed_tokens": 9,
-        "embed_biaya_usd": 1.8e-07,
-        "embed_biaya_sumber": "provider",
     }
 
-    async def test_jawaban_mencatat_biaya_embedding(self, strong_retriever, llm):
+    async def test_jawaban_mencatat_pemakaian_embedding(self, strong_retriever, llm):
         outcome = await run_pipeline("kapan KRS?", retriever=strong_retriever, llm_call=llm)
         meta = build_meta(entri(outcome, **self.EMBED))
         assert meta["embed_called"] is True
+        assert meta["embed_model"] == "intfloat/multilingual-e5-small"
         assert meta["embed_tokens"] == 9
-        assert meta["embed_cost_usd"] == pytest.approx(1.8e-07)
-        assert meta["embed_cost_source"] == "provider"
 
-    async def test_biaya_embedding_tidak_dilebur_ke_biaya_usd(self, strong_retriever, llm):
-        """`llm_cost_usd` sudah berarti "biaya LLM" di seluruh baris lama dan di
-        `app/admin/stats.py`; menjumlahkan embedding ke dalamnya membuat baris
-        sebelum dan sesudah hari ini tidak sebanding."""
-        outcome = await run_pipeline("kapan KRS?", retriever=strong_retriever, llm_call=llm)
-        meta = build_meta(entri(outcome, model="cx/gpt-5.5", usage=USAGE, **self.EMBED))
-        assert meta["llm_cost_usd"] != meta["embed_cost_usd"]
-        assert meta["embed_cost_usd"] == pytest.approx(1.8e-07)
-
-    async def test_penolakan_tetap_berbiaya_embedding(self, weak_retriever, llm):
-        """Jebakan utamanya: FR-3 menolak SETELAH retrieval, jadi pertanyaannya
-        sudah terlanjur di-embed. Menyaring biaya embedding dengan
-        `llm_called = true` akan menghapus seluruh penolakan dari laporan."""
+    async def test_penolakan_tetap_tercatat_di_embed(self, weak_retriever, llm):
+        """FR-3 menolak SETELAH retrieval, jadi pertanyaannya sudah terlanjur
+        di-embed walau `llm_called = false`."""
         outcome = await run_pipeline("kapan KRS?", retriever=weak_retriever, llm_call=llm)
         meta = build_meta(entri(outcome, **self.EMBED))
         assert meta["kind"] == "refusal"
         assert meta["llm_called"] is False
-        assert meta["llm_cost_usd"] is None
         assert meta["embed_called"] is True
-        assert meta["embed_cost_usd"] == pytest.approx(1.8e-07)
+        assert meta["embed_tokens"] == 9
 
     async def test_sensitif_tidak_pernah_di_embed(self, strong_retriever, llm):
         """FR-7 berhenti sebelum retrieval -- nol di sini berarti benar-benar
@@ -163,35 +147,29 @@ class TestBiayaEmbedding:
         assert meta["kind"] == OutcomeKind.SUPPORT
         assert meta["embed_called"] is False
         assert meta["embed_tokens"] is None
-        assert meta["embed_cost_usd"] is None
 
     async def test_sapaan_tidak_pernah_di_embed(self, strong_retriever, llm):
         outcome = await run_pipeline("halo", retriever=strong_retriever, llm_call=llm)
         meta = build_meta(entri(outcome))
         assert meta["kind"] == OutcomeKind.SMALLTALK
         assert meta["embed_called"] is False
-        assert meta["embed_cost_usd"] is None
 
     async def test_model_embedding_dikosongkan_bila_tak_dipanggil(self, strong_retriever, llm):
         """Sama seperti `model` pada jalur LLM: nama model tanpa panggilan yang
-        menyertainya membuat laporan per model menghitung putaran yang tidak
+        menyertainya membuat hitungan per model memuat putaran yang tidak
         pernah memakai model itu."""
         outcome = await run_pipeline("halo", retriever=strong_retriever, llm_call=llm)
-        meta = build_meta(
-            entri(outcome, embed_model="openrouter/openai/text-embedding-3-small")
-        )
+        meta = build_meta(entri(outcome, embed_model="intfloat/multilingual-e5-small"))
         assert meta["embed_called"] is False
         assert meta["embed_model"] is None
 
     async def test_dipanggil_tanpa_laporan_pemakaian(self, strong_retriever, llm):
-        """Endpoint yang tidak mengirim `usage`: panggilannya nyata dan berbiaya,
-        hanya angkanya tidak diketahui. Harus terlihat sebagai "tak terhitung",
-        bukan sebagai gratis."""
+        """Endpoint yang tidak mengirim `usage`: panggilannya nyata, hanya
+        jumlah tokennya tidak diketahui."""
         outcome = await run_pipeline("kapan KRS?", retriever=strong_retriever, llm_call=llm)
         meta = build_meta(entri(outcome, embed_dipanggil=True, embed_model="m"))
         assert meta["embed_called"] is True
         assert meta["embed_tokens"] is None
-        assert meta["embed_cost_usd"] is None
 
 
 class TestChunkIds:

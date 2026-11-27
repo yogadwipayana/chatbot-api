@@ -414,10 +414,6 @@ class Stats(BaseModel):
     unanswered_ratio: float | None
     daily_volume: list[DailyVolume]
     top_topics: list[TopicCount]
-    running_cost_usd: float
-    messages_without_cost_estimate: int
-    """Jawaban yang memanggil LLM tetapi modelnya belum punya tarif di
-    `costs.PRICES_PER_MTOK`. Lebih dari nol berarti `running_cost_usd` kurang."""
     latency_p95_ms: int | None
     questions_with_profile: int
     """Pertanyaan yang penanyanya mengisi NIM. Penyebut kedua rincian di
@@ -426,44 +422,6 @@ class Stats(BaseModel):
     """Semua prodi terdaftar, juga yang nol; terbanyak lebih dulu."""
     intake_year_breakdown: list[IntakeYearStat]
     """Hanya angkatan yang pernah bertanya; terbaru lebih dulu."""
-
-
-class CostByModel(BaseModel):
-    type: Literal["llm_chat", "embedding_chat"]
-    model: str
-    call_count: int
-    input_tokens: int
-    output_tokens: int
-    tokens: int
-    cost_usd: float
-
-
-class DailyCost(BaseModel):
-    date: date
-    call_count: int
-    llm_tokens: int
-    embed_tokens: int
-    llm_cost_usd: float
-    embedding_cost_usd: float
-    cost_usd: float
-
-
-class Costs(BaseModel):
-    since: date
-    until: date
-    llm_call_count: int
-    input_tokens: int
-    output_tokens: int
-    total_tokens: int
-    cost_usd: float
-    llm_cost_usd: float
-    chat_embed_tokens: int
-    chat_embed_cost_usd: float
-    chat_embed_count: int
-    llm_calls_without_cost: int
-    chat_embeds_without_cost: int
-    model_breakdown: list[CostByModel]
-    daily_costs: list[DailyCost]
 
 
 # --- FR-9 -------------------------------------------------------------------

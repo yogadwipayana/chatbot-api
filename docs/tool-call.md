@@ -64,8 +64,8 @@ Dua kuirk gateway yang sudah dikenal tetap berlaku:
 1. Gateway menyuntik `[Error] ... overloaded` sebagai **isi** stream
    (`providers.py`, `PENANDA_GALAT_GATEWAY`). Penyaring yang sama dipakai di
    setiap giliran loop tool.
-2. Akunting token gateway tidak bisa dipercaya penuh. FR-8/AD-5 tetap dicatat,
-   tetapi jangan dijadikan dasar penagihan presisi.
+2. Akunting token gateway tidak bisa dipercaya penuh. Jumlah token tetap
+   dicatat (FR-8), tetapi jangan dijadikan ukuran beban yang presisi.
 
 ---
 
@@ -668,7 +668,7 @@ menjawab.** Kegagalan tool tidak boleh memunculkan jawaban ngawur.
 
 ---
 
-## 13. Observability & biaya
+## 13. Observability
 
 - **`messages.meta.tool_calls`**: satu entri per panggilan, `{name, args, ok,
   latency_ms}`. Panggilan yang tidak dijalankan juga membawa `error`. `args`

@@ -101,7 +101,7 @@ erDiagram
         float    top_score "skor mentah tertinggi"
         int      latency_ms
         varchar  langsmith_run_id "64, akar trace; null bila tracing mati"
-        jsonb    meta "kind, topics, token, biaya"
+        jsonb    meta "kind, topics, token"
         timestamptz created_at "NOT NULL, default now()"
     }
 
@@ -184,9 +184,9 @@ CONSTRAINT ck_admins_staff_unit CHECK (role <> 'staf' OR (unit IS NOT NULL AND b
 | **Operasional** | `kill_switch` | `app/routers/admin_ops.py` (superadmin), `deps.batas_harian` (otomatis) | `app.main.lifespan`, sekali saat proses mulai |
 | **Sematan** | `embed_keys` | `app/routers/admin_embed_keys.py` (halaman Sematan, superadmin) | `GET /api/embed/keys/{key}` (proxy portal), `deps.kunci_sematan` di setiap pertanyaan dari situs lain |
 
-Biaya model tidak punya tabel sendiri: seluruhnya menumpang `messages.meta`
-(lihat [`messages.meta`](#messagesmeta-jsonb) dan
-[Biaya embedding ingestion](#biaya-embedding-ingestion-tidak-dicatat)).
+Pemakaian token tidak punya tabel sendiri: seluruhnya menumpang `messages.meta`
+(lihat [`messages.meta`](#messagesmeta-jsonb)). Estimasi biaya dihapus pada
+2026-11-27 karena semua model di-host sendiri.
 
 ---
 
@@ -201,8 +201,8 @@ di `api.yaml`.
 
 | Jenis | Bahasa | Contoh |
 |---|---|---|
-| Identifier | Inggris | `documents.title`, `meta->>'llm_cost_usd'`, `?since=` |
-| Nilai data dan kode enum | apa adanya | `type = 'tanya_jawab'`, `role = 'staf'`, `embed_cost_source = 'estimasi'`, unit `Keuangan` |
+| Identifier | Inggris | `documents.title`, `meta->>'input_tokens'`, `?since=` |
+| Nilai data dan kode enum | apa adanya | `type = 'tanya_jawab'`, `role = 'staf'`, `refusal_source = 'threshold'`, unit `Keuangan` |
 | Teks untuk manusia | Indonesia | label UI, pesan galat `detail`, prompt, komentar, dokumen ini |
 
 Aturannya dibuat per lapisan, bukan per kolom. Kolom seperti `id`, `created_at`,
@@ -224,7 +224,7 @@ berdampingan dengan `updated_by` untuk konsep yang sama.
 | Pelaku | `<peristiwa>_by`, berisi email admin sebagai teks, bukan FK | `created_by`, `updated_by`, `uploaded_by` |
 | Urutan | `sort_order` untuk urutan tampil yang diatur admin; `position` untuk urutan di dalam induknya | `units.sort_order`, `chunks.position` |
 | Jumlah, rasio | `<benda>_count`, `<benda>_ratio` | `chunk_count`, `error_ratio` |
-| Biaya, durasi | `<sumber>_cost_usd`, `<benda>_ms` | `llm_cost_usd`, `embed_cost_usd`, `latency_ms` |
+| Durasi | `<benda>_ms` | `latency_ms`, `duration_ms` |
 | Index | `ix_<tabel>_<kolom atau tujuan>` | `ix_documents_unit`, `ix_documents_active` |
 | CHECK | `ck_<tabel>_<aturan>` | `ck_documents_content_matches_type` |
 | Trigger | `trg_<tabel>_<kolom>` | `trg_chunks_tsv` |
@@ -563,7 +563,6 @@ Hanya diisi pada baris `role = 'assistant'`.
 | `llm_called` | bool | Penolakan ambang FR-3 dan FR-7 bernilai `false`; penolakan `refusal_source = llm` bernilai `true` |
 | `model` | string \| null | Hanya diisi bila LLM benar-benar dipanggil |
 | `input_tokens` / `output_tokens` | int \| null | Dari `usage_metadata` LangChain |
-| `llm_cost_usd` | float \| null | `null` bila tarif modelnya tidak dikenal |
 | `rewritten_query` | string \| null | Hasil penulisan ulang query (FR-4) |
 | `unit` | string \| null | Unit pilihan mahasiswa di menu; `null` = semua unit. Membedakan penolakan akibat salah pilih unit dari dokumen yang memang belum ada |
 | `program_code` | string \| null | Kode prodi penanya (`app/prodi.py`, digit 4-7 NIM, mis. `1010`), untuk analitik per kohort. `null` untuk pesan dari sebelum NIM tersedia (2026-10-05), dan **selalu `null` untuk `support`**: kohort kecil ditambah tanda FR-7 cukup untuk menebak orangnya |
@@ -572,12 +571,9 @@ Hanya diisi pada baris `role = 'assistant'`.
 | `embed_called` | bool | `false` untuk FR-7 dan sapaan berbasis aturan — keduanya berhenti sebelum retrieval. Pesan yang diblokir Laya (`rejected`, atau `smalltalk` dari Laya) bisa `true`: pencarian berjalan paralel dengan gerbang dan baru dihentikan saat vonis blokir tiba |
 | `embed_model` | string \| null | Model yang **diminta**, bukan yang dilaporkan gateway |
 | `embed_tokens` | int \| null | `usage.prompt_tokens`; `null` bila endpoint tidak melaporkannya |
-| `embed_cost_usd` | float \| null | Biaya meng-embed pertanyaan, **tanpa pembulatan** |
-| `embed_cost_source` | string \| null | `provider` atau `estimasi` |
 | `gate_label` | string \| null | Label gerbang Laya, terisi juga untuk pesan yang diteruskan; `null` bila Laya tidak berjalan |
 | `gate_confidence` | float \| null | Keyakinan label itu |
 | `gate_error` | string \| null | Galat panggilan Laya (pesan tetap diteruskan, fail-open) |
-| `gate_cost_usd` | float \| null | Biaya panggilan Laya |
 | `tool_calls` | array \| null | Jejak tool-calling (`docs/tool-call.md` §13): satu objek per panggilan, `{name, args, ok, latency_ms}`. Panggilan yang sengaja tidak dijalankan juga membawa `error`: `batas_per_giliran` (lebih dari 4 dalam satu giliran) atau `argumen_rusak` (argumen bukan JSON sah). `args` adalah argumen **mentah** dari model, dengan setiap string dipotong 200 karakter, supaya argumen yang dihalusinasi tetap terlihat. `null` bila tidak ada tool yang dipanggil, termasuk saat jalur tool berjalan tetapi model menjawab tanpa memanggil tool |
 | `attachments` | array \| null | Lampiran tool yang tampil di bawah jawaban (`docs/tool-call.md` §10a), utuh: `[{title, source, items}]`, sama dengan `ChatResponse.attachments`. Disimpan lengkap karena data SADS berubah per semester, jadi memanggil ulang tool tidak mengulang daftar yang dilihat mahasiswa saat menilai. `null` bila tidak ada lampiran |
 
@@ -585,66 +581,26 @@ Struktur ini bukan sekadar catatan — statistik AD-5 memfilter langsung atasnya
 (`m.meta->>'kind'`, `m.meta->'topics'`). Menambah nilai `kind` baru tanpa
 menyesuaikan `app/admin/stats.py` membuat pesan itu hilang dari semua hitungan.
 
-**`llm_cost_usd = null` ≠ biaya nol.** Jawaban dari model yang tarifnya belum ada di
-`app/observability/costs.py` dilaporkan terpisah sebagai
-`messages_without_cost_estimate`, bukan dianggap gratis.
-
-**`llm_cost_usd` hanya biaya LLM.** Biaya embedding disimpan terpisah di
-`embed_cost_usd` dan tidak dijumlahkan ke dalamnya. Penjumlahan keduanya
-dilakukan saat menyajikan, bukan saat menyimpan.
-
-**Penolakan FR-3 berbiaya embedding meskipun `llm_called = false`.** Retrieval
-berjalan lebih dulu (`app/rag/chain.py:141`), baru ambangnya memutuskan menolak —
-pertanyaannya sudah terlanjur di-embed. Karena itu penjumlahan biaya embedding
-**tidak boleh** menumpang filter `meta->>'llm_called' = 'true'` yang dipakai
-query biaya LLM; pakai syaratnya sendiri, `meta->>'embed_called' = 'true'`.
-Menyaringnya dengan filter yang salah akan menghapus seluruh penolakan dari
-laporan — padahal pertanyaan yang banyak ditolak justru yang paling perlu terlihat
-(sinyal AD-4).
+**Penolakan FR-3 tetap di-embed meskipun `llm_called = false`.** Retrieval
+berjalan lebih dulu (`app/rag/chain.py`), baru ambangnya memutuskan menolak —
+pertanyaannya sudah terlanjur di-embed. Hitungan pemakaian embedding karena itu
+memakai syaratnya sendiri, `meta->>'embed_called' = 'true'`, bukan filter
+`llm_called`; filter yang salah menghapus seluruh penolakan dari hitungan.
 
 Bedakan tiga keadaan: `embed_called = false` berarti benar-benar tidak ada
 panggilan (FR-7 dan smalltalk); `true` dengan `embed_tokens = null` berarti
-panggilannya nyata dan berbiaya tetapi endpoint tidak melaporkan pemakaian; `true`
-dengan angka lengkap berarti terhitung penuh. Hanya yang pertama yang gratis.
+panggilannya nyata tetapi endpoint tidak melaporkan pemakaian; `true` dengan
+angka berarti terhitung penuh.
 
-**Biaya penyedia mengalahkan taksiran.** Bila endpoint mengembalikan `usage.cost`
-(bukan bagian spesifikasi OpenAI; OpenRouter menambahkannya), angka itulah yang
-dipakai dan `embed_cost_source = 'provider'`. `costs.PRICES_PER_MTOK` hanyalah
-salinan tarif yang bisa tertinggal, dipakai hanya bila `cost` tidak dilaporkan
-(`estimasi`). Angka biaya tanpa asal-usul tidak dapat ditafsirkan lagi setelah
-beberapa bulan.
-
-**`embed_cost_usd` disimpan tanpa pembulatan.** `costs.estimate_cost` membulatkan
-ke enam desimal, sementara embedding satu pertanyaan pada model berbayar (sembilan
-token `text-embedding-3-small`) berharga $0,00000018 — `round(…, 6)` menjadikannya
-nol bulat. Jalur embedding memakai `costs.estimate_input_cost` yang tidak
-membulatkan; pembulatan baru terjadi di `app/admin/stats.py` setelah dijumlahkan.
-
-**Dengan `EMBED_MODEL` self-hosted, `embed_cost_usd` bernilai `0` bersumber
-`estimasi`.** Gateway melaporkan `prompt_tokens` untuk e5-small tetapi tidak
-`cost`, dan tarifnya terdaftar nol di `costs.PRICES_PER_MTOK`. Entri tarif nol itu
-wajib ada: tanpanya `costs.biaya_embedding` mengembalikan `null`, dan setiap
-pertanyaan muncul sebagai "tanpa biaya" di kartu Cakupan estimasi halaman Biaya.
-
----
-
-## Biaya embedding ingestion tidak dicatat
-
-Embedding saat ingestion dan reindex terjadi ketika tidak ada mahasiswa yang
-bertanya, sehingga tidak ada baris `messages` untuk dititipi. Tabel `usage_log`
-(migrasi `0008`) pernah disiapkan untuk itu, tetapi tidak pernah punya penulis,
-dan dihapus di `0010`. Dengan model self-hosted, tarif per tokennya nol, dan ongkos
-server embedding adalah biaya tetap yang tidak dapat dibagi per panggilan.
-Karena itu halaman Biaya AD-5 hanya memuat LLM chat dan embedding pertanyaan.
-
-Bila `EMBED_MODEL` kembali ke model berbayar, biaya ingestion **harus** dicatat
-lagi — tanpa itu halaman Biaya diam-diam melaporkan hanya sebagian dari yang
-dibelanjakan. Buat ulang buku biaya append-only seperti di `0008`, lalu panggil
-`embed_with_usage` dari `app/ingestion/embedder.py` (bukan `aembed_documents`)
-supaya laporan pemakaiannya tidak dibuang. Kolom biaya di `documents` sudah pernah
-dipertimbangkan dan ditolak: menghapus dokumen atau menyunting entri tanya jawab
-akan mengubah surut total bulan yang sudah lewat. Mengganti model sudah berarti
-re-index seluruh dokumen, jadi pekerjaan ini ikut di dalamnya.
+**Kunci biaya hanya ada di baris lama.** Sampai 2026-11-26 `meta` juga memuat
+`llm_cost_usd`, `embed_cost_usd`, `embed_cost_source`, dan `gate_cost_usd`,
+estimasi dari `app/observability/costs.py`. Fitur itu (bersama halaman Biaya dan
+`GET /api/admin/costs`) dihapus pada 2026-11-27: chat (vLLM di VM GPU),
+embedding (TEI e5), dan Laya seluruhnya di-host sendiri, jadi tidak ada biaya per
+token dan ongkos server adalah biaya tetap. Baris lama dibiarkan apa adanya;
+tidak ada kode yang membacanya lagi. Bila suatu saat kembali ke model berbayar,
+biaya harus dirancang ulang, termasuk embedding saat ingestion yang tidak punya
+baris `messages` untuk ditumpangi.
 
 ---
 

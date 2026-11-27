@@ -33,7 +33,7 @@ POLICY = ThresholdPolicy(vector_threshold=0.35, lexical_threshold=0.05)
 URL_LAYA = "https://laya.test/v1/systemone"
 
 
-def respons(label: str, confidence: float, cost: float | None = 0.00002) -> dict:
+def respons(label: str, confidence: float) -> dict:
     data = {
         "id": "dec_1",
         "model": "multilingual",
@@ -45,16 +45,14 @@ def respons(label: str, confidence: float, cost: float | None = 0.00002) -> dict
                 "probabilities": {label: confidence},
             }
         },
-        "usage": {"input_tokens": 300, "output_tokens": 4},
+        "usage": {"input_tokens": 300, "output_tokens": 4, "cost": 0.00002},
     }
-    if cost is not None:
-        data["usage"]["cost"] = cost
     return data
 
 
 def respons_laya(label: str, confidence: float, answer_confidence: float) -> dict:
     """Bentuk `laya-serve`: `confidence` = entropi ternormalisasi, bukan probabilitas."""
-    data = respons(label, answer_confidence, cost=None)
+    data = respons(label, answer_confidence)
     jawaban = data["answers"][QUESTION_KEY]
     jawaban["confidence"] = confidence
     jawaban["answer_confidence"] = answer_confidence
@@ -119,14 +117,10 @@ class TestParseResponse:
     def test_nilai_tepat_di_ambang_memblokir(self):
         assert parse_response(respons("nonsense", 0.8), self.policy).blocked
 
-    def test_biaya_dibaca_dari_usage(self):
-        assert (
-            parse_response(respons("academic", 0.9, cost=0.0001), self.policy).cost_usd
-            == 0.0001
-        )
-        assert (
-            parse_response(respons("academic", 0.9, cost=None), self.policy).cost_usd is None
-        )
+    def test_biaya_di_usage_diabaikan(self):
+        """`usage.cost` dari server lama tidak lagi dibaca (2026-11-27)."""
+        v = parse_response(respons("academic", 0.9), self.policy)
+        assert not hasattr(v, "cost_usd")
 
     def test_label_tak_dikenal_melempar(self):
         with pytest.raises(ValueError):

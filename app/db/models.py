@@ -293,7 +293,7 @@ class Message(Base):
     langsmith_run_id: Mapped[str | None] = mapped_column(String(64))
     """Penghubung ke trace LangSmith -- menjawab 'kenapa jawaban ini buruk'."""
     meta: Mapped[dict | None] = mapped_column(JSONB)
-    """Flag eskalasi, topik risiko, estimasi biaya token (FR-6, FR-8)."""
+    """Flag eskalasi, topik risiko, jumlah token (FR-6, FR-8)."""
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

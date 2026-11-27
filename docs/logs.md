@@ -97,12 +97,12 @@ Isi `detail` per node:
 | `sanitize` | `length`: panjang pertanyaan (angka saja) |
 | `sensitive` | `level` sensitivitas, `redirected`: apakah alur dialihkan |
 | `smalltalk` | `handled`: apakah pesan ditangani di sini |
-| `laya_gate` | `disabled`, atau `label`, `confidence`, `blocked`, `cost_usd`, `error` fail-open |
+| `laya_gate` | `disabled`, atau `label`, `confidence`, `blocked`, `error` fail-open |
 | `rewrite` | `query_rewritten` (false juga saat dilewati; durasi ≈0 menandakan dilewati) |
 | `retrieve` | `document_count` (unit filter ada di baris `turns`) |
 | `validate_context` | `decision`, `reason` (`ok`/`no_results`/`below_threshold`), `top_score` |
 | `refuse` | `contact_count`: jumlah kontak yang disarankan |
-| `generate` | `model`, `input_tokens`/`output_tokens`, `cost_usd`, `tools` (nama tool yang dipanggil, tanpa argumen) |
+| `generate` | `model`, `input_tokens`/`output_tokens`, `tools` (nama tool yang dipanggil, tanpa argumen). Baris sebelum 2026-11-27 juga memuat `cost_usd`; dashboard tidak lagi menampilkannya |
 
 ### `app_logs`: semua log Python aplikasi
 
@@ -270,7 +270,7 @@ direkam node beserta child run-nya; uji coba admin ikut dicatat.
 | `input` | masukan graf: pertanyaan, riwayat, unit, profil | callback akar graf |
 | `output` | `outcome` akhir (null bila gagal/dibatalkan) | callback akar graf |
 | `nodes[]` | per node: `input` (state yang diterima), `output` (perubahan state), `route` (keluaran router sesudahnya, mis. `["laya_gate", "cari"]` atau `selesai`) | `on_chain_start/end` node dan router |
-| `calls[]` | pohon panggilan di dalam node: `kind` (`llm`/`retriever`/`tool`/`laya`/`chain`), nama, model, token, biaya, durasi, status, input, output, `parent_id` | callback LangChain (LLM, retriever) dan custom event `pandu_panggilan` (Laya, tool) |
+| `calls[]` | pohon panggilan di dalam node: `kind` (`llm`/`retriever`/`tool`/`laya`/`chain`), nama, model, token, durasi, status, input, output, `parent_id` | callback LangChain (LLM, retriever) dan custom event `pandu_panggilan` (Laya, tool) |
 
 Rincian:
 
