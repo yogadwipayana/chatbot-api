@@ -152,7 +152,9 @@ pesan = [TOOL_SYSTEM_PROMPT + KONTEKS, <pertanyaan_mahasiswa> (§8)]
 untuk putaran 1..TOOLS_MAX_ROUNDS:
     resp = LLM(pesan, tools = seluruh registry, tool_choice = "auto")   # di-stream
     bila resp tanpa tool_calls dan tanpa invalid_tool_calls:
-        bila resp hanya [TIDAK_DITEMUKAN], belum ada tool dicoba, belum didorong:
+        bila resp akan menjadi penolakan (hanya [TIDAK_DITEMUKAN], atau kalimat
+        "tidak ditemukan/tercantum" tanpa sitasi), belum ada tool dicoba,
+        belum didorong:
             pesan += resp, DORONGAN_T1     # sekali; tidak dihitung putaran
             ulangi giliran
         kembalikan resp.content            # jawaban final (kosong → [TIDAK_DITEMUKAN])
@@ -188,6 +190,11 @@ jawaban dipaksa lewat LLM TANPA tool                # batas putaran habis
   yang menyebut penanda, balasan kosong, dan `[DI_LUAR_TOPIK]`. Biayanya satu
   giliran LLM tambahan, hanya pada penolakan seperti itu. Kejadiannya tercatat di
   log aplikasi (`model menolak tanpa mencoba tool`), belum di `messages.meta`.
+  Sejak 2026-11-27 (T76) juga untuk penolakan berupa kalimat "tidak ditemukan /
+  tidak tercantum" tanpa satu sitasi pun, yaitu balasan yang toh akan dijadikan
+  penolakan oleh `is_not_found`. Berbeda dari penanda, kalimat itu sudah sempat
+  mengalir; jawaban sesudah dorongan menyusul di gelembung yang sama sampai
+  event `message` menggantinya (§9, §18).
 
 ---
 
@@ -657,8 +664,8 @@ Batasan:
 | Giliran final tanpa teks | diganti `[TIDAK_DITEMUKAN]` → penolakan resmi beserta kontak, bukan `answer` kosong |
 | Gateway menyisipkan `[Error]` | `GalatGateway` dilempar, giliran gagal dan tidak ada jawaban yang disimpan (seperti jalur biasa) |
 | Tool tak dapat dijalankan, konteks lemah | penolakan FR-3 tanpa LLM (`refusal_source = threshold`) |
-| Tool data pribadi tanpa NIM (uji coba admin) | `DATA_TIDAK_TERSEDIA: NIM penanya tidak diketahui…`, SADS tidak dipanggil |
-| NIM tidak terdaftar (SADS 404 `Mahasiswa Tidak Ditemukan`) | `DATA_TIDAK_TERSEDIA: NIM penanya tidak terdaftar sebagai mahasiswa di SADS.` |
+| Tool data pribadi tanpa NIM (uji coba admin) | `DATA_TIDAK_TERSEDIA: NIM penanya tidak diketahui…`, SADS tidak dipanggil; jawaban tanpa sitasi → penolakan dengan alasannya (`ALASAN_TANPA_NIM`) |
+| NIM tidak terdaftar (SADS 404 `Mahasiswa Tidak Ditemukan`) | `DATA_TIDAK_TERSEDIA: NIM penanya tidak terdaftar sebagai mahasiswa di SADS.`; jawaban tanpa sitasi → "Maaf, data pribadi Anda tidak dapat ditampilkan karena NIM Anda tidak terdaftar …" + kontak unit (`ALASAN_TOOL_TEMPLATE`, T77) |
 | SADS 500 (mis. `jadwal-krs`, §18) | `DATA_TIDAK_TERSEDIA` umum; uji live: model menjawab dari Kalender Akademik dan menyebut jadwal khususnya tidak dapat ditampilkan |
 | `semester` di luar 1–8 | `DATA_TIDAK_TERSEDIA: semester harus angka 1 sampai 8.`, SADS tidak dipanggil |
 | Prasyarat: 0 calon / lebih dari 3 calon | `ok=True`, "0 mata kuliah" / hanya nama-nama calon |
@@ -1035,6 +1042,38 @@ NIM, 2026-11-23):
 `eval/run_generation.py` tidak memakai tool (butir 1 di bawah), jadi kedua
 perbaikan tool tidak mengubah hasil eval generasi; hanya teks penolakannya yang
 berubah.
+
+### Qwen3.6-27B: tool tidak dicoba dan tool gagal (2026-11-27)
+
+Model chat server diganti ke `vl/qwen3.6-27b` (vLLM self-hosted lewat 9router).
+Uji widget server (browser s88) menemukan dua pola, keduanya diuji ulang lewat
+API lokal dengan model yang sama (unit AKADEMIK/KEUANGAN, NIM contoh 2401010101
+yang tidak terdaftar di SADS, 3 percobaan per pertanyaan):
+
+| Pola | Sebelum | Prompt saja | Sesudah (kode) |
+|---|---|---|---|
+| T76: "mata kuliah semester 2 prodi Magister Informatika apa saja?" (tidak ada di dokumen) | ditolak tanpa tool 2/2 | 0/3 | dijawab dari SADS 3/3 |
+| T76: "… prodi Sistem Informasi …" (prodi tidak ada di INSTIKI) | ditolak tanpa tool 3/3 | 0/3 | "tidak terdaftar di INSTIKI" + daftar prodi dari SADS 3/3 |
+| T77: IPK, batas revisi KRS, tagihan (NIM tak terdaftar) | penolakan umum "belum menemukan … di dokumen" 9/9 | alasan benar 3/9 | alasan + kontak 9/9 |
+| Pembanding: dosen Basis Data, prasyarat Basis Data Lanjut, UTS ganjil, harga TOEIC, kurikulum DKV/BD/RSK dari dokumen | dijawab 20/20 | — | dijawab sama 21/21, tanpa dorongan |
+
+- **T76**: model menjawab dari potongan kurikulum prodi lain ("dokumen resmi hanya
+  memuat kurikulum Informatika …"), bukan dengan penanda, sehingga `DORONGAN_T1`
+  tidak terpicu. Memperluas T1 di prompt ("juga bila KONTEKS hanya memuat data
+  serupa untuk prodi lain") tidak berpengaruh dan dikembalikan. Kini dorongan juga
+  terpicu oleh kalimat penolakan tanpa sitasi (§5). Ongkosnya satu giliran LLM:
+  jawaban T76 butuh 28–42 detik (3 permintaan bersamaan) dibanding 12–24 detik
+  untuk penolakannya dulu.
+- **T77**: Qwen menulis penjelasan yang benar lalu menambahkan `[TIDAK_DITEMUKAN]`
+  atau "tidak tercantum" (aturan T4 → aturan 3), sehingga `is_not_found` membuang
+  penjelasannya; sekali penjelasannya ditulis dalam kurung siku dengan kata
+  "penanya". Mengubah T4 di prompt hanya memperbaiki 3 dari 9 dan dikembalikan.
+  Kini tool data pribadi membawa `alasan_mahasiswa`, dan `generate` menolak
+  dengan alasan itu plus kontak unit bila jawabannya tanpa sitasi, apa pun yang
+  ditulis model. Jawaban yang mengutip sumber tetap ditampilkan.
+- Tersisa: jawaban "Sistem Informasi" masih ditutup saran memilih topik unit
+  lain (pelanggaran T7 yang lama), dan penolakan T77 tetap masuk AD-4 (butir 2 di
+  bawah).
 
 ### Masih terbuka (sengaja tidak diubah tanpa keputusan)
 

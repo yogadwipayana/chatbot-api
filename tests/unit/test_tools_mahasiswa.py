@@ -141,11 +141,15 @@ class TestNimDariRequest:
         hasil, sads = await _panggil("get_nilai_saya", {}, Penanya())
         assert not hasil.ok and sads.paths == []
         assert hasil.pesan_untuk_model() == f"DATA_TIDAK_TERSEDIA: {mhs.GALAT_TANPA_NIM}"
+        assert hasil.alasan_mahasiswa == mhs.ALASAN_TANPA_NIM
 
     async def test_nim_tak_terdaftar_404(self):
         hasil, _ = await _panggil("get_nilai_saya", None, status=404)
         assert not hasil.ok
         assert mhs.GALAT_NIM_TIDAK_TERDAFTAR in hasil.pesan_untuk_model()
+        # T77: alasan untuk mahasiswa ditulis "Anda", bukan "penanya".
+        assert hasil.alasan_mahasiswa == mhs.ALASAN_NIM_TIDAK_TERDAFTAR
+        assert "penanya" not in hasil.alasan_mahasiswa
 
     async def test_galat_lain_diteruskan_ke_loop_dan_log_tanpa_nim(self, caplog):
         """SADS membalas 500 untuk jadwal-krs (uji 2026-11-07). Pesan httpx memuat

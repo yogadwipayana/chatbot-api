@@ -110,6 +110,13 @@ class ToolResult:
     galat: str = ""
     """Alasan kegagalan untuk model, mis. "NIM penanya tidak terdaftar di SADS."
     Kosong = alasan umum. Hanya dipakai bila `ok` False."""
+    alasan_mahasiswa: str = ""
+    """Alasan kegagalan yang ditampilkan apa adanya kepada mahasiswa, mis. "data
+    pribadi Anda tidak dapat ditampilkan karena NIM Anda tidak terdaftar ...".
+    Hanya untuk kegagalan yang tidak dapat diperbaiki dengan bertanya ulang
+    (T77): bila jawaban akhirnya tanpa sumber, `generate` menolak dengan alasan
+    ini, bukan dengan "belum menemukan jawabannya di dokumen". Kosong = model
+    yang menjelaskan, seperti sebelumnya."""
 
     def pesan_untuk_model(self) -> str:
         """Isi pesan `role:"tool"` yang dibalikkan ke model.

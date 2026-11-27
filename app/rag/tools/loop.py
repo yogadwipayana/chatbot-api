@@ -24,7 +24,13 @@ from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from app.observability.rekaman import catat_panggilan
-from app.rag.chain import _PenahanPenanda, _seragam, strip_markers
+from app.rag.chain import (
+    _PenahanPenanda,
+    _seragam,
+    is_not_found,
+    strip_markers,
+    sumber_tanpa_halaman,
+)
 from app.rag.prompts import (
     NOT_FOUND_MARKER,
     OFF_TOPIC_MARKER,
@@ -60,11 +66,12 @@ PESAN_BATAS = "DATA_TIDAK_TERSEDIA: batas panggilan alat per giliran tercapai."
 PESAN_ARGUMEN_RUSAK = "DATA_TIDAK_TERSEDIA: argumen panggilan alat tidak dapat dibaca."
 
 DORONGAN_T1 = (
-    "Catatan sistem, bukan dari mahasiswa: Anda membalas [TIDAK_DITEMUKAN] tanpa "
-    "mencoba alat. Periksa lagi aturan T1: bila salah satu alat dapat mengambil "
-    "data yang ditanyakan, panggil alat itu sekarang. Bila tidak ada alat yang "
-    "relevan, atau aturan T8 melarang memanggilnya, balas lagi HANYA dengan "
-    "[TIDAK_DITEMUKAN]."
+    "Catatan sistem, bukan dari mahasiswa: Anda menyatakan jawabannya tidak "
+    "ditemukan atau tidak tercantum tanpa mencoba alat. Periksa lagi aturan T1: "
+    "bila salah satu alat dapat mengambil data yang ditanyakan, termasuk untuk "
+    "prodi, semester, atau mata kuliah yang tidak dimuat KONTEKS, panggil alat "
+    "itu sekarang. Bila tidak ada alat yang relevan, atau aturan T8 melarang "
+    "memanggilnya, balas HANYA dengan [TIDAK_DITEMUKAN]."
 )
 """Dikirim sekali bila model menolak tanpa mencoba satu alat pun (T1).
 
@@ -73,6 +80,14 @@ melakukannya: "apa 9 sks pilihan yang perlu saya penuhi?" ditolak tanpa
 panggilan tool, lalu "apa saja 9 sks pilihan yang belum saya ambil" dijawab
 `get_nilai_saya` (log 2026-11-12). Dalam 30 hari sampai 2026-11-23, 13 dari 35
 penolakan LLM terjadi saat tool ter-bind, dan tidak satu pun mencoba tool.
+
+Sejak 2026-11-27 juga untuk penolakan berupa kalimat ("... tidak tercantum di
+dokumen resmi") tanpa satu sitasi pun (T76): Qwen3.6-27B menjawab "mata kuliah
+semester 2 prodi Magister Informatika apa saja?" dengan "dokumen resmi hanya
+memuat kurikulum Informatika ..." tanpa memanggil `get_matkul_kurikulum` (2 dari
+2). T1 di prompt yang diperluas untuk kasus prodi lain tidak menolong: Magister
+Informatika dan "Sistem Informasi" tetap ditolak tanpa tool 6 dari 6. Dengan
+dorongan ini keduanya dijawab dari SADS 6 dari 6 (docs/tool-call.md §18).
 
 Berupa pesan pengguna, bukan pesan sistem kedua, karena tidak semua penyedia di
 balik gateway menerima pesan sistem di tengah percakapan. Teks mahasiswa selalu
@@ -91,6 +106,8 @@ class ToolLoopResult:
     """Lampiran dari tool yang berhasil, urut panggilan (docs/tool-call.md §10a),
     sudah dipilih menurut nama yang ditulis jawaban (`pilih_lampiran`). Sumbernya
     belum diperiksa: `generate` hanya meneruskan yang sumbernya dikutip jawaban."""
+    alasan_gagal: tuple[str, ...] = ()
+    """`alasan_mahasiswa` tool yang gagal, tanpa duplikat, urut panggilan (T77)."""
 
 
 def _chunk_text(chunk: Any) -> str:
@@ -237,6 +254,7 @@ async def run_tool_loop(
     Bila model menolak sebelum mencoba satu tool pun, ia didorong sekali
     (`DORONGAN_T1`) dengan tool tetap ter-bind; dorongan tidak dihitung putaran."""
     by_name = {s.name: s for s in specs}
+    tanpa_hal = sumber_tanpa_halaman(documents)
     messages: list[Any] = [
         SystemMessage(content=TOOL_SYSTEM_PROMPT.format(context=format_context(documents))),
         HumanMessage(content=wrapped_question),
@@ -258,7 +276,7 @@ async def run_tool_loop(
         # yang kosong.
         rusak = list(getattr(gathered, "invalid_tool_calls", None) or [])
         if not panggilan and not rusak:
-            if not didorong and not jejak and _menolak_tanpa_mencoba(teks):
+            if not didorong and not jejak and _menolak_tanpa_mencoba(teks, tanpa_hal):
                 # Tidak menghabiskan putaran: dengan `max_rounds=1` dorongan
                 # yang menghabiskan putaran hanya menyisakan giliran tanpa
                 # tool. Penahan penanda tidak memancarkan apa pun dari balasan
@@ -320,19 +338,26 @@ def _config(buat_config: Callable[[], Any] | None) -> Any:
     return buat_config() if buat_config is not None else None
 
 
-def _menolak_tanpa_mencoba(teks: str) -> bool:
-    """Balasan yang hanya berisi `NOT_FOUND_MARKER`, seperti diminta aturan 3.
+def _menolak_tanpa_mencoba(teks: str, tanpa_halaman: dict[str, int] | None = None) -> bool:
+    """Balasan yang akan dijadikan penolakan oleh `generate` (`is_not_found`).
 
-    Jawaban parsial yang menyebut penanda di tengah teks tidak didorong: yang
-    tertulis tetap berguna, dan dorongan bisa membuat model membuangnya. Balasan
-    kosong juga tidak (`_hasil_akhir` tetap menjadikannya penolakan), begitu pula
-    `OFF_TOPIC_MARKER`: pertanyaan di luar urusan kampus tidak punya alat."""
+    Yaitu `NOT_FOUND_MARKER` saja seperti diminta aturan 3, atau kalimat "tidak
+    ditemukan/tercantum" tanpa satu sitasi pun (T76). Jawaban parsial yang
+    bersitasi tidak didorong: yang tertulis tetap berguna, dan dorongan bisa
+    membuat model membuangnya. Balasan kosong juga tidak (`_hasil_akhir` tetap
+    menjadikannya penolakan), begitu pula `OFF_TOPIC_MARKER`: pertanyaan di luar
+    urusan kampus tidak punya alat.
+
+    Kalimat penolakan, berbeda dari penanda, sudah sempat mengalir ke mahasiswa;
+    jawaban sesudah dorongan menyusul di gelembung yang sama sampai event
+    `message` menggantinya dengan jawaban akhir. Tanpa dorongan, kalimat itu
+    toh diganti penolakan resmi."""
     seragam = _seragam(teks)
-    return (
-        NOT_FOUND_MARKER in seragam
-        and OFF_TOPIC_MARKER not in seragam
-        and not strip_markers(teks)
-    )
+    if OFF_TOPIC_MARKER in seragam:
+        return False
+    if NOT_FOUND_MARKER in seragam:
+        return not strip_markers(teks)
+    return is_not_found(teks, tanpa_halaman)
 
 
 def _hasil_akhir(
@@ -346,7 +371,10 @@ def _hasil_akhir(
     if not teks.strip():
         teks = NOT_FOUND_MARKER
     lampiran = [a for r in hasil if r.ok for a in pilih_lampiran(r.attachments, teks)]
-    return ToolLoopResult(teks, hasil_tool_ke_dokumen(hasil), usage, jejak, lampiran)
+    alasan = tuple(
+        dict.fromkeys(r.alasan_mahasiswa for r in hasil if not r.ok and r.alasan_mahasiswa)
+    )
+    return ToolLoopResult(teks, hasil_tool_ke_dokumen(hasil), usage, jejak, lampiran, alasan)
 
 
 def _jejak_lewat(tc: dict, args: dict[str, Any], alasan: str) -> dict[str, Any]:

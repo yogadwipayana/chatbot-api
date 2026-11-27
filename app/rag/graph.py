@@ -68,6 +68,7 @@ from app.rag.chain import (
     refusal_text,
     render_contacts,
     strip_markers,
+    sumber_tanpa_halaman,
 )
 from app.rag.citations import extract_citations, ringkas_sitasi_tanpa_halaman
 from app.rag.gate import GateLabel, GateVerdict, lolos
@@ -392,14 +393,17 @@ def _penolakan(
     assessment: risk_module.RiskAssessment,
     *,
     llm_called: bool,
+    alasan: Sequence[str] = (),
 ) -> PipelineOutcome:
-    """Satu bentuk penolakan, entah diputuskan threshold atau oleh LLM."""
+    """Satu bentuk penolakan, entah diputuskan threshold atau oleh LLM.
+
+    `alasan`: sebab kegagalan tool untuk mahasiswa (T77, `refusal_text`)."""
     # Tanpa unit yang dipilih, semua unit terkait topik ditampilkan, bukan hanya
     # yang pertama: pertanyaan "deadline pembayaran UKT" menyangkut akademik DAN
     # keuangan sekaligus, dan mahasiswa yang ditolak tidak boleh dikirim ke
     # loket yang salah.
     contacts = _kontak(state, deps, assessment) or (DEFAULT_FALLBACK_CONTACT,)
-    text = refusal_text(contacts, state.get("unit"))
+    text = refusal_text(contacts, state.get("unit"), alasan)
     return PipelineOutcome(
         kind=OutcomeKind.REFUSAL,
         text=text,
@@ -443,6 +447,7 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
     if deps.on_stage is not None:
         await deps.on_stage("menyusun jawaban")
     lampiran: list[Any] = []
+    alasan_gagal: tuple[str, ...] = ()
     if pakai_tool:
         # Kelayakan sudah diputuskan `validate_context`; yang di-bind seluruh
         # registry, karena memilih tool adalah tugas model (ToolRegistry.eligible).
@@ -457,16 +462,13 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
         )
         documents = [*documents, *tool_docs]
         lampiran = list(getattr(deps.llm_call, "attachments", None) or [])
+        alasan_gagal = tuple(getattr(deps.llm_call, "alasan_gagal", None) or ())
     else:
         answer = await _jawab(deps.llm_call, wrapped, documents, deps.on_token)
     # Sumber tak berhalaman (entri tanya jawab, kartu tool) dikutip `[Judul]`.
     # Tanpa daftar ini jawaban parsial bersumber tool yang menyebut "tidak
     # ditemukan" untuk sebagian pertanyaan dianggap penolakan dan dibuang.
-    tanpa_hal = {
-        doc.metadata.get("judul", ""): doc.metadata.get("halaman", 1)
-        for doc in documents
-        if doc.metadata.get("jenis") == DocumentType.TANYA_JAWAB
-    }
+    tanpa_hal = sumber_tanpa_halaman(documents)
     # Pertanyaan di luar urusan kampus yang lolos gerbang (atau Laya mati):
     # dibalas dan dicatat seperti blokir Laya `out_of_scope` -- bukan celah
     # dokumen, jadi tidak masuk AD-4.
@@ -481,6 +483,17 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
                 gate=state.get("gate"),
                 rewritten_query=state.get("rewritten"),
                 llm_called=True,
+            )
+        }
+    # Tool gagal karena sebab yang diketahui (mis. NIM tidak terdaftar) dan
+    # jawabannya tanpa sumber: tolak dengan sebab itu (T77). Apa pun yang ditulis
+    # model -- penanda saja, penjelasan plus penanda, atau penjelasan berkurung
+    # siku -- mahasiswa membaca alasan dan kontak yang sama. Jawaban yang
+    # mengutip sumber (bagian yang dijawab dokumen) tetap ditampilkan.
+    if alasan_gagal and not extract_citations(answer, tanpa_hal):
+        return {
+            "outcome": _penolakan(
+                state, deps, assessment, llm_called=True, alasan=alasan_gagal
             )
         }
     # Konteks lolos threshold tetapi tidak menjawab: tampilkan dan catat sebagai

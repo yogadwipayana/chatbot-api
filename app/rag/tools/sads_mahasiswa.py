@@ -43,6 +43,18 @@ KEPALA_PRIBADI = (
 GALAT_TANPA_NIM = "NIM penanya tidak diketahui, jadi data pribadinya tidak dapat diambil."
 GALAT_NIM_TIDAK_TERDAFTAR = "NIM penanya tidak terdaftar sebagai mahasiswa di SADS."
 
+ALASAN_TANPA_NIM = "data pribadi Anda tidak dapat diambil karena NIM Anda tidak diketahui."
+ALASAN_NIM_TIDAK_TERDAFTAR = (
+    "data pribadi Anda tidak dapat ditampilkan karena NIM Anda tidak terdaftar "
+    "sebagai mahasiswa di SADS."
+)
+"""`ToolResult.alasan_mahasiswa` (T77). Ditulis untuk mahasiswa ("Anda"); `GALAT_*`
+tetap untuk model. Dengan galat saja, uji 2026-11-27 (Qwen3.6-27B, NIM contoh
+tak terdaftar) berakhir sebagai penolakan umum "belum menemukan jawabannya di
+dokumen" 9 dari 9 kali, karena model menambahkan `[TIDAK_DITEMUKAN]` atau
+"tidak tercantum" di belakang penjelasannya; sekali (uji browser s88) model
+membungkus penjelasannya dengan kurung siku dan menyebut "NIM penanya"."""
+
 _BULAN = (
     "Januari",
     "Februari",
@@ -157,13 +169,29 @@ async def _ambil(
     URL (URL memuat NIM)."""
     nim = penanya.nim or ""
     if not re.fullmatch(POLA_NIM, nim):
-        return _Gagal(ToolResult(nama, LABEL_SADS, "", ok=False, galat=GALAT_TANPA_NIM))
+        return _Gagal(
+            ToolResult(
+                nama,
+                LABEL_SADS,
+                "",
+                ok=False,
+                galat=GALAT_TANPA_NIM,
+                alasan_mahasiswa=ALASAN_TANPA_NIM,
+            )
+        )
     try:
         data = await client.get_json(f"{PATH_LAYANAN}/{endpoint}/{nim}")
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
             return _Gagal(
-                ToolResult(nama, LABEL_SADS, "", ok=False, galat=GALAT_NIM_TIDAK_TERDAFTAR)
+                ToolResult(
+                    nama,
+                    LABEL_SADS,
+                    "",
+                    ok=False,
+                    galat=GALAT_NIM_TIDAK_TERDAFTAR,
+                    alasan_mahasiswa=ALASAN_NIM_TIDAK_TERDAFTAR,
+                )
             )
         raise
     if not isinstance(data, dict):

@@ -15,10 +15,11 @@ import pytest
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 
 from app.config import Settings
-from app.rag.chain import OutcomeKind, run_pipeline
+from app.rag.chain import REFUSAL_UNIT_HINT, OutcomeKind, refusal_text, run_pipeline
 from app.rag.prompts import NOT_FOUND_MARKER
 from app.rag.providers import GalatGateway
 from app.rag.rewriter import Turn
+from app.rag.risk import FRONT_OFFICE
 from app.rag.tools import sads
 from app.rag.tools.base import (
     ToolArgumentError,
@@ -1390,3 +1391,141 @@ class ToolLLMBerlampiran(ToolLLM):
         hasil = await super().run_tools(*args, **kwargs)
         self.attachments = list(self._lampiran)
         return hasil
+
+
+# --- T76: kalimat penolakan tanpa sitasi juga didorong ----------------------
+
+
+class TestDoronganKalimatPenolakan:
+    """T76 (uji 2026-11-27, Qwen3.6-27B): "mata kuliah semester 2 prodi Magister
+    Informatika apa saja?" dijawab "dokumen resmi hanya memuat kurikulum
+    Informatika ..." tanpa memanggil tool, lalu dijadikan penolakan oleh
+    `is_not_found`. Kalimat seperti itu kini didorong sekali, seperti penanda."""
+
+    async def test_kalimat_tanpa_sitasi_didorong_lalu_memanggil_tool(self):
+        dipanggil: list[str] = []
+
+        async def handler(*, matkul: str) -> ToolResult:
+            dipanggil.append(matkul)
+            return ToolResult("get_mk_diampu_dosen", LABEL, "- Budi: X", True)
+
+        llm = FakeChat(
+            [
+                _answer_turn("Kurikulum prodi itu tidak tercantum di dokumen resmi."),
+                _tool_turn("get_mk_diampu_dosen", '{"matkul":"X"}'),
+                _answer_turn(f"Budi [{LABEL}]."),
+            ]
+        )
+        res = await _jalankan(llm, handler)
+        assert dipanggil == ["X"]
+        assert res.text == f"Budi [{LABEL}]."
+        assert llm.i == 3
+
+    async def test_kalimat_bersitasi_tidak_didorong(self):
+        """Jawaban parsial: bagian yang bersumber tetap berguna."""
+        llm = FakeChat(
+            [_answer_turn("Semester 3: Aljabar [Pedoman, hal. 3]; prodi X tidak tercantum.")]
+        )
+        await _jalankan(llm, None)
+        assert llm.i == 1
+
+    async def test_jawaban_biasa_tanpa_sitasi_tidak_didorong(self):
+        llm = FakeChat([_answer_turn("Halo, silakan sebutkan nama mata kuliahnya.")])
+        await _jalankan(llm, None)
+        assert llm.i == 1
+
+
+# --- T77: tool gagal karena sebab yang diketahui ----------------------------
+
+ALASAN = "data pribadi Anda tidak dapat ditampilkan karena NIM Anda tidak terdaftar."
+
+
+class ToolLLMGagal(ToolLLM):
+    """`ToolLLM` yang, seperti `LLMCall.run_tools`, mencatat alasan tool gagal."""
+
+    def __init__(self, answer: str, alasan: tuple[str, ...], docs: list[Any] | None = None):
+        super().__init__(answer, docs or [])
+        self._alasan = alasan
+        self.alasan_gagal: tuple[str, ...] = ()
+
+    async def run_tools(self, *args: Any, **kwargs: Any):
+        hasil = await super().run_tools(*args, **kwargs)
+        self.alasan_gagal = self._alasan
+        return hasil
+
+
+async def _pipeline_tool(llm: Any):
+    return await run_pipeline(
+        "siapa dosen pengampu mata kuliah X?",
+        retriever=FakeRetriever([]),
+        llm_call=llm,
+        tool_registry=ToolRegistry([_spec(lambda **_: None)]),
+    )
+
+
+class TestAlasanToolGagal:
+    """T77 (uji 2026-11-27, Qwen3.6-27B, NIM contoh tak terdaftar di SADS): model
+    menulis penjelasan yang benar lalu menambahkan `[TIDAK_DITEMUKAN]` atau
+    "tidak tercantum", sehingga mahasiswa hanya membaca "belum menemukan
+    jawabannya di dokumen" (9 dari 9); sekali penjelasannya berkurung siku."""
+
+    async def test_loop_mengumpulkan_alasan_tanpa_duplikat(self):
+        async def handler(*, matkul: str) -> ToolResult:
+            return ToolResult(
+                "get_mk_diampu_dosen", LABEL, "", ok=False, alasan_mahasiswa=ALASAN
+            )
+
+        llm = FakeChat([_banyak_panggilan("A", "B"), _answer_turn(NOT_FOUND_MARKER)])
+        res = await _jalankan(llm, handler)
+        assert res.alasan_gagal == (ALASAN,)
+
+    async def test_gagal_tanpa_alasan_tidak_dicatat(self):
+        async def handler(*, matkul: str) -> ToolResult:
+            return ToolResult("get_mk_diampu_dosen", LABEL, "", ok=False)
+
+        llm = FakeChat(
+            [
+                _tool_turn("get_mk_diampu_dosen", '{"matkul":"X"}'),
+                _answer_turn(NOT_FOUND_MARKER),
+            ]
+        )
+        res = await _jalankan(llm, handler)
+        assert res.alasan_gagal == ()
+
+    @pytest.mark.parametrize(
+        "jawaban",
+        [
+            NOT_FOUND_MARKER,
+            f"Maaf, data IPK Anda tidak dapat ditampilkan.\n\n{NOT_FOUND_MARKER}",
+            "[Batas revisi KRS tidak dapat ditampilkan karena NIM penanya tidak terdaftar.]",
+            "Data Anda tidak dapat ditampilkan. Bagian itu tidak tercantum di dokumen resmi.",
+            "Maaf, NIM Anda tidak terdaftar sebagai mahasiswa di SADS.",
+        ],
+    )
+    async def test_jawaban_tanpa_sumber_ditolak_dengan_alasan(self, jawaban: str):
+        outcome = await _pipeline_tool(ToolLLMGagal(jawaban, (ALASAN,)))
+        assert outcome.kind is OutcomeKind.REFUSAL
+        assert outcome.text == refusal_text(outcome.contacts, None, (ALASAN,))
+        assert outcome.text.startswith(f"Maaf, {ALASAN} ")
+        assert "belum menemukan" not in outcome.text
+        assert outcome.contacts
+
+    async def test_jawaban_bersumber_tetap_dijawab(self):
+        docs = hasil_tool_ke_dokumen([ToolResult("a", LABEL, "- Budi: X", True)])
+        outcome = await _pipeline_tool(
+            ToolLLMGagal(f"Pengampunya Budi [{LABEL}].", (ALASAN,), docs)
+        )
+        assert outcome.kind is OutcomeKind.ANSWER
+        assert outcome.text == f"Pengampunya Budi [{LABEL}]."
+
+    async def test_tanpa_alasan_tetap_penolakan_umum(self):
+        outcome = await _pipeline_tool(ToolLLMGagal(NOT_FOUND_MARKER, ()))
+        assert outcome.kind is OutcomeKind.REFUSAL
+        assert outcome.text == refusal_text(outcome.contacts)
+
+    def test_teks_alasan_tanpa_petunjuk_ganti_topik(self):
+        """Pindah topik tidak mengubah hasil tool data pribadi."""
+        teks = refusal_text([FRONT_OFFICE], unit="AKADEMIK", alasan=(ALASAN,))
+        assert REFUSAL_UNIT_HINT not in teks
+        assert "Coba tuliskan" not in teks
+        assert FRONT_OFFICE.kontak in teks

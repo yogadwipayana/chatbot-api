@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from app.db.models import DocumentType
 from app.prodi import ProfilMahasiswa
 from app.rag import risk as risk_module
 from app.rag import sensitive as sensitive_module
@@ -98,9 +99,25 @@ Jangan menyarankan "semua unit": widget mahasiswa -- satu-satunya pengirim
 `unit` -- mewajibkan satu topik dipilih dan tidak punya pilihan semua unit."""
 
 
-def refusal_text(contacts, unit: str | None = None) -> str:
+ALASAN_TOOL_TEMPLATE = (
+    "Maaf, {alasan} Agar jawabannya pasti, tanyakan langsung ke:\n\n{contacts}"
+)
+"""Penolakan jalur tool yang gagal karena sebab yang diketahui (T77), mis. NIM
+tidak terdaftar di SADS: alasannya disebut, bukan "belum menemukan jawabannya di
+dokumen". Ajakan menulis lebih rinci dan petunjuk ganti topik sengaja tidak ada:
+bertanya ulang atau pindah topik tidak mengubah hasil tool data pribadi."""
+
+
+def refusal_text(contacts, unit: str | None = None, alasan: Sequence[str] = ()) -> str:
     """Teks penolakan FR-3 lengkap dengan kontak, dan petunjuk ganti topik bila
-    mahasiswa memilih unit. Satu-satunya penyusun teks penolakan."""
+    mahasiswa memilih unit. Satu-satunya penyusun teks penolakan.
+
+    `alasan` (`ToolResult.alasan_mahasiswa`) mengganti kalimat pembukanya dengan
+    `ALASAN_TOOL_TEMPLATE`."""
+    if alasan:
+        return ALASAN_TOOL_TEMPLATE.format(
+            alasan=" ".join(alasan), contacts=render_contacts(contacts)
+        )
     cakupan = f"dokumen unit {unit}" if unit else "dokumen yang saya miliki"
     teks = REFUSAL_TEMPLATE.format(cakupan=cakupan, contacts=render_contacts(contacts))
     return teks + REFUSAL_UNIT_HINT if unit else teks
@@ -163,6 +180,16 @@ _NOT_FOUND_PROSE = re.compile(
     r"\btidak\s+(?:menemukan|ditemukan|tercantum)\b|\btidak\s+ada\s+informasi\b",
     re.IGNORECASE,
 )
+
+
+def sumber_tanpa_halaman(documents: Sequence[Any]) -> dict[str, int]:
+    """Judul sumber tak berhalaman (entri tanya jawab) -> halamannya, untuk
+    `extract_citations`: kutipan `[Judul]` baru terbaca sebagai sitasi dengan ini."""
+    return {
+        doc.metadata.get("judul", ""): doc.metadata.get("halaman", 1)
+        for doc in documents
+        if doc.metadata.get("jenis") == DocumentType.TANYA_JAWAB
+    }
 
 
 def is_not_found(answer: str, tanpa_halaman: dict[str, int] | None = None) -> bool:

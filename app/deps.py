@@ -513,6 +513,8 @@ class LLMCall:
         """Jejak panggilan tool giliran ini untuk `messages.meta` (docs/tool-call.md §13)."""
         self.attachments: list[Any] = []
         """Lampiran hasil tool giliran ini (docs/tool-call.md §10a), dibaca `generate`."""
+        self.alasan_gagal: tuple[str, ...] = ()
+        """Sebab kegagalan tool untuk mahasiswa (T77), dibaca `generate`."""
         self.run_id: str | None = None
         self.session_id: str | None = None
         """Diisi router lewat `tandai_sesi` supaya run ini ikut terkelompok ke
@@ -604,6 +606,7 @@ class LLMCall:
         self.usage = result.usage
         self.tool_calls = result.tool_calls
         self.attachments = result.attachments
+        self.alasan_gagal = result.alasan_gagal
         return result.text, result.documents
 
 
