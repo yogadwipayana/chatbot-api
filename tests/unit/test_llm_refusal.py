@@ -93,12 +93,33 @@ HOMOGLIF_KIRIL = "[" + chr(0x0422) + "ID" + chr(0x0410) + chr(0x041A) + "_DITEMU
 HOMOGLIF_YUNANI = "[" + chr(0x03A4) + "IDAK_DIT" + chr(0x0395) + "MUKAN]"
 LEBAR_PENUH = chr(0xFF3B) + "TIDAK_DITEMUKAN" + chr(0xFF3D)
 TAK_TERLIHAT = "[TIDAK" + chr(0x200B) + "_DITEMUKAN]"
+# Varian yang lolos perbaikan pertama T72 (2026-11-28): huruf kecil, pemisah
+# lain, karakter tak terlihat di luar daftar awal, dan homoglif huruf kecil.
+HURUF_KECIL = "[tidak_ditemukan]"
+BERSPASI = "[TIDAK DITEMUKAN]"
+SOFT_HYPHEN = "[TIDAK" + chr(0x00AD) + "_DITEMUKAN]"
+FUNGSI_TAK_TERLIHAT = "[TIDAK" + chr(0x2061) + "_DITEMUKAN]"
+GRAPHEME_JOINER = "[TIDAK" + chr(0x034F) + "_DITEMUKAN]"
+KIRIL_KECIL = "[TID" + chr(0x0430) + "K_DITEMUKAN]"
+TEBAL = f"**{NOT_FOUND_MARKER}**"
+
+SEMUA_VARIAN = [
+    HOMOGLIF_KIRIL,
+    HOMOGLIF_YUNANI,
+    LEBAR_PENUH,
+    TAK_TERLIHAT,
+    HURUF_KECIL,
+    BERSPASI,
+    SOFT_HYPHEN,
+    FUNGSI_TAK_TERLIHAT,
+    GRAPHEME_JOINER,
+    KIRIL_KECIL,
+    TEBAL,
+]
 
 
 class TestPenandaHomoglif:
-    @pytest.mark.parametrize(
-        "penanda", [HOMOGLIF_KIRIL, HOMOGLIF_YUNANI, LEBAR_PENUH, TAK_TERLIHAT]
-    )
+    @pytest.mark.parametrize("penanda", SEMUA_VARIAN)
     def test_dikenali_sebagai_penolakan(self, penanda):
         assert penanda != NOT_FOUND_MARKER
         assert is_not_found(penanda)
@@ -107,9 +128,13 @@ class TestPenandaHomoglif:
     def test_tetap_jawaban_bila_bersitasi(self):
         assert not is_not_found(f"{JAWABAN} {HOMOGLIF_KIRIL}")
 
-    @pytest.mark.parametrize("penanda", [HOMOGLIF_KIRIL, LEBAR_PENUH, TAK_TERLIHAT])
+    @pytest.mark.parametrize("penanda", SEMUA_VARIAN)
     def test_dibuang_dari_jawaban_parsial(self, penanda):
         assert strip_markers(f"{JAWABAN} {penanda}") == JAWABAN
+
+    def test_penekanan_lain_tidak_disentuh(self):
+        teks = f"**Syarat**: {JAWABAN} **[Catatan]** {TEBAL}"
+        assert strip_markers(teks) == f"**Syarat**: {JAWABAN} **[Catatan]**"
 
     def test_teks_berkurung_lain_tidak_disentuh(self):
         teks = f"{JAWABAN} [Catatan] {NOT_FOUND_MARKER}"
@@ -121,7 +146,8 @@ class TestPenandaHomoglif:
         assert chr(0x0422) not in hasil.text
         assert NOT_FOUND_MARKER not in hasil.text
 
-    async def test_tidak_pernah_dialirkan(self, strong_retriever):
+    @pytest.mark.parametrize("penanda", [HOMOGLIF_KIRIL, HURUF_KECIL, BERSPASI, TEBAL])
+    async def test_tidak_pernah_dialirkan(self, strong_retriever, penanda):
         potongan: list[str] = []
 
         async def on_token(teks: str) -> None:
@@ -130,7 +156,7 @@ class TestPenandaHomoglif:
         hasil = await run_pipeline(
             "kapan KRS dibuka?",
             retriever=strong_retriever,
-            llm_call=RecordingLLM(HOMOGLIF_KIRIL),
+            llm_call=RecordingLLM(penanda),
             on_token=on_token,
         )
         assert potongan == []
@@ -217,6 +243,21 @@ class TestStreaming:
         reply = "[Panduan Akademik 2025, hal. 12] menyebut KRS dibuka 1 Agustus."
         potongan, hasil = await self.alirkan(strong_retriever, reply)
         assert "".join(potongan) == reply
+        assert hasil.kind is OutcomeKind.ANSWER
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "**Jadwal** KRS dibuka 1 Agustus [Panduan Akademik 2025, hal. 12].",
+            "* KRS dibuka 1 Agustus [Panduan Akademik 2025, hal. 12].",
+        ],
+    )
+    async def test_jawaban_berawalan_penekanan_tidak_tertahan(self, strong_retriever, reply):
+        """Penekanan di depan penanda ikut ditahan, tetapi jawaban bertebal atau
+        berbutir harus lepas begitu kata pertamanya menyimpang."""
+        potongan, hasil = await self.alirkan(strong_retriever, reply)
+        assert "".join(potongan) == reply
+        assert len(potongan) > 1
         assert hasil.kind is OutcomeKind.ANSWER
 
 

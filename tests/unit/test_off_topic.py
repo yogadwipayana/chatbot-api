@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from app.observability.chatlog import ChatLogEntry, build_meta
 from app.rag.chain import OutcomeKind, is_off_topic, run_pipeline, strip_markers
 from app.rag.gate import (
@@ -52,6 +54,15 @@ class TestDeteksi:
     def test_penanda_berhomoglif(self):
         """T72: A Kiril di tengah penanda."""
         penanda = "[DI_LU" + chr(0x0410) + "R_TOPIK]"
+        assert is_off_topic(penanda)
+        assert strip_markers(f"Jawaban [Dok, hal. 1]. {penanda}") == "Jawaban [Dok, hal. 1]."
+
+    @pytest.mark.parametrize(
+        "penanda",
+        ["[di_luar_topik]", "[DI LUAR TOPIK]", "[DI-LUAR-TOPIK]", "`[DI_LUAR_TOPIK]`"],
+    )
+    def test_varian_penanda(self, penanda):
+        """T72 lanjutan: huruf kecil, pemisah lain, dan kode markdown."""
         assert is_off_topic(penanda)
         assert strip_markers(f"Jawaban [Dok, hal. 1]. {penanda}") == "Jawaban [Dok, hal. 1]."
 

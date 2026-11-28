@@ -155,25 +155,47 @@ _HOMOGLIF = str.maketrans(
         0x0391: "A", 0x0392: "B", 0x0395: "E", 0x0396: "Z", 0x0397: "H",
         0x0399: "I", 0x039A: "K", 0x039C: "M", 0x039D: "N", 0x039F: "O",
         0x03A1: "P", 0x03A4: "T", 0x03A5: "Y", 0x03A7: "X",
-        # Karakter tak terlihat yang dapat menyelip di tengah penanda.
-        0x200B: None, 0x200C: None, 0x200D: None, 0x2060: None, 0xFEFF: None,
+        # Karakter tak terlihat di luar kategori Cf (yang Cf dibuang `_seragam`):
+        # combining grapheme joiner, pemisah vokal Mongol, pemilih variasi.
+        0x034F: None, 0x180E: None,
+        **{kode: None for kode in range(0xFE00, 0xFE10)},
     }
 )  # fmt: skip
 
+_PEMISAH_KATA = re.compile(rf"[\s_\-{chr(0x2010)}-{chr(0x2015)}]+")
+"""Spasi, garis bawah, dan tanda hubung: "[TIDAK DITEMUKAN]" terbaca sama dengan
+"[TIDAK_DITEMUKAN]"."""
+
 
 def _seragam(teks: str) -> str:
-    """Bentuk pembanding penanda: NFKC (kurung dan huruf lebar penuh) lalu
-    homoglif ke Latin. Hanya untuk deteksi; teks ini tidak pernah ditampilkan."""
-    return unicodedata.normalize("NFKC", teks).translate(_HOMOGLIF)
+    """Bentuk pembanding penanda, sebagaimana terbaca mata: NFKC (kurung dan
+    huruf lebar penuh), tanpa karakter tak terlihat (kategori Cf: spasi lebar
+    nol, soft hyphen, word joiner, BOM, dan sejenisnya), huruf besar, homoglif
+    Kiril/Yunani ke Latin, lalu pemisah kata menjadi satu garis bawah.
+
+    Huruf besar menutup "[tidak_ditemukan]" dan "[di_luar_topik]", sekaligus
+    homoglif huruf kecil (a Kiril menjadi A Kiril, lalu A Latin). Hanya untuk
+    deteksi; teks ini tidak pernah ditampilkan."""
+    teks = unicodedata.normalize("NFKC", teks)
+    teks = "".join(c for c in teks if unicodedata.category(c) != "Cf")
+    return _PEMISAH_KATA.sub("_", teks.upper().translate(_HOMOGLIF))
 
 
 _KURUNG_BUKA = "[" + chr(0xFF3B)
 _KURUNG_TUTUP = "]" + chr(0xFF3D)
 _CALON_PENANDA = re.compile(
-    f"[{re.escape(_KURUNG_BUKA)}][^{re.escape(_KURUNG_BUKA + _KURUNG_TUTUP)}\n]{{1,40}}"
-    f"[{re.escape(_KURUNG_TUTUP)}]"
+    r"(\*{1,3}|`|_{1,2})?"
+    f"(?P<isi>[{re.escape(_KURUNG_BUKA)}]"
+    f"[^{re.escape(_KURUNG_BUKA + _KURUNG_TUTUP)}\n]{{1,40}}"
+    f"[{re.escape(_KURUNG_TUTUP)}])"
+    r"(?(1)\1)"
 )
-"""Teks berkurung yang mungkin penanda, termasuk yang ditulis dengan homoglif."""
+"""Teks berkurung yang mungkin penanda, termasuk yang ditulis dengan homoglif.
+Tebal, miring, atau kode markdown di sekelilingnya ikut terbuang bersamanya;
+tanpa itu "**[TIDAK_DITEMUKAN]**" menyisakan "****" di jawaban parsial."""
+
+_PENEKANAN = "*_`"
+"""Penanda tebal, miring, dan kode markdown yang dapat mengawali penanda."""
 
 
 _NOT_FOUND_PROSE = re.compile(
@@ -250,7 +272,7 @@ def strip_markers(answer: str) -> str:
     if not any(marker in _seragam(answer) for marker in MARKERS):
         return answer
     for cocok in reversed(list(_CALON_PENANDA.finditer(answer))):
-        if _seragam(cocok.group()) in MARKERS:
+        if _seragam(cocok.group("isi")) in MARKERS:
             answer = answer[: cocok.start()] + answer[cocok.end() :]
     return answer.strip()
 
@@ -387,7 +409,9 @@ class _PenahanPenanda:
             await self.on_token(potongan)
             return
         self.tertahan += potongan
-        awal = _seragam(self.tertahan.lstrip())
+        # "**[TIDAK_DITEMUKAN]**" pun ditahan: penekanan markdown di depannya
+        # tidak dianggap menyimpang dari penanda.
+        awal = _seragam(self.tertahan.lstrip().lstrip(_PENEKANAN))
         if any(m.startswith(awal) or awal.startswith(m) for m in MARKERS):
             return
         self.lepas = True
