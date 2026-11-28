@@ -130,16 +130,28 @@ class Settings(BaseSettings):
     API_KEY, supaya kunci gateway LLM tidak pernah dikirim ke server Laya."""
     laya_model: str = "multilingual"
     """Nama model yang dilayani server Laya (checkpoint hasil latih)."""
-    laya_timeout_seconds: float = Field(default=10.0, gt=0)
-    """Batas keras satu panggilan Laya. Biasanya bukan ini yang memutusnya:
-    Laya berjalan paralel dengan pencarian dan diputus `laya_grace_seconds`
-    setelah pencarian selesai (`app.rag.graph.laya_gate`). Batas ini hanya
-    berlaku bila pencarian sendiri juga lambat."""
+    laya_timeout_seconds: float = Field(default=30.0, gt=0)
+    """Batas keras satu panggilan Laya. Mahasiswa tidak menunggu selama ini:
+    lewat tenggat (`laya_grace_seconds`) LLM sudah berjalan, dan vonis hanya
+    ditahan `laya_hold_seconds` setelah jawabannya siap (T79). Batas ini
+    menentukan berapa lama vonis yang mengantre di CPU masih bisa dipakai saat
+    ramai; 10 dtk (bawaan lama) memutus 7 dari 12 vonis di 12 pengguna serentak
+    (uji 2026-11-28), padahal token pertama LLM baru siap 18-51 dtk."""
     laya_grace_seconds: float = Field(default=1.5, ge=0)
-    """Waktu tambahan bagi Laya setelah pencarian paralel selesai -- satu-
-    satunya waktu tunggu yang dapat ditambahkan gerbang ke giliran mahasiswa.
-    Batas tetap 3 dtk dulu memutus gerbang walau pencarian masih berjalan
-    5-10 dtk (2026-09-28, model gerbang lama yang latensinya berayun 1-29 dtk)."""
+    """Waktu tambahan bagi Laya setelah pencarian paralel selesai, sebelum LLM
+    penjawab dipanggil (lewat itu: `laya_hold_seconds`). Batas tetap 3 dtk dulu
+    memutus gerbang walau pencarian masih berjalan 5-10 dtk (2026-09-28, model
+    gerbang lama yang latensinya berayun 1-29 dtk)."""
+    laya_hold_seconds: float = Field(default=8.0, ge=0)
+    """Lewat tenggat di atas, LLM penjawab mulai tetapi vonis Laya tetap
+    ditunggu (T79, `app.rag.graph.VonisTertunda`): selama LLM belum menghasilkan
+    apa pun tanpa batas sendiri, lalu paling lama selama ini setelah token
+    pertama (atau jawaban utuh, atau penolakan FR-3) siap dikirim. Bila Laya
+    memblokir, panggilan LLM dibatalkan. Saat ramai panggilan LLM mengantre di
+    vLLM 10-50 dtk sebelum token pertama, jadi menunggu Laya hampir tidak
+    menambah waktu; tanpa ini Laya yang mengantre di CPU diputus di tenggat dan
+    gerbangnya hilang justru saat ramai (uji beban 2026-11-28: 10 dari 12
+    pertanyaan pertama di 12 pengguna serentak). 0 = diputus di tenggat."""
     laya_block_threshold: float = 0.7
     """Keyakinan minimum untuk menghentikan pesan nonsense/malicious/smalltalk
     (lihat `app.rag.gate.GatePolicy`)."""

@@ -70,6 +70,17 @@ SSE_HEADERS = {
     "X-Accel-Buffering": "no",
 }
 
+SSE_PING_SECONDS = 15.0
+"""Komentar `: ping` dikirim bila aliran diam selama ini (T81).
+
+Saat ramai, giliran bisa diam lebih dari semenit antara status "menyusun
+jawaban" dan token pertama (uji beban 2026-11-28: 61,8 dtk di 8 pengguna
+serentak), sementara Cloudflare memutus respons yang diam 100 dtk (524) dan
+widget menampilkan "Koneksi terputus". Komentar SSE diabaikan pembaca widget
+(`client/src/lib/api/sse.ts` hanya memakai blok yang punya `data:`)."""
+
+SSE_PING = ": ping\n\n"
+
 
 # Urutannya: kill switch (router), batas laju, lalu batas harian -- permintaan
 # yang ditolak 429 tidak ikut menghabiskan jatah harian.
@@ -273,7 +284,14 @@ async def chat_stream(
 
         tugas = asyncio.create_task(jalankan())
         try:
-            while (item := await antrean.get()) is not None:
+            while True:
+                try:
+                    item = await asyncio.wait_for(antrean.get(), timeout=SSE_PING_SECONDS)
+                except TimeoutError:
+                    yield SSE_PING
+                    continue
+                if item is None:
+                    break
                 yield sse(*item)
             response = await tugas
             yield sse("message", response.model_dump(mode="json"))

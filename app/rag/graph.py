@@ -85,6 +85,74 @@ DEFAULT_LAYA_GRACE_SECONDS = 1.5
 """Dipakai bila `gate_call` tidak membawa `grace_seconds` (pengganti di test)."""
 
 
+@dataclass
+class VonisTertunda:
+    """Panggilan Laya yang masih berjalan saat tenggatnya lewat (T79).
+
+    Laya dilayani satu per satu di CPU, jadi saat banyak mahasiswa bertanya
+    bersamaan vonisnya mengantre dan tiba setelah pencarian. Memutusnya di
+    tenggat menghilangkan gerbang justru saat ramai, padahal pada saat itu
+    panggilan LLM penjawab juga mengantre lama di vLLM. Maka lewat tenggat
+    panggilannya dibiarkan berjalan: `generate` sudah memanggil LLM, dan selama
+    LLM belum menghasilkan apa pun vonisnya ditunggu tanpa biaya (hanya dibatasi
+    `LAYA_TIMEOUT_SECONDS`). Begitu keluaran siap dikirim -- token pertama,
+    jawaban utuh, atau penolakan `refuse` -- vonisnya ditunggu paling lama
+    `tahan` detik lagi (`akhir()`), lalu pesan diteruskan (fail-open).
+    """
+
+    tugas: asyncio.Future[GateVerdict] | None = None
+    tahan: float = 0.0
+    """Lama vonis masih ditunggu setelah keluaran siap dikirim."""
+    _akhir: asyncio.Future[GateVerdict] | None = None
+
+    @property
+    def ada(self) -> bool:
+        return self.tugas is not None
+
+    @property
+    def tiba(self) -> bool:
+        """Laya sudah menjawab (atau gagal); `vonis()` tidak lagi menunggu."""
+        return self.tugas is not None and self.tugas.done()
+
+    def vonis(self) -> GateVerdict:
+        """Vonis panggilan yang sudah selesai; galat apa pun berarti fail-open."""
+        assert self.tugas is not None and self.tugas.done()
+        if self.tugas.cancelled():
+            if self._akhir is not None and self._akhir.done() and not self._akhir.cancelled():
+                return self._akhir.result()  # dibatalkan karena jendela `tahan` habis
+            return lolos("Tenggat: panggilan Laya dibatalkan")
+        try:
+            return self.tugas.result()
+        except Exception as exc:  # `LayaGate` tidak melempar; pengganti di test bisa
+            return lolos(f"{type(exc).__name__}: {exc}"[:200])
+
+    def akhir(self) -> asyncio.Future[GateVerdict]:
+        """Vonis akhir, dipanggil saat keluaran siap dikirim. Jendela `tahan`
+        dihitung sejak panggilan pertama; semua penunggu berbagi future yang sama."""
+        if self._akhir is None:
+            self._akhir = asyncio.ensure_future(self._tunggu())
+        return self._akhir
+
+    async def _tunggu(self) -> GateVerdict:
+        assert self.tugas is not None
+        # asyncio.wait, bukan wait_for: batalnya penunggu tidak membatalkan Laya.
+        selesai, _ = await asyncio.wait({self.tugas}, timeout=self.tahan)
+        if self.tugas in selesai:
+            return self.vonis()
+        self.tugas.cancel()
+        logger.warning(
+            "Gerbang Laya belum menjawab %.1f dtk setelah jawaban siap, pesan diteruskan",
+            self.tahan,
+        )
+        return lolos(f"Tenggat: Laya belum menjawab {self.tahan:g} dtk setelah jawaban siap")
+
+    def batalkan(self) -> None:
+        """Giliran selesai lebih dulu (mis. galat): jangan tinggalkan panggilan Laya."""
+        for f in (self._akhir, self.tugas):
+            if f is not None and not f.done():
+                f.cancel()
+
+
 @dataclass(frozen=True)
 class PipelineDeps:
     """Ketergantungan satu giliran. Lihat `chain.run_pipeline` untuk artinya."""
@@ -103,6 +171,9 @@ class PipelineDeps:
     """Dinyalakan `laya_gate` saat memblokir; `rewrite` dan `retrieve` berhenti
     begitu melihatnya. Tanpa ini pesan yang sudah diblokir tetap menunggu --
     dan ikut gagal bersama -- cabang pencarian yang hasilnya akan dibuang."""
+    gerbang_tertunda: VonisTertunda = field(default_factory=VonisTertunda)
+    """Diisi `laya_gate` bila vonis Laya belum tiba di tenggat (T79). Di sini,
+    bukan di state: isinya future, dan state terekam sebagai masukan node."""
     tool_registry: Any = None
     """Registry tool-calling, atau None bila TOOLS_ENABLED=false (docs/tool-call.md).
     Dipakai sebagai gerbang kelayakan di `validate_context` dan di `generate`."""
@@ -201,6 +272,8 @@ async def laya_gate(state: PipelineState, runtime: Rt) -> dict:
         gate_call(state["clean"], riwayat, unit=state.get("unit")),
         runtime.context.search_done,
         grace=getattr(gate_call, "grace_seconds", DEFAULT_LAYA_GRACE_SECONDS),
+        tahan=getattr(gate_call, "hold_seconds", 0.0),
+        tertunda=runtime.context.gerbang_tertunda,
     )
     if not verdict.blocked:
         return {"gate": verdict}
@@ -228,7 +301,12 @@ def _hasil_blokir(state: PipelineState, verdict: GateVerdict) -> PipelineOutcome
 
 
 async def _vonis_sebelum_tenggat(
-    panggilan: Awaitable[GateVerdict], pencarian_selesai: asyncio.Event, *, grace: float
+    panggilan: Awaitable[GateVerdict],
+    pencarian_selesai: asyncio.Event,
+    *,
+    grace: float,
+    tahan: float = 0.0,
+    tertunda: VonisTertunda | None = None,
 ) -> GateVerdict:
     """Tunggu vonis Laya selama pencarian paralel masih berjalan, plus `grace`.
 
@@ -236,7 +314,9 @@ async def _vonis_sebelum_tenggat(
     selesai menunggu Laya tidak menambah waktu apa pun. Batas tetap (dulu 3 dtk)
     justru memutus gerbang di tengah pencarian 5-10 dtk -- perlindungan hilang
     tanpa ada waktu yang dihemat. Lewat tenggat, pesan diteruskan (fail-open)
-    seperti galat Laya lainnya, dan panggilannya dibatalkan.
+    seperti galat Laya lainnya. Dengan `tahan` > 0 panggilannya dibiarkan
+    berjalan di `tertunda` (T79): vonis sementaranya lolos, vonis akhirnya
+    ditunggu `generate`/`refuse`. Tanpa itu panggilannya dibatalkan.
     """
     tugas = asyncio.ensure_future(panggilan)
     tunggu_cari = asyncio.ensure_future(pencarian_selesai.wait())
@@ -248,6 +328,18 @@ async def _vonis_sebelum_tenggat(
             selesai, _ = await asyncio.wait({tugas}, timeout=grace)
         if tugas in selesai:
             return tugas.result()
+        if tahan > 0 and tertunda is not None:
+            tertunda.tugas = tugas
+            tertunda.tahan = tahan
+            logger.info(
+                "Gerbang Laya melewati tenggat (pencarian selesai + %.1f dtk), "
+                "LLM dimulai dan token pertamanya ditahan sampai vonis tiba",
+                grace,
+            )
+            return lolos(
+                f"Tenggat: pencarian selesai lebih dulu (+{grace:g} dtk), "
+                "vonis ditunggu sambil LLM berjalan"
+            )
         tugas.cancel()
         logger.warning(
             "Gerbang Laya melewati tenggat (pencarian selesai + %.1f dtk), pesan diteruskan",
@@ -280,6 +372,63 @@ async def _kecuali_diblokir(
         return False, None
     finally:
         tunggu_blokir.cancel()
+
+
+def _tahan_token(
+    on_token: Callable[[str], Awaitable[None]] | None, tertunda: VonisTertunda
+) -> Callable[[str], Awaitable[None]] | None:
+    """`on_token` yang baru meneruskan potongan setelah vonis Laya tiba (T79).
+
+    Potongan pertama membuka jendela `tahan` (`VonisTertunda.akhir`); bila Laya
+    memblokir, potongan dibuang dan panggilan LLM-nya dibatalkan
+    `_kecuali_vonis_memblokir`.
+    """
+    if on_token is None:
+        return None
+
+    async def tahan(teks: str) -> None:
+        # shield: batalnya panggilan LLM tidak boleh ikut membatalkan vonis
+        # yang juga ditunggu `_kecuali_vonis_memblokir`.
+        verdict = await asyncio.shield(tertunda.akhir())
+        if not verdict.blocked:
+            await on_token(teks)
+
+    return tahan
+
+
+async def _kecuali_vonis_memblokir(
+    kerja: Callable[[], Awaitable[Any]], tertunda: VonisTertunda
+) -> tuple[GateVerdict, Any]:
+    """Jalankan panggilan LLM sambil menunggu vonis Laya yang tertunda (T79).
+
+    Kembali `(vonis, hasil)`. Bila vonisnya memblokir, `hasil` None dan
+    panggilannya dibatalkan -- saat ramai biasanya masih mengantre di vLLM,
+    jadi pesan yang diblokir tidak sempat memakai GPU. Galat LLM diteruskan
+    seketika, tanpa menunggu vonis: menahannya hanya memperlama galat yang
+    sama (panggilan Laya-nya dibatalkan `run_graph`).
+    """
+    assert tertunda.tugas is not None
+    tugas = asyncio.ensure_future(kerja())
+    try:
+        # Selama LLM belum selesai, vonis Laya ditunggu tanpa batas sendiri:
+        # token pertamanya sudah ditahan `_tahan_token`, yang membuka jendela
+        # `tahan` begitu potongan pertama siap.
+        await asyncio.wait({tugas, tertunda.tugas}, return_when=asyncio.FIRST_COMPLETED)
+        galat = tugas.exception() if tugas.done() and not tugas.cancelled() else None
+        if tertunda.tiba and tertunda.vonis().blocked:
+            return tertunda.vonis(), None
+        if galat is not None:
+            raise galat
+        if not tugas.done():
+            # Laya meloloskan pesan lebih dulu: biarkan LLM selesai.
+            return tertunda.vonis(), await tugas
+        # LLM selesai lebih dulu (tanpa streaming, atau tanpa potongan): jawaban
+        # utuhnya siap, jadi vonisnya ditunggu paling lama `tahan` lagi.
+        verdict = await asyncio.shield(tertunda.akhir())
+        return verdict, None if verdict.blocked else tugas.result()
+    finally:
+        if not tugas.done():
+            tugas.cancel()
 
 
 async def rewrite(state: PipelineState, runtime: Rt) -> dict:
@@ -369,10 +518,29 @@ def _pesan_tool(state: PipelineState) -> str:
     return pesan_mahasiswa(wrap_user_input(teks), state.get("unit"), state.get("profile"))
 
 
+async def _vonis_akhir(state: PipelineState, tertunda: VonisTertunda) -> PipelineState:
+    """Salinan `state` dengan vonis Laya akhir, bila tadinya tertunda (T79)."""
+    if not tertunda.ada:
+        return state
+    baru = state.copy()
+    baru["gate"] = await asyncio.shield(tertunda.akhir())
+    return baru
+
+
 async def refuse(state: PipelineState, runtime: Rt) -> dict:
-    """Penolakan FR-3. Tidak memanggil LLM."""
+    """Penolakan FR-3. Tidak memanggil LLM.
+
+    Vonis Laya yang tertunda tetap ditunggu: pesan di luar topik yang ternyata
+    diblokir tidak boleh tercatat sebagai celah dokumen di AD-4."""
+    tertunda = runtime.context.gerbang_tertunda
+    state = await _vonis_akhir(state, tertunda)
+    verdict = state.get("gate")
+    hasil: dict[str, Any] = {"gate": verdict} if tertunda.ada else {}
+    if verdict is not None and verdict.blocked:
+        return {**hasil, "outcome": _hasil_blokir(state, verdict)}
     assessment = risk_module.detect(state["clean"])
-    return {"outcome": _penolakan(state, runtime.context, assessment, llm_called=False)}
+    hasil["outcome"] = _penolakan(state, runtime.context, assessment, llm_called=False)
+    return hasil
 
 
 def _kontak(
@@ -446,25 +614,46 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
         return {"outcome": _penolakan(state, deps, assessment, llm_called=False)}
     if deps.on_stage is not None:
         await deps.on_stage("menyusun jawaban")
-    lampiran: list[Any] = []
-    alasan_gagal: tuple[str, ...] = ()
-    if pakai_tool:
+    tertunda = deps.gerbang_tertunda
+    on_token = _tahan_token(deps.on_token, tertunda) if tertunda.ada else deps.on_token
+    pesan_tool = _pesan_tool(state) if pakai_tool else ""
+    penanya = Penanya(nim=deps.nim, profile=state.get("profile"))
+
+    async def kerja() -> tuple[str, list[Any], list[Any], tuple[str, ...]]:
+        if not pakai_tool:
+            return await _jawab(deps.llm_call, wrapped, documents, on_token), [], [], ()
         # Kelayakan sudah diputuskan `validate_context`; yang di-bind seluruh
         # registry, karena memilih tool adalah tugas model (ToolRegistry.eligible).
-        answer, tool_docs = await deps.llm_call.run_tools(
-            _pesan_tool(state),
+        jawaban, tool_docs = await deps.llm_call.run_tools(
+            pesan_tool,
             documents,
             specs=deps.tool_registry.specs,
-            on_token=deps.on_token,
+            on_token=on_token,
             on_stage=deps.on_stage,
             max_rounds=deps.tool_max_rounds,
-            penanya=Penanya(nim=deps.nim, profile=state.get("profile")),
+            penanya=penanya,
         )
-        documents = [*documents, *tool_docs]
-        lampiran = list(getattr(deps.llm_call, "attachments", None) or [])
-        alasan_gagal = tuple(getattr(deps.llm_call, "alasan_gagal", None) or ())
+        return (
+            jawaban,
+            list(tool_docs),
+            list(getattr(deps.llm_call, "attachments", None) or []),
+            tuple(getattr(deps.llm_call, "alasan_gagal", None) or ()),
+        )
+
+    # Vonis Laya yang tertunda (T79): LLM sudah berjalan, token pertamanya ditahan
+    # `_tahan_token`, dan panggilannya dibatalkan bila Laya ternyata memblokir.
+    tambahan: dict[str, Any] = {}
+    if tertunda.ada:
+        verdict, hasil = await _kecuali_vonis_memblokir(kerja, tertunda)
+        state = state.copy()
+        state["gate"] = verdict
+        tambahan["gate"] = verdict
+        if verdict.blocked:
+            return {**tambahan, "outcome": _hasil_blokir(state, verdict)}
     else:
-        answer = await _jawab(deps.llm_call, wrapped, documents, deps.on_token)
+        hasil = await kerja()
+    answer, tool_docs, lampiran, alasan_gagal = hasil
+    documents = [*documents, *tool_docs]
     # Sumber tak berhalaman (entri tanya jawab, kartu tool) dikutip `[Judul]`.
     # Tanpa daftar ini jawaban parsial bersumber tool yang menyebut "tidak
     # ditemukan" untuk sebagian pertanyaan dianggap penolakan dan dibuang.
@@ -474,6 +663,7 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
     # dokumen, jadi tidak masuk AD-4.
     if is_off_topic(answer, tanpa_hal):
         return {
+            **tambahan,
             "outcome": PipelineOutcome(
                 kind=OutcomeKind.REJECTED,
                 text=balasan_gerbang(GateLabel.OUT_OF_SCOPE, state.get("unit")),
@@ -483,7 +673,7 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
                 gate=state.get("gate"),
                 rewritten_query=state.get("rewritten"),
                 llm_called=True,
-            )
+            ),
         }
     # Tool gagal karena sebab yang diketahui (mis. NIM tidak terdaftar) dan
     # jawabannya tanpa sumber: tolak dengan sebab itu (T77). Apa pun yang ditulis
@@ -492,15 +682,16 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
     # mengutip sumber (bagian yang dijawab dokumen) tetap ditampilkan.
     if alasan_gagal and not extract_citations(answer, tanpa_hal):
         return {
+            **tambahan,
             "outcome": _penolakan(
                 state, deps, assessment, llm_called=True, alasan=alasan_gagal
-            )
+            ),
         }
     # Konteks lolos threshold tetapi tidak menjawab: tampilkan dan catat sebagai
     # penolakan, bukan sebagai jawaban berisi "tidak menemukan" yang membawa
     # kartu sitasi dokumen yang tidak relevan dan tidak pernah sampai ke AD-4.
     if is_not_found(answer, tanpa_hal):
-        return {"outcome": _penolakan(state, deps, assessment, llm_called=True)}
+        return {**tambahan, "outcome": _penolakan(state, deps, assessment, llm_called=True)}
     tanya_jawab = [
         doc.metadata.get("judul", "")
         for doc in documents
@@ -512,6 +703,7 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
     # tidak boleh menempelkan daftar 220 dosen di bawah jawaban lain.
     dikutip = {c.judul.casefold() for c in extract_citations(text, tanpa_hal)}
     return {
+        **tambahan,
         "outcome": PipelineOutcome(
             kind=OutcomeKind.ANSWER,
             text=text,
@@ -524,7 +716,7 @@ async def generate(state: PipelineState, runtime: Rt) -> dict:
             llm_called=True,
             contacts=_kontak(state, deps, assessment) if assessment.needs_escalation else (),
             attachments=tuple(a for a in lampiran if a.source.casefold() in dikutip),
-        )
+        ),
     }
 
 
@@ -624,11 +816,16 @@ async def run_graph(
 ) -> PipelineOutcome:
     """`callbacks` menerima event per node, mis. `applog.NodeRecorder`."""
     config = {"callbacks": list(callbacks)} if callbacks else None
-    state = await build_graph().ainvoke(
-        {"question": question, "history": history, "unit": unit, "profile": profile},
-        config=config,
-        context=deps,
-    )
+    try:
+        state = await build_graph().ainvoke(
+            {"question": question, "history": history, "unit": unit, "profile": profile},
+            config=config,
+            context=deps,
+        )
+    finally:
+        # Galat di tengah jalan, atau mahasiswa menutup panel: vonis Laya yang
+        # tertunda (T79) tidak lagi ditunggu siapa pun.
+        deps.gerbang_tertunda.batalkan()
     return state["outcome"]
 
 

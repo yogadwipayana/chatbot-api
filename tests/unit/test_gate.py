@@ -27,7 +27,7 @@ from app.rag.gate import (
 )
 from app.rag.rewriter import Turn
 from app.rag.threshold import ThresholdPolicy
-from tests.fixtures.fakes import FakeRetriever, make_document
+from tests.fixtures.fakes import FakeRetriever, RecordingLLM, make_document
 
 POLICY = ThresholdPolicy(vector_threshold=0.35, lexical_threshold=0.05)
 URL_LAYA = "https://laya.test/v1/systemone"
@@ -250,6 +250,17 @@ class TestBuildGate:
             Settings(
                 _env_file=None, laya_enabled=True, laya_api_key="k", base_url="https://gw.test/v1"
             )
+
+    def test_waktu_tahan_dari_setelan(self):
+        """T79: bawaan 8 dtk; 0 mengembalikan perilaku lama (diputus di tenggat)."""
+        dasar = {
+            "_env_file": None,
+            "laya_enabled": True,
+            "laya_url": URL_LAYA,
+            "laya_api_key": "k",
+        }
+        assert build_gate(Settings(**dasar)).hold_seconds == 8.0
+        assert build_gate(Settings(**dasar, laya_hold_seconds=0)).hold_seconds == 0.0
 
     def test_url_kunci_dan_model(self):
         s = Settings(_env_file=None, laya_enabled=True, laya_url=URL_LAYA, laya_api_key="k")
@@ -573,6 +584,196 @@ class TestTenggatMengikutiPencarian:
             policy=POLICY,
         )
         assert loop.time() - mulai < 1.5
+
+
+class LLMLambat(RecordingLLM):
+    """LLM streaming yang baru mengirim potongan pertama setelah `tunda` detik,
+    seperti panggilan yang mengantre di vLLM saat ramai."""
+
+    def __init__(self, log: list, tunda: float = 0.0, gagal: bool = False) -> None:
+        super().__init__()
+        self.log = log
+        self.tunda = tunda
+        self.gagal = gagal
+
+    async def __call__(self, wrapped_question: str, documents) -> str:
+        bagian = [p async for p in self.stream(wrapped_question, documents)]
+        return "".join(bagian)
+
+    async def stream(self, wrapped_question: str, documents):
+        self.calls.append((wrapped_question, tuple(documents)))
+        try:
+            await asyncio.sleep(self.tunda)
+        except asyncio.CancelledError:
+            self.log.append("llm dibatalkan")
+            raise
+        if self.gagal:
+            raise RuntimeError("503 overloaded")
+        for indeks, kata in enumerate(self.reply.split(" ")):
+            yield kata if indeks == 0 else f" {kata}"
+
+
+class TestVonisDitahanSaatRamai:
+    """T79: lewat tenggat, Laya masih ditunggu `hold_seconds` sementara LLM berjalan.
+
+    Uji beban 2026-11-28: Laya dilayani satu per satu di CPU, jadi saat ramai
+    vonisnya tiba setelah pencarian, dan 10 dari 12 pertanyaan pertama (12
+    pengguna serentak) diteruskan tanpa diperiksa -- padahal panggilan LLM-nya
+    sendiri mengantre 10-30 dtk. Waktu di sini diperkecil.
+    """
+
+    @staticmethod
+    def gerbang(tunda: float, vonis_: GateVerdict, log: list, *, grace=0.05, hold=1.0):
+        async def panggil(question, history=(), unit=None):
+            try:
+                await asyncio.sleep(tunda)
+            except asyncio.CancelledError:
+                log.append("laya dibatalkan")
+                raise
+            log.append("vonis")
+            return vonis_
+
+        panggil.grace_seconds = grace
+        panggil.hold_seconds = hold
+        return panggil
+
+    @staticmethod
+    def pencatat(log: list):
+        async def on_token(teks: str) -> None:
+            log.append(f"token:{teks}")
+
+        return on_token
+
+    async def test_vonis_terlambat_tetap_memblokir_dan_llm_dibatalkan(self, strong_retriever):
+        log: list = []
+        llm = LLMLambat(log, tunda=0.6)
+        hasil = await run_pipeline(
+            "resep rendang padang",
+            retriever=strong_retriever,
+            llm_call=llm,
+            gate_call=self.gerbang(0.3, vonis(GateLabel.OUT_OF_SCOPE, True), log),
+            policy=POLICY,
+            on_token=self.pencatat(log),
+        )
+        assert hasil.kind is OutcomeKind.REJECTED
+        assert hasil.gate.label is GateLabel.OUT_OF_SCOPE
+        assert hasil.gate.error is None
+        assert "llm dibatalkan" in log
+        assert not [x for x in log if x.startswith("token:")]
+
+    async def test_token_pertama_baru_dikirim_setelah_vonis(self, strong_retriever):
+        log: list = []
+        hasil = await run_pipeline(
+            "kapan KRS dibuka?",
+            retriever=strong_retriever,
+            llm_call=LLMLambat(log, tunda=0.0),
+            gate_call=self.gerbang(0.3, vonis(GateLabel.ACADEMIC, False), log),
+            policy=POLICY,
+            on_token=self.pencatat(log),
+        )
+        assert hasil.kind is OutcomeKind.ANSWER
+        token = [i for i, x in enumerate(log) if x.startswith("token:")]
+        assert token and log.index("vonis") < token[0]
+        # Yang tercatat vonis akhir Laya, bukan vonis sementara "Tenggat".
+        assert hasil.gate.error is None
+        assert hasil.gate.label is GateLabel.ACADEMIC
+
+    async def test_vonis_ditunggu_selama_llm_belum_siap(self, strong_retriever):
+        """Jendela `tahan` dihitung sejak token pertama siap, bukan sejak tenggat:
+        saat LLM masih mengantre, vonis yang datang lebih lambat tetap dipakai."""
+        log: list = []
+        hasil = await run_pipeline(
+            "resep rendang padang",
+            retriever=strong_retriever,
+            llm_call=LLMLambat(log, tunda=0.8),
+            gate_call=self.gerbang(0.5, vonis(GateLabel.OUT_OF_SCOPE, True), log, hold=0.1),
+            policy=POLICY,
+            on_token=self.pencatat(log),
+        )
+        assert hasil.kind is OutcomeKind.REJECTED
+        assert "llm dibatalkan" in log
+
+    async def test_laya_tetap_macet_diteruskan_setelah_ditahan(self, strong_retriever):
+        log: list = []
+        loop = asyncio.get_running_loop()
+        mulai = loop.time()
+        hasil = await run_pipeline(
+            "kapan KRS dibuka?",
+            retriever=strong_retriever,
+            llm_call=LLMLambat(log),
+            gate_call=self.gerbang(5.0, vonis(GateLabel.NONSENSE, True), log, hold=0.2),
+            policy=POLICY,
+            on_token=self.pencatat(log),
+        )
+        assert hasil.kind is OutcomeKind.ANSWER
+        assert hasil.gate.error.startswith("Tenggat")
+        assert "laya dibatalkan" in log
+        assert loop.time() - mulai < 1.5
+
+    async def test_penolakan_ambang_menunggu_vonis(self, weak_retriever, llm):
+        """Pesan di luar topik yang diblokir tidak boleh masuk AD-4 sebagai celah dokumen."""
+        log: list = []
+        hasil = await run_pipeline(
+            "resep rendang padang",
+            retriever=weak_retriever,
+            llm_call=llm,
+            gate_call=self.gerbang(0.3, vonis(GateLabel.OUT_OF_SCOPE, True), log),
+            policy=POLICY,
+        )
+        assert hasil.kind is OutcomeKind.REJECTED
+        assert not llm.called
+
+    async def test_penolakan_ambang_memakai_vonis_akhir(self, weak_retriever, llm):
+        log: list = []
+        hasil = await run_pipeline(
+            "kapan KRS dibuka?",
+            retriever=weak_retriever,
+            llm_call=llm,
+            gate_call=self.gerbang(0.3, vonis(GateLabel.ACADEMIC, False), log),
+            policy=POLICY,
+        )
+        assert hasil.kind is OutcomeKind.REFUSAL
+        assert hasil.gate.error is None
+
+    async def test_galat_llm_diteruskan_tanpa_menunggu_vonis(self, strong_retriever):
+        log: list = []
+        loop = asyncio.get_running_loop()
+        mulai = loop.time()
+        with pytest.raises(RuntimeError, match="503"):
+            await run_pipeline(
+                "kapan KRS dibuka?",
+                retriever=strong_retriever,
+                llm_call=LLMLambat(log, gagal=True),
+                gate_call=self.gerbang(5.0, vonis(GateLabel.ACADEMIC, False), log, hold=5.0),
+                policy=POLICY,
+                on_token=self.pencatat(log),
+            )
+        assert loop.time() - mulai < 1.5
+
+    async def test_tanpa_streaming_vonis_tetap_ditunggu(self, strong_retriever):
+        """`/api/chat` (tanpa `on_token`): jawaban utuh tidak dipakai bila Laya memblokir."""
+        log: list = []
+        hasil = await run_pipeline(
+            "resep rendang padang",
+            retriever=strong_retriever,
+            llm_call=LLMLambat(log),
+            gate_call=self.gerbang(0.3, vonis(GateLabel.OUT_OF_SCOPE, True), log),
+            policy=POLICY,
+        )
+        assert hasil.kind is OutcomeKind.REJECTED
+
+    async def test_giliran_gagal_tidak_meninggalkan_panggilan_laya(self, strong_retriever):
+        log: list = []
+        with pytest.raises(RuntimeError):
+            await run_pipeline(
+                "kapan KRS dibuka?",
+                retriever=strong_retriever,
+                llm_call=LLMLambat(log, gagal=True),
+                gate_call=self.gerbang(5.0, vonis(GateLabel.ACADEMIC, False), log, hold=5.0),
+                policy=POLICY,
+            )
+        await asyncio.sleep(0.05)
+        assert "laya dibatalkan" in log
 
 
 class TestBlokirMenghentikanPencarian:

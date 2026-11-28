@@ -313,6 +313,7 @@ class LayaGate:
         policy: GatePolicy,
         timeout: float = 10.0,
         grace_seconds: float = 1.5,
+        hold_seconds: float = 0.0,
         client: Any = None,
     ) -> None:
         self.url = url
@@ -321,6 +322,9 @@ class LayaGate:
         self.grace_seconds = grace_seconds
         """Dibaca node `laya_gate`: lama Laya masih ditunggu setelah pencarian
         paralel selesai (`Settings.laya_grace_seconds`)."""
+        self.hold_seconds = hold_seconds
+        """Dibaca node `laya_gate`: lama Laya masih ditunggu setelah tenggat itu,
+        sementara token pertama LLM ditahan (`Settings.laya_hold_seconds`, T79)."""
         self._api_key = api_key
         self._timeout = timeout
         self._client = client
@@ -394,4 +398,5 @@ def build_gate(settings: Any) -> LayaGate | None:
         ),
         timeout=settings.laya_timeout_seconds,
         grace_seconds=settings.laya_grace_seconds,
+        hold_seconds=settings.laya_hold_seconds,
     )

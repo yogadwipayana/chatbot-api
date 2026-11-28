@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from uuid import UUID
 
@@ -11,6 +12,7 @@ from app.db.models import DocumentType
 from app.observability import tracing
 from app.rag.chain import OutcomeKind
 from app.rag.risk import DOSEN_PA, KONTAK_FRONT_OFFICE
+from app.routers import chat as chat_router
 from tests.fixtures.fakes import kontak_pic
 
 NIM = "2401010101"
@@ -620,3 +622,37 @@ class TestGerbangLaya:
         pesan = {**payload, "question": "resep rendang padang"}
         resp = gated_client.post("/api/chat/stream", json=pesan)
         assert pesan_akhir(resp)["kind"] == "rejected"
+
+
+class TestPingSaatDiam:
+    """T81: aliran yang diam diberi komentar `: ping` supaya tidak diputus Cloudflare (524).
+
+    Uji beban 2026-11-28: di 8 pengguna serentak giliran diam 61,8 dtk antara
+    "menyusun jawaban" dan token pertama; Cloudflare memutus setelah 100 dtk.
+    """
+
+    @staticmethod
+    def lambatkan(llm, tunda: float) -> None:
+        asli = llm.stream
+
+        async def stream(pertanyaan, dokumen):
+            await asyncio.sleep(tunda)
+            async for p in asli(pertanyaan, dokumen):
+                yield p
+
+        llm.stream = stream
+
+    def test_ping_dikirim_saat_llm_lama(self, client, payload, api_llm, monkeypatch):
+        monkeypatch.setattr(chat_router, "SSE_PING_SECONDS", 0.05)
+        self.lambatkan(api_llm, 0.3)
+        resp = client.post("/api/chat/stream", json=payload)
+        assert resp.status_code == 200
+        assert chat_router.SSE_PING in resp.text
+        # Komentar tidak mengganggu urutan event maupun isi jawaban.
+        nama = nama_event(resp)
+        assert nama[-2:] == ["message", "done"]
+        assert "".join(potongan(resp)) == pesan_akhir(resp)["text"]
+
+    def test_tanpa_ping_bila_aliran_lancar(self, client, payload):
+        resp = client.post("/api/chat/stream", json=payload)
+        assert ": ping" not in resp.text
